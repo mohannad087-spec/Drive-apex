@@ -6,17 +6,14 @@ import android.media.AudioTrack
 import kotlin.math.PI
 import kotlin.math.sin
 
-/**
- * Prototype real-time engine sound generator.
- * The first milestone intentionally uses a synthesized fallback tone so the
- * audio control pipeline can be tested before adding vehicle-specific samples.
- */
+/** Real-time synthesized fallback. Vehicle sample layers can replace this later. */
 class EngineSoundEngine {
     private val sampleRate = 44_100
     private val bufferSize = 2_048
     private var track: AudioTrack? = null
-    private var running = false
-    private var rpm = 900f
+    @Volatile private var running = false
+    @Volatile private var rpm = 900f
+    @Volatile private var load = 0.5f
 
     fun start() {
         if (running) return
@@ -38,7 +35,6 @@ class EngineSoundEngine {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
             .also { it.play() }
-
         running = true
         Thread(::renderLoop, "DriveApex-Audio").start()
     }
@@ -54,23 +50,31 @@ class EngineSoundEngine {
         track = null
     }
 
-    fun setRpm(value: Float) {
-        rpm = value.coerceIn(700f, 7000f)
-    }
+    fun setRpm(value: Float) { rpm = value.coerceIn(700f, 7000f) }
+    fun setLoad(value: Float) { load = value.coerceIn(0.1f, 1.5f) }
 
     private fun renderLoop() {
         val pcm = ShortArray(bufferSize)
         var phase = 0.0
+        var phase2 = 0.0
         while (running) {
-            val frequency = (rpm / 60f) * 2.0f
-            val phaseStep = 2.0 * PI * frequency / sampleRate
+            val currentRpm = rpm
+            val currentLoad = load
+            val baseFrequency = (currentRpm / 60f) * 2.0f
+            val step = 2.0 * PI * baseFrequency / sampleRate
+            val step2 = 2.0 * PI * baseFrequency * 0.5 / sampleRate
+            val drive = 0.16 + currentLoad * 0.16
             for (i in pcm.indices) {
-                val harmonic = sin(phase) * 0.62 +
-                    sin(phase * 2.0) * 0.22 +
-                    sin(phase * 3.0) * 0.11
-                pcm[i] = (harmonic * Short.MAX_VALUE * 0.22).toInt().toShort()
-                phase += phaseStep
+                val fundamental = sin(phase) * (0.46 + currentLoad * 0.22)
+                val harmonic2 = sin(phase * 2.0) * (0.13 + currentLoad * 0.08)
+                val harmonic3 = sin(phase * 3.0) * 0.07
+                val lowBody = sin(phase2) * drive
+                val sample = (fundamental + harmonic2 + harmonic3 + lowBody) * Short.MAX_VALUE
+                pcm[i] = sample.coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble()).toInt().toShort()
+                phase += step
+                phase2 += step2
                 if (phase > 2.0 * PI) phase -= 2.0 * PI
+                if (phase2 > 2.0 * PI) phase2 -= 2.0 * PI
             }
             runCatching { track?.write(pcm, 0, pcm.size) }
         }
