@@ -12,15 +12,14 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import com.driveapex.audio.ApexSoundProfile
 import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
-import com.driveapex.audio.SoundProfiles
 import com.driveapex.vehicle.LiveTelemetry
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
 import com.driveapex.vehicle.UdpTelemetryReceiver
-import com.driveapex.vehicle.VehicleData
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -52,7 +51,6 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -128,7 +126,7 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(0, 60).apply { weight = 1f; marginEnd = 8 })
         profiles.addView(Button(this).apply {
             text = "APEX"
-            setOnClickListener { engine.setLayers(SoundProfiles.apexSportLayers) }
+            setOnClickListener { engine.setLayers(ApexSoundProfile.layers) }
         }, LinearLayout.LayoutParams(0, 60).apply { weight = 1f })
         root.addView(profiles, marginParams(bottom = 16))
 
@@ -208,6 +206,7 @@ class MainActivity : Activity() {
         vehicle.setRpm((700 + rpmBar.progress).toFloat())
         vehicle.setThrottle(throttleBar.progress / 100f)
         vehicle.setSpeed(speedBar.progress.toFloat())
+        vehicle.setBrake(0f)
         vehicle.setRegen(0f)
         applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
     }
@@ -218,7 +217,7 @@ class MainActivity : Activity() {
         speedBar.progress = speed
         vehicle.setBrake(brake / 100f)
         vehicle.setRegen(regen / 100f)
-        if (!liveMode) syncSimulator()
+        if (!liveMode) applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
     }
 
     private fun formatRpm(rpm: Float): String = String.format(Locale.US, "%,.0f RPM", rpm)
