@@ -9,16 +9,16 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.audio.EngineSoundController
-import com.driveapex.audio.EngineSoundEngine
-import com.driveapex.audio.SoundProfileManager
+import com.driveapex.audio.ETronInspiredSoundProfile
+import com.driveapex.audio.LayeredSoundEngine
+import com.driveapex.audio.SoundProfiles
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import java.util.Locale
 
 class MainActivity : Activity() {
-    private val engine = EngineSoundEngine()
+    private val engine = LayeredSoundEngine(ETronInspiredSoundProfile.layers)
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
-    private val profiles = SoundProfileManager(engine)
     private lateinit var rpmLabel: TextView
     private lateinit var telemetryLabel: TextView
     private lateinit var profileLabel: TextView
@@ -42,27 +42,26 @@ class MainActivity : Activity() {
 
         profileLabel = TextView(this).apply {
             textSize = 18f
-            text = "SOUND PROFILE: ${profiles.activeProfile.name}"
+            text = "SOUND PROFILE: PREMIUM EV GT"
             setTextColor(Color.rgb(255, 179, 0))
             setPadding(0, 0, 0, 12)
         }
         root.addView(profileLabel)
 
-        val profileRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        profiles.availableProfiles().forEach { profile ->
-            profileRow.addView(Button(this).apply {
-                text = profile.name
-                setOnClickListener {
-                    profiles.select(profile.id)
-                    profileLabel.text = "SOUND PROFILE: ${profiles.activeProfile.name}"
-                }
-            }, LinearLayout.LayoutParams(0, 64).apply {
-                weight = 1f
-                marginEnd = 12
-            })
-        }
+        val profileRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        profileRow.addView(Button(this).apply {
+            text = "EV GT"
+            setOnClickListener {
+                engine.setLayers(ETronInspiredSoundProfile.layers)
+                profileLabel.text = "SOUND PROFILE: PREMIUM EV GT"
+            }
+        }, LinearLayout.LayoutParams(0, 64).apply { weight = 1f; marginEnd = 12 })
+        profileRow.addView(Button(this).apply {
+            text = "APEX"
+            setOnClickListener {
+                profileLabel.text = "SOUND PROFILE: APEX SYNTH"
+            }
+        }, LinearLayout.LayoutParams(0, 64).apply { weight = 1f })
         root.addView(profileRow)
 
         rpmLabel = TextView(this).apply {
@@ -105,11 +104,11 @@ class MainActivity : Activity() {
         root.addView(telemetryLabel)
 
         startButton = Button(this).apply {
-            text = "START ENGINE SOUND"
+            text = "START DRIVE SOUND"
             setOnClickListener {
                 engine.start()
                 syncAudio(rpmBar, throttleBar, speedBar)
-                text = "ENGINE SOUND RUNNING"
+                text = "DRIVE SOUND RUNNING"
             }
         }
         root.addView(startButton)
@@ -118,7 +117,7 @@ class MainActivity : Activity() {
             text = "STOP"
             setOnClickListener {
                 engine.stop()
-                startButton.text = "START ENGINE SOUND"
+                startButton.text = "START DRIVE SOUND"
             }
         })
 
