@@ -12,27 +12,49 @@ DriveApex is an Android application for BYD-oriented dynamic EV drive sound.
 - Adaptive sound scenes with continuous transitions.
 - Sound DNA presets for GT, balanced and hyper personalities.
 - Adaptive stereo spatial mix model with cabin/exterior bus controls.
-- Sound-layer model designed so procedural placeholders can be replaced by recorded samples without changing the vehicle-control layer.
+- Expanded telemetry model with brake and regenerative-braking state.
+- Sample-grid renderer architecture with smooth selection of up to three nearby samples.
+- Pitch tracking metadata and transient sample support for launch/regen events.
+- Sample-bank manifest prepared for original/appropriately licensed recordings.
+- Procedural fallback remains available until real sample assets are added.
 - GitHub Actions pipeline for APK builds.
 
 ## Sound architecture
 
-The sound system is intentionally based on multiple simultaneous acoustic sources rather than a single oscillator. The current model supports motor core, harmonics, inverter/electric whine, low-frequency body, load pulse, speed/air presence, scene detection, adaptive weighting, Sound DNA and stereo spatial routing.
+DriveApex uses a layered acoustic model rather than a single oscillator. Telemetry is converted into a driving scene and continuously weighted sound layers. The sample renderer selects nearby recordings by RPM, load and speed, then crossfades between them instead of switching abruptly.
 
-The design follows the engineering principles used in premium EV sound systems: drive-system telemetry controls the mix continuously, the sound grows in density and intensity with load and speed, and individual layers can be tuned independently. Audi describes its e-tron GT sound as a synthesis built from 32 individual sound sources controlled by electric-motor speed, accelerator position, vehicle speed and other parameters; DriveApex applies the general systems principle with original sound layers rather than copying proprietary recordings.
+The current architecture supports motor core, inverter/electric whine, low-frequency body, air/speed presence, acceleration load, regenerative braking, launch transients, Sound DNA and stereo spatial routing. Separate interior and exterior gain paths are reserved for the final PCM buses.
+
+The design takes inspiration from the systems approach used by premium EV sound systems: multiple sources, telemetry-driven mixing and continuous transitions. Proprietary OEM recordings are not bundled or copied.
 
 ## Competitive direction
 
-DriveApex is designed to go beyond fixed OEM sound presets by allowing the driver to continuously shape the acoustic character. Sound DNA can blend aggression, futuristic character, mechanical body, inverter presence, low end, high-frequency energy and cabin focus without changing the telemetry pipeline.
+DriveApex is designed to go beyond fixed OEM sound presets. Sound DNA can continuously shape aggression, futuristic character, mechanical body, inverter presence, low end, high-frequency energy and cabin focus. The sample-grid architecture adds another advantage: we can build a much denser sound map than a single factory preset and tune it to the actual BYD hardware.
 
-The next quality jump is sample-based rendering: multiple high-quality recordings per acoustic layer, pitch tracking, transient matching, micro-crossfades, separate interior/exterior buses, and hardware-tuned spatial output.
+## Sample bank layout
+
+Future original/appropriately licensed assets are expected under:
+
+```text
+app/src/main/res/raw/audio/gt/
+  motor_low.wav
+  motor_mid.wav
+  motor_high.wav
+  inverter_low.wav
+  inverter_high.wav
+  air_speed.wav
+  regen.wav
+  launch.wav
+```
+
+The manifest is metadata-only for now; no copyrighted vehicle recordings are included in the repository.
 
 ## Roadmap
 
-1. Replace procedural placeholder layers with high-quality original/appropriately licensed sample recordings.
-2. Add sample crossfades and pitch tracking across RPM/load regions.
-3. Implement real stereo/interior/exterior PCM buses with independent gain/EQ.
-4. Add acceleration, launch, lift-off, regenerative braking and coast transient layers.
+1. Add and validate original/appropriately licensed sample recordings.
+2. Replace the procedural layer renderer with a PCM sample player while keeping the same telemetry model.
+3. Add granular/micro-loop stitching to eliminate obvious repetition.
+4. Implement separate cabin/exterior buses with EQ and spatial processing.
 5. Add BYD/DiLink vehicle-data adapter and real telemetry input.
 6. Tune latency, audio focus and head-unit routing on actual hardware.
 7. Produce signed release APKs after on-device validation.
