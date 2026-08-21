@@ -10,12 +10,14 @@ class EngineSoundController(private val engine: LayeredSoundEngine) {
     fun apply(data: VehicleData): AudioScene {
         val rpm = data.rpm.coerceIn(700f, 7000f)
         val throttle = data.normalizedThrottle()
-        val load = (0.18f + throttle * 0.82f) *
-            (0.82f + ln(1f + data.normalizedSpeed()) / 7f)
+        val speedFactor = 0.82f + ln(1f + data.normalizedSpeed()) / 7f
+        val load = (0.16f + throttle * 0.82f +
+            data.normalizedBrake() * 0.35f +
+            data.normalizedRegen() * 0.55f) * speedFactor
         val scene = sceneDetector.detect(data)
 
         engine.setRpm(rpm)
-        engine.setLoad(load.coerceIn(0.12f, 1.5f))
+        engine.setLoad(load.coerceIn(0.10f, 1.5f))
         engine.setSpeed(data.speedKph)
         engine.setScene(scene)
         return scene
