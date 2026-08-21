@@ -6,7 +6,7 @@ import android.media.AudioTrack
 import kotlin.math.PI
 import kotlin.math.sin
 
-/** Real-time synthesized fallback. Vehicle sample layers can replace this later. */
+/** Real-time procedural fallback. Sample layers can replace individual layers later. */
 class EngineSoundEngine {
     private val sampleRate = 44_100
     private val bufferSize = 2_048
@@ -14,6 +14,7 @@ class EngineSoundEngine {
     @Volatile private var running = false
     @Volatile private var rpm = 900f
     @Volatile private var load = 0.5f
+    @Volatile private var profile = SoundProfiles.apexSport
 
     fun start() {
         if (running) return
@@ -50,8 +51,12 @@ class EngineSoundEngine {
         track = null
     }
 
-    fun setRpm(value: Float) { rpm = value.coerceIn(700f, 7000f) }
+    fun setRpm(value: Float) { rpm = value.coerceIn(700f, profile.maxRpm) }
     fun setLoad(value: Float) { load = value.coerceIn(0.1f, 1.5f) }
+    fun setProfile(value: SoundProfile) {
+        profile = value
+        rpm = rpm.coerceIn(700f, value.maxRpm)
+    }
 
     private fun renderLoop() {
         val pcm = ShortArray(bufferSize)
@@ -60,16 +65,21 @@ class EngineSoundEngine {
         while (running) {
             val currentRpm = rpm
             val currentLoad = load
+            val currentProfile = profile
+            val rpmRatio = ((currentRpm - 700f) / (currentProfile.maxRpm - 700f)).coerceIn(0f, 1f)
             val baseFrequency = (currentRpm / 60f) * 2.0f
             val step = 2.0 * PI * baseFrequency / sampleRate
             val step2 = 2.0 * PI * baseFrequency * 0.5 / sampleRate
-            val drive = 0.16 + currentLoad * 0.16
+            val effectiveLoad = (currentLoad * currentProfile.loadResponse).coerceIn(0.1f, 1.5f)
+            val drive = 0.10 + effectiveLoad * (currentProfile.lowBodyGain + 0.08 * rpmRatio)
+            val output = (0.22 + effectiveLoad * 0.10 + currentProfile.aggression * 0.05).coerceIn(0.18, 0.40)
+
             for (i in pcm.indices) {
-                val fundamental = sin(phase) * (0.46 + currentLoad * 0.22)
-                val harmonic2 = sin(phase * 2.0) * (0.13 + currentLoad * 0.08)
-                val harmonic3 = sin(phase * 3.0) * 0.07
+                val fundamental = sin(phase) * (currentProfile.fundamentalGain + effectiveLoad * 0.16)
+                val harmonic2 = sin(phase * 2.0) * (currentProfile.harmonic2Gain + effectiveLoad * 0.05)
+                val harmonic3 = sin(phase * 3.0) * (currentProfile.harmonic3Gain + currentProfile.aggression * 0.05 * rpmRatio)
                 val lowBody = sin(phase2) * drive
-                val sample = (fundamental + harmonic2 + harmonic3 + lowBody) * Short.MAX_VALUE
+                val sample = (fundamental + harmonic2 + harmonic3 + lowBody) * Short.MAX_VALUE * output
                 pcm[i] = sample.coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble()).toInt().toShort()
                 phase += step
                 phase2 += step2
