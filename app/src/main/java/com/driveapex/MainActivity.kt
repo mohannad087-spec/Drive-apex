@@ -1,16 +1,16 @@
 package com.driveapex
 
+import android.app.Activity
 import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import com.driveapex.audio.EngineSoundEngine
 import java.util.Locale
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : Activity() {
     private val engine = EngineSoundEngine()
     private lateinit var rpmLabel: TextView
     private lateinit var startButton: Button
