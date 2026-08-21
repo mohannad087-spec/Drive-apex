@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import com.driveapex.audio.AudioScene
 import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
@@ -82,7 +83,11 @@ class MainActivity : Activity() {
             "PULL" to { setControls(3000, 65, 45) },
             "BOOST" to { setControls(5200, 95, 120) },
             "COAST" to { setControls(2200, 0, 80) },
-            "REGEN" to { setControls(1600, 0, 40) }
+            "REGEN" to {
+                setControls(1600, 0, 40)
+                engine.setScene(AudioScene.REGENERATION)
+                sceneValue.text = "SCENE: REGENERATION"
+            }
         ).forEach { (title, action) ->
             scenes.addView(Button(this).apply {
                 text = title
@@ -148,16 +153,11 @@ class MainActivity : Activity() {
         vehicle.setThrottle(throttle)
         vehicle.setSpeed(speed)
         val data = vehicle.current()
-        controller.apply(data)
+        val scene = controller.apply(data)
 
         rpmValue.text = String.format(Locale.US, "%,d RPM", rpm)
         telemetry.text = String.format(Locale.US, "%,.0f km/h  •  Throttle %d%%", speed, (throttle * 100).toInt())
-        sceneValue.text = when {
-            throttle > 0.80f && rpm > 4500 -> "SCENE: BOOST"
-            throttle > 0.25f -> "SCENE: ACCELERATION"
-            speed > 1f -> "SCENE: COAST"
-            else -> "SCENE: IDLE"
-        }
+        sceneValue.text = "SCENE: ${scene.name.replace('_', ' ')}"
     }
 
     private fun setControls(rpm: Int, throttle: Int, speed: Int) {
