@@ -1,23 +1,33 @@
 # DriveApex
 
-DriveApex is an Android prototype for a BYD-oriented dynamic engine sound simulator.
+DriveApex is an Android application for BYD-oriented dynamic EV drive sound.
 
 ## Current milestone
 
 - Kotlin Android application using Gradle.
 - Landscape-first UI suitable for an in-vehicle display.
-- Optional Android Automotive hardware feature declaration.
-- Real-time synthesized engine sound prototype driven by RPM.
-- GitHub Actions pipeline that builds and uploads a debug APK.
+- Real-time layered EV sound renderer.
+- Premium electric-GT sound profile with multiple controllable layers.
+- Audio parameters driven by motor speed/RPM, accelerator load and vehicle speed.
+- Stereo output architecture ready for separate cabin/exterior routing later.
+- Sound-layer model designed so procedural placeholders can be replaced by recorded samples without changing the vehicle-control layer.
+- GitHub Actions pipeline for APK builds.
 
-## Next milestones
+## Sound architecture
 
-1. Replace the synthesized fallback with a layered sample bank.
-2. Add throttle, vehicle speed, gear and load inputs.
-3. Add a vehicle-data adapter for the available BYD/DiLink integration path.
-4. Tune latency, audio focus and head-unit routing.
-5. Add profiles, sound presets and persistent settings.
-6. Produce signed release APKs after on-device validation.
+The sound system is intentionally based on multiple simultaneous acoustic sources rather than a single oscillator. The current prototype includes motor core, harmonics, inverter/electric whine, low-frequency body, load pulse and speed/air presence layers.
+
+The design follows the engineering principles used in premium EV sound systems: drive-system telemetry controls the mix continuously, the sound grows in density and intensity with load and speed, and individual layers can be tuned independently. Audi describes its e-tron GT sound as a synthesis built from 32 individual sound sources controlled by electric-motor speed, accelerator position, vehicle speed and other parameters; DriveApex uses the same general design philosophy with original sound layers.
+
+## Roadmap
+
+1. Replace procedural placeholder layers with high-quality original/appropriately licensed sample recordings.
+2. Add sample crossfades and pitch tracking across RPM/load regions.
+3. Add separate interior and exterior buses with independent gain/EQ.
+4. Add acceleration, lift-off, regenerative braking and coast sound states.
+5. Add BYD/DiLink vehicle-data adapter and real telemetry input.
+6. Tune latency, audio focus and head-unit routing on actual hardware.
+7. Produce signed release APKs after on-device validation.
 
 ## Build locally
 
