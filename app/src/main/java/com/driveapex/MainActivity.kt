@@ -5,10 +5,12 @@ import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.EngineSoundEngine
+import com.driveapex.audio.SoundProfileManager
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import java.util.Locale
 
@@ -16,8 +18,10 @@ class MainActivity : Activity() {
     private val engine = EngineSoundEngine()
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
+    private val profiles = SoundProfileManager(engine)
     private lateinit var rpmLabel: TextView
     private lateinit var telemetryLabel: TextView
+    private lateinit var profileLabel: TextView
     private lateinit var startButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,6 +39,31 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             setPadding(0, 0, 0, 18)
         })
+
+        profileLabel = TextView(this).apply {
+            textSize = 18f
+            text = "SOUND PROFILE: ${profiles.activeProfile.name}"
+            setTextColor(Color.rgb(255, 179, 0))
+            setPadding(0, 0, 0, 12)
+        }
+        root.addView(profileLabel)
+
+        val profileRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        profiles.availableProfiles().forEach { profile ->
+            profileRow.addView(Button(this).apply {
+                text = profile.name
+                setOnClickListener {
+                    profiles.select(profile.id)
+                    profileLabel.text = "SOUND PROFILE: ${profiles.activeProfile.name}"
+                }
+            }, LinearLayout.LayoutParams(0, 64).apply {
+                weight = 1f
+                marginEnd = 12
+            })
+        }
+        root.addView(profileRow)
 
         rpmLabel = TextView(this).apply {
             textSize = 42f
@@ -105,7 +134,7 @@ class MainActivity : Activity() {
         speedBar.setOnSeekBarChangeListener(listener)
 
         syncAudio(rpmBar, throttleBar, speedBar)
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
     }
 
     private fun syncAudio(rpmBar: SeekBar, throttleBar: SeekBar, speedBar: SeekBar) {
