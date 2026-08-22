@@ -6,19 +6,21 @@ DriveApex is an Android application for BYD-oriented dynamic EV drive sound.
 
 - Kotlin Android application using Gradle.
 - Phone-first test lab that can later adapt to an in-vehicle display.
-- Real-time layered EV sound renderer.
+- Real-time layered EV sound renderer with procedural fallback.
 - Premium electric-GT and original Apex sound profiles.
 - Audio parameters driven by motor speed/RPM, accelerator load, vehicle speed, brake and regenerative-braking state.
-- Adaptive sound scenes with continuous transitions.
+- Adaptive sound scenes with continuous transitions and safe fallback on stale live telemetry.
 - Sample-grid renderer architecture with smooth selection of nearby samples.
 - Pitch tracking metadata and transient sample support for launch/regen events.
-- Stereo spatial mix model with cabin/exterior routing reserved for the final audio buses.
+- Stereo spatial mix model with cabin/exterior routing reserved for final audio buses.
 - Live telemetry gateway over UDP for phone/bridge testing.
+- Adaptive Driver Sonic Signature that learns driving style locally and continuously shapes Sound DNA.
+- Transient Acoustic Event Composer for launch, acceleration hit, lift-off, regeneration and braking events.
 - GitHub Actions pipeline for APK builds.
 
 ## Phone test lab
 
-The phone UI exposes simulator controls for RPM, throttle and speed, plus quick scenes for IDLE, PULL, BOOST, COAST and REGEN. The app can switch to `LIVE UDP` mode and listen on port `38901`.
+The phone UI exposes simulator controls for RPM, throttle and speed, plus quick scenes for IDLE, PULL, BOOST, COAST and REGEN. The app can switch to `LIVE UDP` mode and listen on port `38901`. The UI also displays the driver's evolving Sonic Signature.
 
 Example telemetry packet:
 
@@ -34,6 +36,25 @@ Example telemetry packet:
 
 This transport is a bridge/testing contract, not a claim about an undocumented BYD API. A BYD/DiLink adapter can feed the same `VehicleData` model later without changing the audio renderer.
 
+## Adaptive Sonic Signature
+
+DriveApex is designed around a driver-specific acoustic identity rather than one fixed preset. A lightweight local model tracks acceleration style, pedal smoothness, regenerative-braking preference, high-speed use and launch behaviour. Those signals continuously shape the Sound DNA while the vehicle is being driven.
+
+The intent is that two drivers in the same car can produce different acoustic personalities without manually selecting a different preset. The system remains deterministic, bounded and local; it does not require a cloud service.
+
+## Acoustic events
+
+Telemetry changes are also converted into transient event intensities for:
+
+- Launch
+- Acceleration hit
+- Lift-off
+- Regeneration hit
+- Brake hit
+- High-speed rush
+
+These events are intended to drive short one-shot samples or micro-stingers in the final PCM renderer, rather than stretching a loop across the entire drive.
+
 ## Sound architecture
 
 DriveApex uses a layered acoustic model rather than a single oscillator. Telemetry is converted into a driving scene and continuously weighted sound layers. The sample renderer is designed to select nearby recordings by RPM, load and speed and crossfade between them instead of switching abruptly.
@@ -42,7 +63,7 @@ The architecture supports motor core, inverter/electric whine, low-frequency bod
 
 ## Competitive direction
 
-DriveApex is designed to go beyond fixed OEM sound presets. Sound DNA can continuously shape aggression, futuristic character, mechanical body, inverter presence, low end, high-frequency energy and cabin focus. The sample-grid architecture allows a denser sound map and tuning specific to the actual BYD hardware.
+DriveApex is designed to go beyond fixed OEM sound presets. The combination of a dense sample map, transient event composition and a driver-specific Sonic Signature is intended to make the acoustic experience adaptive rather than static.
 
 ## Sample bank layout
 
@@ -57,6 +78,8 @@ app/src/main/res/raw/audio/gt/
   inverter_high.wav
   air_speed.wav
   regen.wav
+  lift_off.wav
+  brake_hit.wav
   launch.wav
 ```
 
@@ -66,11 +89,13 @@ No copyrighted vehicle recordings are included in the repository.
 
 1. Add and validate original/appropriately licensed sample recordings.
 2. Replace the procedural layer renderer with a PCM sample player while keeping the same telemetry model.
-3. Add granular/micro-loop stitching to eliminate obvious repetition.
-4. Implement separate cabin/exterior buses with EQ and spatial processing.
-5. Connect the live gateway to the actual BYD/DiLink data source after the data path is verified on the target vehicle.
-6. Tune latency, audio focus and head-unit routing on actual hardware.
-7. Produce signed release APKs after on-device validation.
+3. Add granular/micro-loop stitching and phase-aware micro-crossfades to eliminate obvious repetition.
+4. Drive transient samples from the Acoustic Event Composer.
+5. Persist and tune the Driver Sonic Signature across drives with a local profile.
+6. Implement separate cabin/exterior buses with EQ and spatial processing.
+7. Connect the live gateway to the actual BYD/DiLink data source after the data path is verified on the target vehicle.
+8. Tune latency, audio focus and head-unit routing on actual hardware.
+9. Produce signed release APKs after on-device validation.
 
 ## Build locally
 
