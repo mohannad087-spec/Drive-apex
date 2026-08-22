@@ -71,6 +71,7 @@ class LayeredSoundEngine(
         val pcm = ShortArray(bufferSize * 2)
         val phases = DoubleArray(layers.size)
         var lowPhase = 0.0
+        var sceneEnvelope = 0f
 
         while (running) {
             val currentRpm = rpm
@@ -79,8 +80,10 @@ class LayeredSoundEngine(
             val currentScene = scene
             val snapshot = layers
             val base = currentRpm / 60.0 * 2.0 * PI
+            val targetSceneEnvelope = sceneEnvelopeTarget(currentScene)
 
             for (i in 0 until bufferSize) {
+                sceneEnvelope += (targetSceneEnvelope - sceneEnvelope) * 0.0022f
                 var left = 0.0
                 var right = 0.0
 
@@ -105,7 +108,7 @@ class LayeredSoundEngine(
                         layer.harmonic <= 1 -> sin(phases[index] * 2.0 * PI)
                         else -> sin(phases[index] * 2.0 * PI * layer.harmonic)
                     }
-                    val layerGain = layer.gain * activity
+                    val layerGain = layer.gain * activity * sceneEnvelope
                     val stereo = layer.stereoPosition.toDouble().coerceIn(-1.0, 1.0)
                     val leftGain = 0.5 * (1.0 - stereo)
                     val rightGain = 0.5 * (1.0 + stereo)
@@ -115,7 +118,7 @@ class LayeredSoundEngine(
 
                 lowPhase += base * 0.5 / sampleRate
                 if (lowPhase >= 1.0) lowPhase -= 1.0
-                val lowBody = sin(lowPhase * 2.0 * PI) * (0.10 + currentLoad * 0.10)
+                val lowBody = sin(lowPhase * 2.0 * PI) * (0.10 + currentLoad * 0.10) * sceneEnvelope
                 val master = (0.48 + currentLoad * 0.18).coerceIn(0.45, 0.70)
                 val l = (left + lowBody * 0.9) * master
                 val r = (right + lowBody * 1.1) * master
@@ -129,6 +132,16 @@ class LayeredSoundEngine(
 
             runCatching { track?.write(pcm, 0, pcm.size) }
         }
+    }
+
+    private fun sceneEnvelopeTarget(value: AudioScene): Float = when (value) {
+        AudioScene.IDLE -> 0.58f
+        AudioScene.COAST -> 0.64f
+        AudioScene.ACCELERATION -> 0.90f
+        AudioScene.HARD_ACCELERATION -> 1.06f
+        AudioScene.REGENERATION -> 0.80f
+        AudioScene.LAUNCH -> 1.14f
+        AudioScene.HIGH_SPEED -> 1.00f
     }
 
     private fun smoothBand(value: Float, min: Float, max: Float): Float {
