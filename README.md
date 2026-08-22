@@ -15,12 +15,13 @@ DriveApex is an Android application for BYD-oriented dynamic EV drive sound.
 - Stereo spatial mix model with cabin/exterior routing reserved for final audio buses.
 - Live telemetry gateway over UDP for phone/bridge testing.
 - Adaptive Driver Sonic Signature that learns driving style locally and continuously shapes Sound DNA.
-- Transient Acoustic Event Composer for launch, acceleration hit, lift-off, regeneration and braking events.
+- Sonic Choreography layer that turns driving changes into short-lived acoustic accents rather than only changing continuous volume.
+- Live acoustic event monitor in the phone test lab for tuning by ear and by telemetry.
 - GitHub Actions pipeline for APK builds.
 
 ## Phone test lab
 
-The phone UI exposes simulator controls for RPM, throttle and speed, plus quick scenes for IDLE, PULL, BOOST, COAST and REGEN. The app can switch to `LIVE UDP` mode and listen on port `38901`. The UI also displays the driver's evolving Sonic Signature.
+The phone UI exposes simulator controls for RPM, throttle and speed, plus quick scenes for IDLE, PULL, BOOST, COAST and REGEN. The app can switch to `LIVE UDP` mode and listen on port `38901`. The UI also displays the driver's evolving Sonic Signature and live event intensities.
 
 Example telemetry packet:
 
@@ -42,9 +43,9 @@ DriveApex is designed around a driver-specific acoustic identity rather than one
 
 The intent is that two drivers in the same car can produce different acoustic personalities without manually selecting a different preset. The system remains deterministic, bounded and local; it does not require a cloud service.
 
-## Acoustic events
+## Sonic Choreography
 
-Telemetry changes are also converted into transient event intensities for:
+Telemetry changes are converted into transient event intensities for:
 
 - Launch
 - Acceleration hit
@@ -53,13 +54,13 @@ Telemetry changes are also converted into transient event intensities for:
 - Brake hit
 - High-speed rush
 
-These events are intended to drive short one-shot samples or micro-stingers in the final PCM renderer, rather than stretching a loop across the entire drive.
+Each transient has a real decay envelope so a sustained condition does not retrigger a full-strength event every frame. The current procedural renderer adds short accents over the continuous sound bed. The final sample renderer will replace these accents with original/appropriately licensed one-shot recordings and micro-stingers.
 
 ## Sound architecture
 
 DriveApex uses a layered acoustic model rather than a single oscillator. Telemetry is converted into a driving scene and continuously weighted sound layers. The sample renderer is designed to select nearby recordings by RPM, load and speed and crossfade between them instead of switching abruptly.
 
-The architecture supports motor core, inverter/electric whine, low-frequency body, air/speed presence, acceleration load, regenerative braking, launch transients, Sound DNA and stereo spatial routing. Proprietary OEM recordings are not bundled or copied.
+The architecture supports motor core, inverter/electric whine, low-frequency body, air/speed presence, acceleration load, regenerative braking, launch transients, Sound DNA, Sonic Choreography and stereo spatial routing. Proprietary OEM recordings are not bundled or copied.
 
 ## Competitive direction
 
@@ -90,7 +91,7 @@ No copyrighted vehicle recordings are included in the repository.
 1. Add and validate original/appropriately licensed sample recordings.
 2. Replace the procedural layer renderer with a PCM sample player while keeping the same telemetry model.
 3. Add granular/micro-loop stitching and phase-aware micro-crossfades to eliminate obvious repetition.
-4. Drive transient samples from the Acoustic Event Composer.
+4. Drive transient samples from the Acoustic Event Composer and tune them with the phone event monitor.
 5. Persist and tune the Driver Sonic Signature across drives with a local profile.
 6. Implement separate cabin/exterior buses with EQ and spatial processing.
 7. Connect the live gateway to the actual BYD/DiLink data source after the data path is verified on the target vehicle.
