@@ -3,10 +3,11 @@ package com.driveapex.audio
 import com.driveapex.vehicle.VehicleData
 import kotlin.math.ln
 
-/** Converts conditioned vehicle telemetry into audio-engine parameters and scene state. */
+/** Converts conditioned vehicle telemetry into the complete audio-control frame. */
 class EngineSoundController(private val engine: LayeredSoundEngine) {
     private val sceneDetector = AudioSceneDetector()
     private val smoother = TelemetrySmoother()
+    private val eventComposer = AcousticEventComposer()
 
     fun apply(data: VehicleData): AudioScene {
         val conditioned = smoother.filter(data)
@@ -17,11 +18,13 @@ class EngineSoundController(private val engine: LayeredSoundEngine) {
             conditioned.normalizedBrake() * 0.35f +
             conditioned.normalizedRegen() * 0.55f) * speedFactor
         val scene = sceneDetector.detect(conditioned)
+        val events = eventComposer.evaluate(conditioned)
 
         engine.setRpm(rpm)
         engine.setLoad(load.coerceIn(0.10f, 1.5f))
         engine.setSpeed(conditioned.speedKph)
         engine.setScene(scene)
+        engine.setEvents(events)
         return scene
     }
 
