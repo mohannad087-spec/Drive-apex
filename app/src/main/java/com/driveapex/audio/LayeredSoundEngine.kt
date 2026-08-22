@@ -22,6 +22,7 @@ class LayeredSoundEngine(
     @Volatile private var load = 0.25f
     @Volatile private var speedKph = 0f
     @Volatile private var scene = AudioScene.IDLE
+    @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
 
     fun setLayers(value: List<SoundLayer>) {
         layers = value
@@ -31,6 +32,7 @@ class LayeredSoundEngine(
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setSpeed(value: Float) { speedKph = value.coerceAtLeast(0f) }
     fun setScene(value: AudioScene) { scene = value }
+    fun setEvents(value: AcousticEventComposer.Events) { events = value }
 
     fun start() {
         if (running) return
@@ -72,12 +74,14 @@ class LayeredSoundEngine(
         val phases = DoubleArray(layers.size)
         var lowPhase = 0.0
         var sceneEnvelope = 0f
+        var eventPhase = 0.0
 
         while (running) {
             val currentRpm = rpm
             val currentLoad = load
             val currentSpeed = speedKph
             val currentScene = scene
+            val currentEvents = events
             val snapshot = layers
             val base = currentRpm / 60.0 * 2.0 * PI
             val targetSceneEnvelope = sceneEnvelopeTarget(currentScene)
@@ -119,9 +123,21 @@ class LayeredSoundEngine(
                 lowPhase += base * 0.5 / sampleRate
                 if (lowPhase >= 1.0) lowPhase -= 1.0
                 val lowBody = sin(lowPhase * 2.0 * PI) * (0.10 + currentLoad * 0.10) * sceneEnvelope
+
+                // Event accents: deliberately short-lived and layered over the continuous bed.
+                eventPhase += (1.0 + currentRpm / 1800.0) / sampleRate
+                if (eventPhase >= 1.0) eventPhase -= 1.0
+                val accentEnvelope = 0.65 + 0.35 * sin(eventPhase * 2.0 * PI)
+                val launchAccent = currentEvents.launch * 0.20 * sin(eventPhase * 2.0 * PI * 1.7)
+                val accelAccent = currentEvents.accelerationHit * 0.12 * sin(eventPhase * 2.0 * PI * 2.4)
+                val liftAccent = currentEvents.liftOff * 0.10 * sin(eventPhase * 2.0 * PI * 3.1)
+                val regenAccent = currentEvents.regenerationHit * 0.14 * sin(eventPhase * 2.0 * PI * 2.1)
+                val brakeAccent = currentEvents.brakeHit * 0.11 * sin(eventPhase * 2.0 * PI * 4.0)
+                val eventMix = (launchAccent + accelAccent + liftAccent + regenAccent + brakeAccent) * accentEnvelope
+
                 val master = (0.48 + currentLoad * 0.18).coerceIn(0.45, 0.70)
-                val l = (left + lowBody * 0.9) * master
-                val r = (right + lowBody * 1.1) * master
+                val l = (left + lowBody * 0.9 + eventMix * 0.85) * master
+                val r = (right + lowBody * 1.1 + eventMix * 1.10) * master
                 pcm[i * 2] = (l * Short.MAX_VALUE)
                     .coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble())
                     .toInt().toShort()
