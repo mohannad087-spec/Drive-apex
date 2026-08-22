@@ -1,13 +1,21 @@
 package com.driveapex.audio
 
 import com.driveapex.vehicle.VehicleData
-import kotlin.math.abs
 import kotlin.math.max
 
-/** Converts telemetry changes into short-lived acoustic event intensities. */
+/**
+ * Turns telemetry deltas into short-lived acoustic events.
+ * Each event has an attack/decay envelope so transient sounds do not become
+ * permanent tones when a condition remains true for multiple frames.
+ */
 class AcousticEventComposer {
     private var previousSpeed = 0f
     private var previousThrottle = 0f
+    private var launch = 0f
+    private var accelerationHit = 0f
+    private var liftOff = 0f
+    private var regenerationHit = 0f
+    private var brakeHit = 0f
 
     data class Events(
         val launch: Float,
@@ -26,12 +34,22 @@ class AcousticEventComposer {
         val deltaSpeed = speed - previousSpeed
         val deltaThrottle = throttle - previousThrottle
 
+        launch = tick(launch, speed < 18f && throttle > 0.82f, 0.11f)
+        accelerationHit = tick(accelerationHit, deltaSpeed > 2.5f && throttle > 0.55f, 0.16f)
+        liftOff = tick(liftOff, deltaThrottle < -0.38f && speed > 8f, 0.13f)
+        regenerationHit = tick(
+            regenerationHit,
+            regen > 0.55f || (brake > 0.35f && deltaSpeed < -1.5f),
+            0.12f
+        )
+        brakeHit = tick(brakeHit, brake > 0.65f && deltaSpeed < -3f, 0.10f)
+
         val events = Events(
-            launch = pulse(speed < 18f && throttle > 0.82f, 0.28f),
-            accelerationHit = pulse(deltaSpeed > 2.5f && throttle > 0.55f, 0.20f),
-            liftOff = pulse(deltaThrottle < -0.38f && speed > 8f, 0.18f),
-            regenerationHit = pulse(regen > 0.55f || (brake > 0.35f && deltaSpeed < -1.5f), 0.22f),
-            brakeHit = pulse(brake > 0.65f && deltaSpeed < -3f, 0.16f),
+            launch = launch,
+            accelerationHit = accelerationHit,
+            liftOff = liftOff,
+            regenerationHit = regenerationHit,
+            brakeHit = brakeHit,
             speedRush = max(0f, (speed - 90f) / 150f).coerceIn(0f, 1f)
         )
 
@@ -40,9 +58,7 @@ class AcousticEventComposer {
         return events
     }
 
-    private fun pulse(condition: Boolean, decay: Float): Float = if (condition) {
-        1f
-    } else {
-        decay.coerceIn(0f, 1f)
+    private fun tick(current: Float, trigger: Boolean, decay: Float): Float {
+        return if (trigger) 1f else (current - decay).coerceAtLeast(0f)
     }
 }
