@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
     private lateinit var signatureValue: TextView
+    private lateinit var eventValue: TextView
     private lateinit var startButton: Button
     private lateinit var modeButton: Button
     private lateinit var rpmBar: SeekBar
@@ -91,6 +92,9 @@ class MainActivity : Activity() {
         signatureValue = label("SONIC SIGNATURE: BALANCED", 13f, Color.rgb(180, 130, 255))
         signatureValue.setPadding(0, 10, 0, 0)
         statusCard.addView(signatureValue)
+        eventValue = label("EVENTS  L:0  A:0  O:0  R:0  B:0  S:0", 12f, Color.rgb(120, 220, 180))
+        eventValue.setPadding(0, 8, 0, 0)
+        statusCard.addView(eventValue)
         root.addView(statusCard, marginParams(bottom = 18))
 
         root.addView(label("RPM", 14f, Color.LTGRAY))
@@ -152,6 +156,7 @@ class MainActivity : Activity() {
                 engine.stop()
                 startButton.text = "START DRIVE SOUND"
                 sceneValue.text = "SCENE: SAFE / STOPPED"
+                eventValue.text = "EVENTS  L:0  A:0  O:0  R:0  B:0  S:0"
             }
         })
 
@@ -198,6 +203,7 @@ class MainActivity : Activity() {
         val data = packet.data
         val scene = controller.apply(data)
         val signature = sonicSignature.update(data)
+        val events = controller.events()
         rpmValue.text = formatRpm(data.rpm)
         telemetry.text = String.format(
             Locale.US,
@@ -213,6 +219,16 @@ class MainActivity : Activity() {
             signature.label(),
             (signature.aggression * 100).toInt(),
             (signature.smoothness * 100).toInt()
+        )
+        eventValue.text = String.format(
+            Locale.US,
+            "EVENTS  L:%d  A:%d  O:%d  R:%d  B:%d  S:%d",
+            (events.launch * 100).toInt(),
+            (events.accelerationHit * 100).toInt(),
+            (events.liftOff * 100).toInt(),
+            (events.regenerationHit * 100).toInt(),
+            (events.brakeHit * 100).toInt(),
+            (events.speedRush * 100).toInt()
         )
     }
 
