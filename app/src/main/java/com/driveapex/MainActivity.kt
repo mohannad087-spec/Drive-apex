@@ -13,6 +13,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.audio.ApexSoundProfile
+import com.driveapex.audio.DriverSonicSignature
 import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
@@ -27,6 +28,7 @@ class MainActivity : Activity() {
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
     private val udpReceiver = UdpTelemetryReceiver()
+    private val sonicSignature = DriverSonicSignature()
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
 
@@ -34,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var telemetry: TextView
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
+    private lateinit var signatureValue: TextView
     private lateinit var startButton: Button
     private lateinit var modeButton: Button
     private lateinit var rpmBar: SeekBar
@@ -85,6 +88,9 @@ class MainActivity : Activity() {
         statusCard.addView(rpmValue)
         telemetry = label("0 km/h  •  Throttle 0%  •  Regen 0%", 14f, Color.LTGRAY)
         statusCard.addView(telemetry)
+        signatureValue = label("SONIC SIGNATURE: BALANCED", 13f, Color.rgb(180, 130, 255))
+        signatureValue.setPadding(0, 10, 0, 0)
+        statusCard.addView(signatureValue)
         root.addView(statusCard, marginParams(bottom = 18))
 
         root.addView(label("RPM", 14f, Color.LTGRAY))
@@ -191,6 +197,7 @@ class MainActivity : Activity() {
     private fun applyTelemetry(packet: LiveTelemetry) {
         val data = packet.data
         val scene = controller.apply(data)
+        val signature = sonicSignature.update(data)
         rpmValue.text = formatRpm(data.rpm)
         telemetry.text = String.format(
             Locale.US,
@@ -200,6 +207,13 @@ class MainActivity : Activity() {
             (data.regen * 100).toInt()
         )
         sceneValue.text = "SCENE: ${scene.name.replace('_', ' ')}"
+        signatureValue.text = String.format(
+            Locale.US,
+            "SONIC SIGNATURE: %s   •   AGG %d%%   •   SMOOTH %d%%",
+            signature.label(),
+            (signature.aggression * 100).toInt(),
+            (signature.smoothness * 100).toInt()
+        )
     }
 
     private fun syncSimulator() {
