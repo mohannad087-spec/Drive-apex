@@ -44,17 +44,30 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Restore signing keystore
+      - name: Restore and validate signing keystore
         shell: bash
         env:
           DRIVEAPEX_KEYSTORE_PATH: ${{ runner.temp }}/driveapex-release.jks
         run: |
-          printf '%s' "$DRIVEAPEX_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$DRIVEAPEX_KEYSTORE_PATH"
-          test -s "$DRIVEAPEX_KEYSTORE_PATH" || { echo "ERROR: decoded keystore is empty."; exit 1; }
-          keytool -list -keystore "$DRIVEAPEX_KEYSTORE_PATH" -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
-            echo "ERROR: DRIVEAPEX_KEYSTORE_BASE64, DRIVEAPEX_KEYSTORE_PASSWORD, or DRIVEAPEX_KEY_ALIAS does not match the signing keystore."
+          set -euo pipefail
+          # Ignore whitespace and accidental non-base64 formatting in the pasted secret.
+          printf '%s' "$DRIVEAPEX_KEYSTORE_BASE64" \
+            | tr -d '[:space:]' \
+            | base64 --decode --ignore-garbage > "$DRIVEAPEX_KEYSTORE_PATH"
+
+          test -s "$DRIVEAPEX_KEYSTORE_PATH" || {
+            echo "ERROR: decoded keystore is empty."
             exit 1
           }
+
+          keytool -list \
+            -keystore "$DRIVEAPEX_KEYSTORE_PATH" \
+            -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" \
+            -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
+              echo "ERROR: keystore decoded, but password or alias does not match the keystore."
+              exit 1
+            }
+
           echo "DRIVEAPEX_KEYSTORE_PATH=$DRIVEAPEX_KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
@@ -65,6 +78,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
           test -s "$APK" || { echo "ERROR: release APK was not produced."; exit 1; }
           NOTES="DriveApex latest build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}"
