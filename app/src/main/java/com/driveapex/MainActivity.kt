@@ -30,7 +30,7 @@ class MainActivity : Activity() {
     private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
     private lateinit var updateManager: UpdateManager
-    private val udpReceiver = UdpTelemetryReceiver()
+    private lateinit var udpReceiver: UdpTelemetryReceiver
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
 
@@ -62,6 +62,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         genomeSession = SonicGenomeSession(this)
         updateManager = UpdateManager(this)
+        udpReceiver = UdpTelemetryReceiver(context = this)
 
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
@@ -209,7 +210,7 @@ class MainActivity : Activity() {
         if (liveMode) {
             udpReceiver.start()
             modeButton.text = "SWITCH TO SIMULATOR"
-            sourceValue.text = "SOURCE: LIVE UDP  •  PORT 38901"
+            sourceValue.text = "SOURCE: LIVE VEHICLE / UDP FALLBACK"
             sourceValue.setTextColor(Color.rgb(90, 230, 150))
             rpmBar.isEnabled = false
             throttleBar.isEnabled = false
