@@ -20,14 +20,13 @@ import kotlin.concurrent.thread
 /**
  * Production updater for the stable DriveApex GitHub Release channel.
  *
- * The updater deliberately uses GitHub's stable release download endpoints
- * instead of parsing the GitHub API asset list. This removes a brittle
- * dependency on release JSON structure and asset enumeration.
+ * The updater fetches one deterministic manifest from the latest release.
+ * The manifest contains the exact version-pinned APK URL used for download,
+ * avoiding a second floating asset lookup after the manifest is read.
  */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
     private val manifestUrl = "https://github.com/mohannad087-spec/Drive-apex/releases/latest/download/DriveApex-update.json"
-    private val apkUrl = "https://github.com/mohannad087-spec/Drive-apex/releases/latest/download/DriveApex.apk"
     private val apkName = "DriveApex-update.apk"
 
     fun checkSilently() = check(false)
@@ -36,7 +35,7 @@ class UpdateManager(private val activity: Activity) {
 
     fun onResume() {
         val pending = pendingApk()
-        if (pending?.isFile == true && pending.length() > 100_000L) {
+        if (pending.isFile && pending.length() > 100_000L) {
             handler.post { installOrRequestPermission(pending) }
         }
     }
@@ -47,18 +46,24 @@ class UpdateManager(private val activity: Activity) {
                 val manifest = downloadManifest()
                 val remoteVersionCode = manifest.optInt("versionCode", -1)
                 val remoteVersionName = manifest.optString("versionName", "")
-                val assetName = manifest.optString("assetName", "DriveApex.apk")
+                val assetName = manifest.optString("assetName", "")
+                val tag = manifest.optString("tag", "")
+                val apkUrl = manifest.optString("apkUrl", "")
                 val expectedSha256 = manifest.optString("sha256", "").lowercase()
 
                 if (remoteVersionCode < 1) error("Update manifest has invalid versionCode")
                 if (assetName != "DriveApex.apk") error("Update manifest references an unexpected APK")
+                if (!tag.matches(Regex("^v\\d+\\.\\d+\\.\\d+$"))) error("Update manifest has invalid release tag")
+                if (!apkUrl.startsWith("https://github.com/mohannad087-spec/Drive-apex/releases/download/$tag/") || !apkUrl.endsWith("/DriveApex.apk")) {
+                    error("Update manifest has invalid APK URL")
+                }
                 if (expectedSha256.length != 64 || !expectedSha256.all { it in "0123456789abcdef" }) {
                     error("Update manifest has invalid SHA-256")
                 }
 
                 if (remoteVersionCode > BuildConfig.VERSION_CODE) {
                     handler.post {
-                        showUpdateDialog(remoteVersionCode, remoteVersionName, expectedSha256)
+                        showUpdateDialog(remoteVersionCode, remoteVersionName, apkUrl, expectedSha256)
                     }
                 } else if (manual) {
                     handler.post {
@@ -96,21 +101,21 @@ class UpdateManager(private val activity: Activity) {
             .show()
     }
 
-    private fun showUpdateDialog(versionCode: Int, versionName: String, expectedSha256: String) {
+    private fun showUpdateDialog(versionCode: Int, versionName: String, apkUrl: String, expectedSha256: String) {
         if (activity.isFinishing || activity.isDestroyed) return
         val label = if (versionName.isBlank()) versionCode.toString() else "$versionName ($versionCode)"
         AlertDialog.Builder(activity)
             .setTitle("DriveApex update available")
             .setMessage("Version $label is ready. Download and install it now?")
             .setNegativeButton("Later", null)
-            .setPositiveButton("Update") { _, _ -> downloadAndInstall(expectedSha256) }
+            .setPositiveButton("Update") { _, _ -> downloadAndInstall(apkUrl, expectedSha256) }
             .show()
     }
 
-    private fun downloadAndInstall(expectedSha256: String) {
+    private fun downloadAndInstall(apkUrl: String, expectedSha256: String) {
         thread(name = "DriveApex-APK-Download") {
             runCatching {
-                val target = pendingApk() ?: error("Unable to create update file")
+                val target = pendingApk()
                 val partial = File(activity.cacheDir, "$apkName.part")
                 partial.delete()
 
