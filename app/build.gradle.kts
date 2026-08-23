@@ -19,6 +19,15 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*"
+            )
+        }
+    }
+
     signingConfigs {
         create("release") {
             val keystorePath = System.getenv("DRIVEAPEX_KEYSTORE_PATH")
