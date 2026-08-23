@@ -25,6 +25,7 @@ jobs:
       - name: Check signing configuration
         shell: bash
         run: |
+          set -euo pipefail
           if [[ -z "$DRIVEAPEX_KEYSTORE_HEX" || -z "$DRIVEAPEX_KEYSTORE_PASSWORD" || -z "$DRIVEAPEX_KEY_ALIAS" || -z "$DRIVEAPEX_KEY_PASSWORD" ]]; then
             echo "ERROR: Stable release signing is not configured."
             exit 1
@@ -75,6 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || { echo "ERROR: release APK was not produced."; exit 1; }
           SHA256=$(sha256sum "$APK" | awk '{print $1}')
           cat > DriveApex-update.json <<EOF
           {
@@ -84,7 +86,8 @@ jobs:
             "sha256": "${SHA256}"
           }
           EOF
-          cat DriveApex-update.json
+          python3 -m json.tool DriveApex-update.json >/dev/null
+          echo "Prepared update manifest for versionCode=${DRIVEAPEX_VERSION_CODE}"
 
       - name: Publish latest release
         shell: bash
@@ -102,3 +105,37 @@ jobs:
           else
             gh release create latest "$APK#DriveApex.apk" "DriveApex-update.json#DriveApex-update.json" --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
           fi
+
+      - name: Verify production update channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+          MANIFEST_URL="$BASE/DriveApex-update.json"
+          APK_URL="$BASE/DriveApex.apk"
+
+          ok=0
+          for attempt in {1..10}; do
+            if curl -fsSL --retry 2 --connect-timeout 5 --max-time 20 "$MANIFEST_URL" -o /tmp/DriveApex-update.json; then
+              ok=1
+              break
+            fi
+            echo "Update manifest not visible yet (attempt $attempt/10); retrying..."
+            sleep 3
+          done
+          [[ "$ok" == "1" ]] || { echo "ERROR: latest update manifest is not reachable."; exit 1; }
+
+          python3 - <<'PY'
+          import json
+          with open('/tmp/DriveApex-update.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+          assert data.get('versionCode', 0) > 0
+          assert data.get('versionName')
+          assert data.get('assetName') == 'DriveApex.apk'
+          sha = data.get('sha256', '')
+          assert len(sha) == 64 and all(c in '0123456789abcdef' for c in sha.lower())
+          print('Verified update manifest:', data['versionName'], data['versionCode'])
+          PY
+
+          curl -fsSLI --retry 5 --connect-timeout 5 --max-time 20 "$APK_URL" >/dev/null
+          echo "Verified DriveApex.apk is reachable from releases/latest/download."
