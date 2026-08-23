@@ -11,11 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Persistent local ADB transport modeled on OverDrive's connection layer.
  *
- * The important behavior is not the APK installer itself: it is how the app
- * handles a BYD adbd that is listening but has not authorized this app's key
- * yet. A short foreground connection attempt is paired with a separate,
- * bounded background authorization poller so the UI thread is never held on
- * the ADB handshake.
+ * A short foreground connection attempt is paired with a separate, bounded
+ * background authorization poller so the app never blocks on the ADB handshake.
  */
 internal class VehicleAdbConnection(private val context: Context) {
 
@@ -64,7 +61,9 @@ internal class VehicleAdbConnection(private val context: Context) {
                 startAuthPolling(key)
             }
 
-            val connected = tryConnectWithTimeout(key, QUICK_WAIT_MS)
+            val connected = runCatching {
+                tryConnectWithTimeout(key, QUICK_WAIT_MS)
+            }.getOrNull()
             if (connected != null) {
                 shared = connected
                 authPending.set(false)
@@ -73,8 +72,9 @@ internal class VehicleAdbConnection(private val context: Context) {
                 return connected
             }
 
-            // A timeout here is intentionally interpreted as authorization pending,
-            // not as a dead ADB daemon. The poller will continue independently.
+            // Timeout/handshake failure is intentionally left to the independent
+            // poller. On BYD, accepting the ADB authorization can happen after the
+            // first connection attempt has already timed out.
             return null
         }
     }
@@ -100,7 +100,10 @@ internal class VehicleAdbConnection(private val context: Context) {
                 }
 
                 if (!authPending.get() || !adbPortOpen()) continue
-                val candidate = tryConnectWithTimeout(key, QUICK_WAIT_MS) ?: continue
+                val candidate = runCatching {
+                    tryConnectWithTimeout(key, QUICK_WAIT_MS)
+                }.getOrNull() ?: continue
+
                 synchronized(sharedLock) {
                     runCatching { shared?.close() }
                     shared = candidate
