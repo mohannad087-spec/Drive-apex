@@ -37,13 +37,12 @@ class UpdateManager(private val activity: Activity) {
     fun checkManually() = check(true)
 
     /**
-     * Only resume an Android Package Installer flow that this updater explicitly
-     * requested. A downloaded APK by itself must never trigger the installer on
-     * every application launch.
+     * Resume only an install flow that this updater explicitly started.
+     * A staged APK alone must never cause a new install prompt on every launch.
      */
     fun onResume() {
-        if (prefs.getBoolean(vehicleInstallTargetKey, false) &&
-            BuildConfig.VERSION_CODE >= prefs.getInt(vehicleInstallTargetKey, Int.MAX_VALUE)) {
+        val pendingVehicleTarget = prefs.getInt(vehicleInstallTargetKey, -1)
+        if (pendingVehicleTarget > 0 && BuildConfig.VERSION_CODE >= pendingVehicleTarget) {
             prefs.edit().remove(vehicleInstallTargetKey).apply()
         }
 
@@ -181,8 +180,8 @@ class UpdateManager(private val activity: Activity) {
         }
 
         if (VehicleOtaInstaller.isVehicleRuntime()) {
-            // A BYD head unit must not fall back to the Android package UI after
-            // a successful download. Its OTA path is the local ADB shell install.
+            // A BYD head unit must use the local ADB shell installation path
+            // instead of the ordinary Android package-installer UI.
             prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
             thread(name = "DriveApex-Vehicle-OTA") {
                 val result = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
@@ -200,8 +199,8 @@ class UpdateManager(private val activity: Activity) {
         expectedVersionCode: Int
     ) {
         if (result is VehicleOtaInstaller.Result.Installed) {
-            // Package replacement normally terminates this process. Keep only the
-            // successful target marker; the new process clears it on resume.
+            // Package replacement normally terminates this process. The next
+            // process clears the target marker in onResume().
             return
         }
 
