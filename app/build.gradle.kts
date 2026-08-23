@@ -24,6 +24,7 @@ android {
             val keystorePath = System.getenv("DRIVEAPEX_KEYSTORE_PATH")
             if (!keystorePath.isNullOrBlank()) {
                 storeFile = file(keystorePath)
+                storeType = "JKS"
                 storePassword = System.getenv("DRIVEAPEX_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("DRIVEAPEX_KEY_ALIAS")
                 keyPassword = System.getenv("DRIVEAPEX_KEY_PASSWORD")
