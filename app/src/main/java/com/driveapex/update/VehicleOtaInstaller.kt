@@ -2,8 +2,6 @@ package com.driveapex.update
 
 import android.content.Context
 import com.driveapex.BuildConfig
-import dadb.AdbAuthException
-import dadb.AdbException
 import dadb.AdbKeyPair
 import dadb.Dadb
 import dadb.InstallResult
@@ -16,7 +14,7 @@ import java.net.Socket
  *
  * The reference OverDrive implementation uses the device's local ADB daemon on
  * 127.0.0.1:5555 and a persisted ADB key. DriveApex uses the same protocol via
- * dadb, without bundling an adb executable.
+ * dadb 1.2.8, without bundling an adb executable.
  *
  * This path is deliberately limited to a BYD head unit. On ordinary phones the
  * normal Android package-installer fallback remains unchanged.
@@ -75,7 +73,7 @@ class VehicleOtaInstaller(private val context: Context) {
                 )
 
                 // The -r upgrade flag is required for replacing the already-installed
-                // DriveApex package. This mirrors the normal adb upgrade semantics.
+                // DriveApex package. This is the same upgrade operation as `adb install -r`.
                 when (val result = dadb.install(apk, "-r")) {
                     InstallResult.Success -> {
                         val installedVersion = readInstalledVersion(dadb)
@@ -88,17 +86,11 @@ class VehicleOtaInstaller(private val context: Context) {
                     }
                     is InstallResult.Failure -> {
                         lastError = IllegalStateException(result.reason)
-                        // An auth failure is retriable because the head unit may
-                        // be waiting for the ADB authorization decision.
                         if (!looksLikeAuthFailure(result.reason)) {
                             return Result.Failed("ADB install failed: ${result.reason}")
                         }
                     }
                 }
-            } catch (e: AdbAuthException) {
-                lastError = e
-            } catch (e: AdbException) {
-                lastError = e
             } catch (e: Exception) {
                 lastError = e
             } finally {
@@ -110,7 +102,7 @@ class VehicleOtaInstaller(private val context: Context) {
             }
         }
 
-        return if (lastError is AdbAuthException || looksLikeAuthFailure(lastError?.message.orEmpty())) {
+        return if (looksLikeAuthFailure(lastError?.message.orEmpty())) {
             Result.AuthPending
         } else {
             Result.Failed(lastError?.message ?: "ADB vehicle install failed")
@@ -133,7 +125,9 @@ class VehicleOtaInstaller(private val context: Context) {
         }
         val privateKey = File(dir, "adbkey")
         val publicKey = File(dir, "adbkey.pub")
-        if (!privateKey.isFile) {
+        if (!privateKey.isFile || !publicKey.isFile) {
+            privateKey.delete()
+            publicKey.delete()
             AdbKeyPair.generate(privateKey, publicKey)
         }
         return AdbKeyPair.read(privateKey, publicKey)
@@ -153,6 +147,7 @@ class VehicleOtaInstaller(private val context: Context) {
         return normalized.contains("auth") ||
             normalized.contains("unauthorized") ||
             normalized.contains("authentication") ||
-            normalized.contains("public key")
+            normalized.contains("public key") ||
+            normalized.contains("permission denied")
     }
 }
