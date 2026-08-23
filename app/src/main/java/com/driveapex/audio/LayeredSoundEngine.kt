@@ -135,7 +135,6 @@ class LayeredSoundEngine(
                     if (layer.baseFrequencyMultiplier >= 4f) highFrequencyEnergy += absWave * layerGain
                 }
 
-                // Broad EV motor body: slightly asymmetric left/right to avoid a synthetic mono feel.
                 bodyPhase += (baseCyclesPerSecond * 0.50 + currentLoad * 2.0) / sampleRate
                 if (bodyPhase >= 1.0) bodyPhase -= 1.0
                 val fundamental = sin(bodyPhase * 2.0 * PI)
@@ -143,13 +142,12 @@ class LayeredSoundEngine(
                 val bodySub = sin(bodyPhase * PI + 0.08) * 0.20
                 val mechanicalBody = (fundamental + bodyHarmonic + bodySub) * bodyGain * bodyEnvelope
 
-                // Very small broadband texture. It should be felt as material/noise, not heard as hiss.
                 noiseState = noiseStep(noiseState)
                 val white = ((noiseState and 0xFFFFL) / 32767.5 - 1.0).coerceIn(-1.0, 1.0)
                 textureState += (white - textureState) * 0.018
                 val materialTexture = textureState * textureAmount * (0.30 + currentSpeed / 400.0)
 
-                // Keep inverter content subordinate to the body. It rises only during high load.
+                // Inverter remains deliberately low in the mix and only becomes obvious under load.
                 val inverterSheen = highFrequencyEnergy * 0.025 * (0.35 + currentLoad * 0.55)
                 val blendedSheen = inverterSheen * sin(eventPhase * 2.0 * PI * 0.65)
 
