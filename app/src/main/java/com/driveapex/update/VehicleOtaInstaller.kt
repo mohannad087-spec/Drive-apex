@@ -63,13 +63,14 @@ class VehicleOtaInstaller(private val context: Context) {
         repeat(RETRIES) { attempt ->
             var dadb: Dadb? = null
             try {
+                // dadb 1.2.8 exposes the timeout-aware five-argument create;
+                // keep-alive was added later, so it is intentionally not used here.
                 dadb = Dadb.create(
                     ADB_HOST,
                     ADB_PORT,
                     keyPair,
                     CONNECT_TIMEOUT_MS,
-                    SOCKET_TIMEOUT_MS,
-                    true
+                    SOCKET_TIMEOUT_MS
                 )
 
                 // The -r upgrade flag is required for replacing the already-installed
