@@ -1,15 +1,22 @@
 package com.driveapex.vehicle
 
+import android.content.Context
 import android.os.SystemClock
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
-/** Read-only local-network telemetry bridge for phone/vehicle testing. */
-class UdpTelemetryReceiver(private val port: Int = 38901) {
+/**
+ * Live telemetry receiver.
+ * On a BYD head unit it prefers the verified read-only BYD Speed HAL;
+ * otherwise it remains the UDP development receiver on port 38901.
+ */
+class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
     private val staleAfterMs = 250L
     private val validator = VehicleTelemetryValidator(staleAfterMs)
+    private val byd = context?.let { BydHalTelemetryBridge(it) }
+    @Volatile private var useByd = false
     @Volatile private var running = false
     private var socket: DatagramSocket? = null
     private var thread: Thread? = null
@@ -27,11 +34,31 @@ class UdpTelemetryReceiver(private val port: Int = 38901) {
         packetCount = 0L
         invalidPacketCount = 0L
         lastSource = "NONE"
-        thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
+
+        useByd = byd?.isAvailable() == true
+        if (useByd) {
+            byd?.start { frame ->
+                val data = VehicleData(
+                    rpm = frame.rpm,
+                    speedKph = frame.speedKph,
+                    throttle = frame.throttle,
+                    isDriving = frame.speedKph > 1f,
+                    brake = frame.brake,
+                    regen = frame.regen
+                )
+                latest = LiveTelemetry(data, TelemetrySource.LIVE_BRIDGE)
+                packetCount += 1L
+                lastPacketAtMs = SystemClock.elapsedRealtime()
+                lastSource = frame.source
+            }
+        } else {
+            thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
+        }
     }
 
     fun stop() {
         running = false
+        byd?.stop()
         runCatching { socket?.close() }
         socket = null
         thread = null
@@ -53,7 +80,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901) {
             invalidPacketCount = invalidPacketCount,
             ageMs = age,
             source = lastSource,
-            port = port
+            port = if (useByd) 0 else port
         )
     }
 
