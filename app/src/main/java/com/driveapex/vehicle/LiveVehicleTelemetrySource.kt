@@ -51,7 +51,7 @@ class LiveVehicleTelemetrySource(context: Context) {
                 brake = frame.brake,
                 regen = frame.regen
             )
-            LiveTelemetry(data, TelemetrySource.LIVE_UDP)
+            LiveTelemetry(data, TelemetrySource.LIVE_BRIDGE)
         } else {
             udp.latest()
         }
