@@ -6,15 +6,10 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
-/**
- * Local-network telemetry bridge for phone testing.
- * A future BYD/DiLink bridge can forward JSON packets here without changing the audio engine.
- *
- * Safety rule: if no valid packet is received for 250 ms, the receiver exposes
- * an idle-safe snapshot instead of freezing the last driving state indefinitely.
- */
+/** Read-only local-network telemetry bridge for phone/vehicle testing. */
 class UdpTelemetryReceiver(private val port: Int = 38901) {
     private val staleAfterMs = 250L
+    private val validator = VehicleTelemetryValidator(staleAfterMs)
     @Volatile private var running = false
     private var socket: DatagramSocket? = null
     private var thread: Thread? = null
@@ -79,18 +74,24 @@ class UdpTelemetryReceiver(private val port: Int = 38901) {
 
     private fun parse(text: String): LiveTelemetry? = runCatching {
         val json = JSONObject(text)
-        val rpm = json.optDouble("rpm", 700.0).toFloat().coerceIn(700f, 7000f)
-        val speed = json.optDouble("speedKph", 0.0).toFloat().coerceIn(0f, 300f)
-        val throttle = json.optDouble("throttle", 0.0).toFloat().coerceIn(0f, 1f)
-        val brake = json.optDouble("brake", 0.0).toFloat().coerceIn(0f, 1f)
-        val regen = json.optDouble("regen", 0.0).toFloat().coerceIn(0f, 1f)
+        val now = System.currentTimeMillis()
+        val frame = TelemetryFrame(
+            timestampMs = json.optLong("timestampMs", now),
+            rpm = json.optDouble("rpm", 700.0).toFloat(),
+            speedKph = json.optDouble("speedKph", 0.0).toFloat(),
+            throttle = json.optDouble("throttle", 0.0).toFloat(),
+            brake = json.optDouble("brake", 0.0).toFloat(),
+            regen = json.optDouble("regen", 0.0).toFloat(),
+            source = json.optString("source", "udp")
+        )
+        if (validator.validate(frame, now) !is VehicleTelemetryValidator.Result.Valid) return null
         val data = VehicleData(
-            rpm = rpm,
-            speedKph = speed,
-            throttle = throttle,
-            isDriving = speed > 1f,
-            brake = brake,
-            regen = regen
+            rpm = frame.rpm.coerceIn(700f, 7000f),
+            speedKph = frame.speedKph.coerceIn(0f, 300f),
+            throttle = frame.throttle.coerceIn(0f, 1f),
+            isDriving = frame.speedKph > 1f,
+            brake = frame.brake.coerceIn(0f, 1f),
+            regen = frame.regen.coerceIn(0f, 1f)
         )
         LiveTelemetry(data, TelemetrySource.LIVE_UDP)
     }.getOrNull()
