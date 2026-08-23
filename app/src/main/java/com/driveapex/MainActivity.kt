@@ -192,6 +192,11 @@ class MainActivity : Activity() {
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::updateManager.isInitialized) updateManager.onResume()
+    }
+
     private fun toggleTelemetryMode() {
         liveMode = !liveMode
         if (liveMode) {
