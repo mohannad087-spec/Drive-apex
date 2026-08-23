@@ -21,9 +21,17 @@ android {
 
     packaging {
         resources {
+            // Explicit Android resource exclusions. The release merge was
+            // failing on repeated JUnit license/notice resources coming from
+            // the resolved runtime dependency graph.
             excludes += setOf(
-                "META-INF/LICENSE*",
-                "META-INF/NOTICE*"
+                "META-INF/LICENSE.md",
+                "META-INF/LICENSE.txt",
+                "META-INF/LICENSE",
+                "META-INF/NOTICE.md",
+                "META-INF/NOTICE.txt",
+                "META-INF/NOTICE",
+                "META-INF/DEPENDENCIES"
             )
         }
     }
@@ -60,6 +68,15 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+// JUnit/Jupiter are test-only libraries. Keep them out of the Android
+// production/runtime dependency graph so their META-INF resources cannot
+// break release packaging.
+configurations.configureEach {
+    exclude(group = "org.junit.platform")
+    exclude(group = "org.junit.jupiter")
+    exclude(group = "org.junit.vintage")
 }
 
 dependencies {
