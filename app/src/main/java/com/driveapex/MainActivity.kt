@@ -13,10 +13,10 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.audio.ApexSoundProfile
-import com.driveapex.audio.DriverSonicSignature
 import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
+import com.driveapex.audio.SonicGenomeSession
 import com.driveapex.vehicle.LiveTelemetry
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
@@ -27,8 +27,8 @@ class MainActivity : Activity() {
     private val engine = LayeredSoundEngine(ETronInspiredSoundProfile.layers)
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
+    private lateinit var genomeSession: SonicGenomeSession
     private val udpReceiver = UdpTelemetryReceiver()
-    private val sonicSignature = DriverSonicSignature()
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
 
@@ -37,6 +37,7 @@ class MainActivity : Activity() {
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
     private lateinit var signatureValue: TextView
+    private lateinit var genomeValue: TextView
     private lateinit var eventValue: TextView
     private lateinit var startButton: Button
     private lateinit var modeButton: Button
@@ -55,6 +56,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        genomeSession = SonicGenomeSession(this)
+
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -64,7 +67,7 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         root.addView(label("DRIVE APEX", 28f, Color.WHITE))
-        root.addView(label("PHONE TEST LAB  •  LIVE TELEMETRY READY", 13f, Color.LTGRAY).apply {
+        root.addView(label("PHONE TEST LAB  •  SONIC GENOME", 13f, Color.LTGRAY).apply {
             setPadding(0, 0, 0, 18)
         })
 
@@ -92,6 +95,9 @@ class MainActivity : Activity() {
         signatureValue = label("SONIC SIGNATURE: BALANCED", 13f, Color.rgb(180, 130, 255))
         signatureValue.setPadding(0, 10, 0, 0)
         statusCard.addView(signatureValue)
+        genomeValue = label("GENOME: NEW  •  MATURITY 0%", 12f, Color.rgb(110, 210, 255))
+        genomeValue.setPadding(0, 8, 0, 0)
+        statusCard.addView(genomeValue)
         eventValue = label("EVENTS  L:0  A:0  O:0  R:0  B:0  S:0", 12f, Color.rgb(120, 220, 180))
         eventValue.setPadding(0, 8, 0, 0)
         statusCard.addView(eventValue)
@@ -151,8 +157,17 @@ class MainActivity : Activity() {
         root.addView(startButton, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
+            text = "RESET SONIC GENOME"
+            setOnClickListener {
+                genomeSession.reset()
+                syncSimulator()
+            }
+        }, marginParams(bottom = 8))
+
+        root.addView(Button(this).apply {
             text = "STOP / SAFE"
             setOnClickListener {
+                genomeSession.finishDrive()
                 engine.stop()
                 startButton.text = "START DRIVE SOUND"
                 sceneValue.text = "SCENE: SAFE / STOPPED"
@@ -202,8 +217,10 @@ class MainActivity : Activity() {
     private fun applyTelemetry(packet: LiveTelemetry) {
         val data = packet.data
         val scene = controller.apply(data)
-        val signature = sonicSignature.update(data)
+        val genome = genomeSession.update(data)
+        val signature = genome.toSignature()
         val events = controller.events()
+
         rpmValue.text = formatRpm(data.rpm)
         telemetry.text = String.format(
             Locale.US,
@@ -219,6 +236,13 @@ class MainActivity : Activity() {
             signature.label(),
             (signature.aggression * 100).toInt(),
             (signature.smoothness * 100).toInt()
+        )
+        genomeValue.text = String.format(
+            Locale.US,
+            "GENOME: %s   •   MATURITY %d%%   •   OBS %d",
+            signature.label(),
+            (genome.maturity * 100).toInt(),
+            genome.observations.coerceAtMost(999_999L)
         )
         eventValue.text = String.format(
             Locale.US,
@@ -271,6 +295,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         handler.removeCallbacks(livePoller)
+        genomeSession.finishDrive()
         udpReceiver.stop()
         engine.stop()
         super.onStop()
