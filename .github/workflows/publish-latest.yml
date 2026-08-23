@@ -137,5 +137,7 @@ jobs:
           print('Verified update manifest:', data['versionName'], data['versionCode'])
           PY
 
-          curl -fsSLI --retry 5 --connect-timeout 5 --max-time 20 "$APK_URL" >/dev/null
+          # GitHub release download endpoints may not reliably answer HEAD requests.
+          # Use a real GET without saving the APK to validate the asset.
+          curl -fsSL --retry 5 --connect-timeout 5 --max-time 60 "$APK_URL" -o /dev/null
           echo "Verified DriveApex.apk is reachable from releases/latest/download."
