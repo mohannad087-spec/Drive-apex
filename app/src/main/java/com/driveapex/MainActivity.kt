@@ -73,16 +73,11 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         root.addView(label("DRIVE APEX", 28f, Color.WHITE))
-        root.addView(label("PHONE / VEHICLE TEST LAB", 13f, Color.LTGRAY).apply {
-            setPadding(0, 0, 0, 18)
-        })
-
+        root.addView(label("PHONE / VEHICLE TEST LAB", 13f, Color.LTGRAY).apply { setPadding(0, 0, 0, 18) })
         sourceValue = label("SOURCE: SIMULATOR", 13f, Color.rgb(110, 210, 255))
         root.addView(sourceValue, marginParams(bottom = 6))
-
         liveDiagnosticsValue = label("LIVE: NOT CONNECTED", 12f, Color.rgb(255, 180, 70))
         root.addView(liveDiagnosticsValue, marginParams(bottom = 10))
-
         modeButton = Button(this).apply {
             text = "SWITCH TO LIVE"
             setOnClickListener { toggleTelemetryMode() }
@@ -115,11 +110,9 @@ class MainActivity : Activity() {
         root.addView(label("RPM", 14f, Color.LTGRAY))
         rpmBar = seek(6300, 200)
         root.addView(rpmBar, marginParams(bottom = 14))
-
         root.addView(label("THROTTLE", 14f, Color.LTGRAY))
         throttleBar = seek(100, 10)
         root.addView(throttleBar, marginParams(bottom = 14))
-
         root.addView(label("SPEED  km/h", 14f, Color.LTGRAY))
         speedBar = seek(240, 0)
         root.addView(speedBar, marginParams(bottom = 16))
@@ -136,10 +129,7 @@ class MainActivity : Activity() {
             scenes.addView(Button(this).apply {
                 text = title
                 setOnClickListener { action() }
-            }, LinearLayout.LayoutParams(0, 56).apply {
-                weight = 1f
-                marginEnd = 8
-            })
+            }, LinearLayout.LayoutParams(0, 56).apply { weight = 1f; marginEnd = 8 })
         }
         root.addView(scenes, marginParams(bottom = 18))
 
@@ -167,15 +157,12 @@ class MainActivity : Activity() {
 
         root.addView(Button(this).apply {
             text = "RESET SONIC GENOME"
-            setOnClickListener {
-                genomeSession.reset()
-                syncSimulator()
-            }
+            setOnClickListener { genomeSession.reset(); syncSimulator() }
         }, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
             text = "CHECK FOR UPDATE"
-            setOnClickListener { updateManager.checkSilently() }
+            setOnClickListener { updateManager.checkManually() }
         }, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
@@ -244,10 +231,7 @@ class MainActivity : Activity() {
             ageText,
             d.source
         )
-        liveDiagnosticsValue.setTextColor(
-            if (d.packetCount > 0 && d.ageMs <= 250L) Color.rgb(90, 230, 150)
-            else Color.rgb(255, 100, 100)
-        )
+        liveDiagnosticsValue.setTextColor(if (d.packetCount > 0 && d.ageMs <= 250L) Color.rgb(90, 230, 150) else Color.rgb(255, 100, 100))
     }
 
     private fun showNoVehicleData() {
@@ -262,40 +246,12 @@ class MainActivity : Activity() {
         val genome = genomeSession.update(data)
         val signature = genome.toSignature()
         val events = controller.events()
-
         rpmValue.text = formatRpm(data.rpm)
-        telemetry.text = String.format(
-            Locale.US,
-            "%.0f km/h  •  Throttle %d%%  •  Regen %d%%",
-            data.speedKph,
-            (data.throttle * 100).toInt(),
-            (data.regen * 100).toInt()
-        )
+        telemetry.text = String.format(Locale.US, "%.0f km/h  •  Throttle %d%%  •  Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.regen * 100).toInt())
         sceneValue.text = "SCENE: ${scene.name.replace('_', ' ')}"
-        signatureValue.text = String.format(
-            Locale.US,
-            "SONIC SIGNATURE: %s   •   AGG %d%%   •   SMOOTH %d%%",
-            signature.label(),
-            (signature.aggression * 100).toInt(),
-            (signature.smoothness * 100).toInt()
-        )
-        genomeValue.text = String.format(
-            Locale.US,
-            "GENOME: %s   •   MATURITY %d%%   •   OBS %d",
-            signature.label(),
-            (genome.maturity * 100).toInt(),
-            genome.observations.coerceAtMost(999_999L)
-        )
-        eventValue.text = String.format(
-            Locale.US,
-            "EVENTS  L:%d  A:%d  O:%d  R:%d  B:%d  S:%d",
-            (events.launch * 100).toInt(),
-            (events.accelerationHit * 100).toInt(),
-            (events.liftOff * 100).toInt(),
-            (events.regenerationHit * 100).toInt(),
-            (events.brakeHit * 100).toInt(),
-            (events.speedRush * 100).toInt()
-        )
+        signatureValue.text = String.format(Locale.US, "SONIC SIGNATURE: %s   •   AGG %d%%   •   SMOOTH %d%%", signature.label(), (signature.aggression * 100).toInt(), (signature.smoothness * 100).toInt())
+        genomeValue.text = String.format(Locale.US, "GENOME: %s   •   MATURITY %d%%   •   OBS %d", signature.label(), (genome.maturity * 100).toInt(), genome.observations.coerceAtMost(999_999L))
+        eventValue.text = String.format(Locale.US, "EVENTS  L:%d  A:%d  O:%d  R:%d  B:%d  S:%d", (events.launch * 100).toInt(), (events.accelerationHit * 100).toInt(), (events.liftOff * 100).toInt(), (events.regenerationHit * 100).toInt(), (events.brakeHit * 100).toInt(), (events.speedRush * 100).toInt())
     }
 
     private fun syncSimulator() {
@@ -317,23 +273,9 @@ class MainActivity : Activity() {
     }
 
     private fun formatRpm(rpm: Float): String = String.format(Locale.US, "%,.0f RPM", rpm)
-
-    private fun label(text: String, size: Float, color: Int): TextView = TextView(this).apply {
-        this.text = text
-        textSize = size
-        setTextColor(color)
-    }
-
-    private fun seek(max: Int, progress: Int): SeekBar = SeekBar(this).apply {
-        this.max = max
-        this.progress = progress
-        minHeight = 52
-    }
-
-    private fun marginParams(bottom: Int = 0): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            this.bottomMargin = bottom
-        }
+    private fun label(text: String, size: Float, color: Int): TextView = TextView(this).apply { this.text = text; textSize = size; setTextColor(color) }
+    private fun seek(max: Int, progress: Int): SeekBar = SeekBar(this).apply { this.max = max; this.progress = progress; minHeight = 52 }
+    private fun marginParams(bottom: Int = 0): LinearLayout.LayoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { this.bottomMargin = bottom }
 
     override fun onStop() {
         handler.removeCallbacks(livePoller)
