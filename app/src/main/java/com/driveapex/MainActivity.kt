@@ -36,6 +36,7 @@ class MainActivity : Activity() {
     private lateinit var telemetry: TextView
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
+    private lateinit var liveDiagnosticsValue: TextView
     private lateinit var signatureValue: TextView
     private lateinit var genomeValue: TextView
     private lateinit var eventValue: TextView
@@ -48,8 +49,9 @@ class MainActivity : Activity() {
     private val livePoller = object : Runnable {
         override fun run() {
             if (liveMode) {
-                udpReceiver.latest()?.let { applyTelemetry(it) }
-                handler.postDelayed(this, 50L)
+                updateLiveDiagnostics()
+                udpReceiver.latest()?.let { applyTelemetry(it) } ?: showNoVehicleData()
+                handler.postDelayed(this, 100L)
             }
         }
     }
@@ -67,12 +69,15 @@ class MainActivity : Activity() {
         scroll.addView(root)
 
         root.addView(label("DRIVE APEX", 28f, Color.WHITE))
-        root.addView(label("PHONE TEST LAB  •  SONIC GENOME", 13f, Color.LTGRAY).apply {
+        root.addView(label("PHONE / VEHICLE TEST LAB", 13f, Color.LTGRAY).apply {
             setPadding(0, 0, 0, 18)
         })
 
         sourceValue = label("SOURCE: SIMULATOR", 13f, Color.rgb(110, 210, 255))
-        root.addView(sourceValue, marginParams(bottom = 10))
+        root.addView(sourceValue, marginParams(bottom = 6))
+
+        liveDiagnosticsValue = label("LIVE: NOT CONNECTED", 12f, Color.rgb(255, 180, 70))
+        root.addView(liveDiagnosticsValue, marginParams(bottom = 10))
 
         modeButton = Button(this).apply {
             text = "SWITCH TO LIVE"
@@ -200,6 +205,7 @@ class MainActivity : Activity() {
             rpmBar.isEnabled = false
             throttleBar.isEnabled = false
             speedBar.isEnabled = false
+            updateLiveDiagnostics()
             handler.post(livePoller)
         } else {
             udpReceiver.stop()
@@ -207,11 +213,37 @@ class MainActivity : Activity() {
             modeButton.text = "SWITCH TO LIVE"
             sourceValue.text = "SOURCE: SIMULATOR"
             sourceValue.setTextColor(Color.rgb(110, 210, 255))
+            liveDiagnosticsValue.text = "LIVE: NOT CONNECTED"
+            liveDiagnosticsValue.setTextColor(Color.rgb(255, 180, 70))
             rpmBar.isEnabled = true
             throttleBar.isEnabled = true
             speedBar.isEnabled = true
             syncSimulator()
         }
+    }
+
+    private fun updateLiveDiagnostics() {
+        val d = udpReceiver.diagnostics()
+        val ageText = if (d.ageMs == Long.MAX_VALUE) "--" else "${d.ageMs}ms"
+        liveDiagnosticsValue.text = String.format(
+            Locale.US,
+            "LIVE: %s  •  PKT %d  •  INVALID %d  •  AGE %s  •  SRC %s",
+            if (d.packetCount > 0 && d.ageMs <= 250L) "VALID" else "NO VEHICLE DATA",
+            d.packetCount,
+            d.invalidPacketCount,
+            ageText,
+            d.source
+        )
+        liveDiagnosticsValue.setTextColor(
+            if (d.packetCount > 0 && d.ageMs <= 250L) Color.rgb(90, 230, 150)
+            else Color.rgb(255, 100, 100)
+        )
+    }
+
+    private fun showNoVehicleData() {
+        rpmValue.text = "NO VEHICLE DATA"
+        telemetry.text = "Waiting for verified live telemetry…"
+        sceneValue.text = "SCENE: LIVE WAIT"
     }
 
     private fun applyTelemetry(packet: LiveTelemetry) {
