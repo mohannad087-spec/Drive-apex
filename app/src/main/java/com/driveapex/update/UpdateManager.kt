@@ -16,37 +16,73 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
-/** In-app updater backed by the public DriveApex GitHub `latest` release. */
+/** In-app updater backed by the public DriveApex GitHub latest release. */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
-    private val apiUrl = "https://api.github.com/repos/mohannad087-spec/Drive-apex/releases/tags/latest"
+    private val apiUrl = "https://api.github.com/repos/mohannad087-spec/Drive-apex/releases/latest"
     private val apkName = "DriveApex.apk"
 
-    fun checkSilently() {
+    fun checkSilently() = check(false)
+
+    fun checkManually() = check(true)
+
+    private fun check(manual: Boolean) {
         thread(name = "DriveApex-Updater") {
             runCatching {
                 val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 5000
-                    readTimeout = 5000
+                    connectTimeout = 8000
+                    readTimeout = 8000
                     setRequestProperty("Accept", "application/vnd.github+json")
                     setRequestProperty("User-Agent", "DriveApex-Updater")
                 }
-                if (connection.responseCode !in 200..299) return@runCatching
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    if (manual) handler.post { showInfo("Update check unavailable", "GitHub returned HTTP $code. The release channel may not be configured yet.") }
+                    return@runCatching
+                }
+
                 val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
                 val body = json.optString("body")
                 val remoteVersionCode = Regex("versionCode\\s*[:=]\\s*(\\d+)")
-                    .find(body)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: return@runCatching
+                    .find(body)?.groupValues?.getOrNull(1)?.toIntOrNull()
                 val assetUrl = json.optJSONArray("assets")?.let { assets ->
                     (0 until assets.length()).asSequence()
                         .map { assets.getJSONObject(it) }
                         .firstOrNull { it.optString("name") == apkName }
                         ?.optString("browser_download_url")
-                } ?: return@runCatching
-                if (remoteVersionCode <= BuildConfig.VERSION_CODE || assetUrl.isNullOrBlank()) return@runCatching
-                handler.post { showUpdateDialog(remoteVersionCode, assetUrl) }
+                }
+
+                if (remoteVersionCode == null || assetUrl.isNullOrBlank()) {
+                    if (manual) handler.post {
+                        showInfo(
+                            "Update channel not ready",
+                            "No signed DriveApex.apk release is currently published on GitHub."
+                        )
+                    }
+                    return@runCatching
+                }
+
+                if (remoteVersionCode > BuildConfig.VERSION_CODE) {
+                    handler.post { showUpdateDialog(remoteVersionCode, assetUrl) }
+                } else if (manual) {
+                    handler.post { showInfo("DriveApex is up to date", "Installed build: ${BuildConfig.VERSION_CODE}") }
+                }
+            }.onFailure {
+                if (manual) handler.post {
+                    showInfo("Update check failed", it.message ?: "Unable to contact GitHub.")
+                }
             }
         }
+    }
+
+    private fun showInfo(title: String, message: String) {
+        if (activity.isFinishing || activity.isDestroyed) return
+        AlertDialog.Builder(activity)
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun showUpdateDialog(versionCode: Int, assetUrl: String) {
@@ -75,11 +111,7 @@ class UpdateManager(private val activity: Activity) {
                 handler.post { install(apk) }
             }.onFailure {
                 handler.post {
-                    AlertDialog.Builder(activity)
-                        .setTitle("DriveApex update failed")
-                        .setMessage(it.message ?: "Unable to download the update.")
-                        .setPositiveButton("OK", null)
-                        .show()
+                    showInfo("DriveApex update failed", it.message ?: "Unable to download the update.")
                 }
             }
         }
@@ -98,6 +130,7 @@ class UpdateManager(private val activity: Activity) {
                     )
                     activity.startActivity(intent)
                 }
+                .show()
             return
         }
 
