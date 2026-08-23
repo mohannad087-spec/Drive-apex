@@ -70,7 +70,7 @@ class VehicleOtaInstaller(private val context: Context) {
         var connected: Dadb? = null
         var lastError: Throwable? = null
 
-        repeat(CONNECT_ATTEMPTS) { attempt ->
+        for (attempt in 0 until CONNECT_ATTEMPTS) {
             try {
                 connected?.close()
                 connected = Dadb.create(
@@ -80,9 +80,12 @@ class VehicleOtaInstaller(private val context: Context) {
                     CONNECT_TIMEOUT_MS,
                     SOCKET_TIMEOUT_MS
                 )
-                connected!!.shell("echo overdrive-style-adb-ready")
-                lastError = null
-                return@repeat
+                val probe = connected!!.shell("echo overdrive-style-adb-ready")
+                if (probe.exitCode == 0) {
+                    lastError = null
+                    break
+                }
+                throw IllegalStateException(probe.allOutput.ifBlank { "ADB shell probe failed" })
             } catch (e: Exception) {
                 lastError = e
                 connected = null
@@ -103,8 +106,7 @@ class VehicleOtaInstaller(private val context: Context) {
             dadb.push(apk, REMOTE_APK)
 
             val marker = "${BuildConfig.VERSION_NAME} (${expectedVersionCode})"
-            val script = buildInstallerScript(marker)
-            writeScript(dadb, script)
+            writeScript(dadb, buildInstallerScript(marker))
 
             // Execute the package replacement from the ADB shell. We do not use
             // dadb.install() here because the reference OverDrive path performs
@@ -114,14 +116,16 @@ class VehicleOtaInstaller(private val context: Context) {
                 return Result.Failed("Vehicle OTA shell install failed: ${run.allOutput}")
             }
 
-            // pm install returns before/while the old app process is replaced;
-            // verify package metadata from the same shell once it is available.
+            // pm install may replace this process while the shell transport survives;
+            // poll package metadata before declaring success.
             var installedVersion: Int? = null
             repeat(8) {
-                val response = dadb.shell(
-                    "dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'"
-                )
-                if (response.exitCode == 0) {
+                val response = runCatching {
+                    dadb.shell(
+                        "dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'"
+                    )
+                }.getOrNull()
+                if (response != null && response.exitCode == 0) {
                     installedVersion = Regex("versionCode=(\\d+)")
                         .find(response.allOutput)
                         ?.groupValues
