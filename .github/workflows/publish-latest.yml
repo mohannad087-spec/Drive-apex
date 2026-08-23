@@ -76,6 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
+          TAG="v${DRIVEAPEX_VERSION_NAME}"
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex.apk"
           test -s "$APK" || { echo "ERROR: release APK was not produced."; exit 1; }
           SHA256=$(sha256sum "$APK" | awk '{print $1}')
           cat > DriveApex-update.json <<EOF
@@ -83,36 +85,41 @@ jobs:
             "versionCode": ${DRIVEAPEX_VERSION_CODE},
             "versionName": "${DRIVEAPEX_VERSION_NAME}",
             "assetName": "DriveApex.apk",
+            "tag": "${TAG}",
+            "apkUrl": "${APK_URL}",
             "sha256": "${SHA256}"
           }
           EOF
           python3 -m json.tool DriveApex-update.json >/dev/null
-          echo "Prepared update manifest for versionCode=${DRIVEAPEX_VERSION_CODE}"
+          echo "Prepared update manifest for versionCode=${DRIVEAPEX_VERSION_CODE}, tag=${TAG}"
 
-      - name: Publish latest release
+      - name: Publish versioned release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           APK="app/build/outputs/apk/release/app-release.apk"
-          test -s "$APK" || { echo "ERROR: release APK was not produced."; exit 1; }
+          TAG="v${DRIVEAPEX_VERSION_NAME}"
           NOTES="DriveApex latest build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}"
-          if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload latest "$APK#DriveApex.apk" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release upload latest "DriveApex-update.json#DriveApex-update.json" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit latest --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create latest "$APK#DriveApex.apk" "DriveApex-update.json#DriveApex-update.json" --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "ERROR: release $TAG already exists. Refusing to overwrite a versioned release."
+            exit 1
           fi
+          gh release create "$TAG" "$APK#DriveApex.apk" "DriveApex-update.json#DriveApex-update.json" \
+            --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" \
+            --notes "$NOTES" \
+            --target "$GITHUB_SHA" \
+            --latest \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: Verify production update channel
         shell: bash
         run: |
           set -euo pipefail
-          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
-          MANIFEST_URL="$BASE/DriveApex-update.json"
-          APK_URL="$BASE/DriveApex.apk"
+          TAG="v${DRIVEAPEX_VERSION_NAME}"
+          MANIFEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/DriveApex-update.json"
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex.apk"
 
           ok=0
           for attempt in {1..10}; do
@@ -132,12 +139,14 @@ jobs:
           assert data.get('versionCode', 0) > 0
           assert data.get('versionName')
           assert data.get('assetName') == 'DriveApex.apk'
+          assert data.get('tag', '').startswith('v')
+          apk_url = data.get('apkUrl', '')
+          assert apk_url.startswith('https://github.com/mohannad087-spec/Drive-apex/releases/download/')
+          assert apk_url.endswith('/DriveApex.apk')
           sha = data.get('sha256', '')
           assert len(sha) == 64 and all(c in '0123456789abcdef' for c in sha.lower())
-          print('Verified update manifest:', data['versionName'], data['versionCode'])
+          print('Verified update manifest:', data['versionName'], data['versionCode'], data['apkUrl'])
           PY
 
-          # GitHub release download endpoints may not reliably answer HEAD requests.
-          # Use a real GET without saving the APK to validate the asset.
           curl -fsSL --retry 5 --connect-timeout 5 --max-time 60 "$APK_URL" -o /dev/null
-          echo "Verified DriveApex.apk is reachable from releases/latest/download."
+          echo "Verified version-pinned DriveApex.apk is reachable: $APK_URL"
