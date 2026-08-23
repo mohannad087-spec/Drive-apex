@@ -9,14 +9,14 @@ import java.net.InetSocketAddress
 import java.net.Socket
 
 /**
- * Direct vehicle installer for BYD/DiLink head units.
+ * BYD/DiLink vehicle OTA installer.
  *
- * The reference OverDrive implementation uses the device's local ADB daemon on
- * 127.0.0.1:5555 and a persisted ADB key. DriveApex uses the same protocol via
- * dadb 1.2.8, without bundling an adb executable.
+ * This follows the same important transport model used by OverDrive:
+ * the app connects to the local ADB daemon at 127.0.0.1:5555, keeps a
+ * persistent ADB key, stages the APK under /data/local/tmp, and performs
+ * the actual package replacement through the ADB shell with `pm install -r`.
  *
- * This path is deliberately limited to a BYD head unit. On ordinary phones the
- * normal Android package-installer fallback remains unchanged.
+ * The normal Android package-installer path remains the phone fallback.
  */
 class VehicleOtaInstaller(private val context: Context) {
 
@@ -33,8 +33,13 @@ class VehicleOtaInstaller(private val context: Context) {
         private const val ADB_PORT = 5555
         private const val CONNECT_TIMEOUT_MS = 3_000
         private const val SOCKET_TIMEOUT_MS = 45_000
-        private const val RETRIES = 8
-        private const val RETRY_DELAY_MS = 1_500L
+        private const val CONNECT_ATTEMPTS = 20
+        private const val CONNECT_DELAY_MS = 1_500L
+        private const val REMOTE_APK = "/data/local/tmp/driveapex_update.apk"
+        private const val REMOTE_SCRIPT = "/data/local/tmp/driveapex_install.sh"
+        private const val IN_PROGRESS = "/data/local/tmp/driveapex_update_in_progress"
+        private const val POST_UPDATE = "/data/local/tmp/driveapex_post_update"
+        private const val VERSION_FILE = "/data/local/tmp/driveapex_version"
 
         fun isVehicleRuntime(): Boolean {
             return runCatching {
@@ -50,66 +55,130 @@ class VehicleOtaInstaller(private val context: Context) {
     fun install(apk: File, expectedVersionCode: Int): Result {
         if (!isVehicleRuntime()) return Result.NotVehicle
         if (!apk.isFile || apk.length() < 100_000L) {
-            return Result.Failed("Staged APK is missing or unexpectedly small")
+            return Result.Failed("Verified APK is missing or unexpectedly small")
         }
 
         if (!adbPortOpen()) return Result.AdbUnavailable
 
         val keyPair = runCatching { getOrCreateKeyPair() }
-            .getOrElse { return Result.Failed("ADB key initialization failed: ${it.message ?: it.javaClass.simpleName}") }
+            .getOrElse {
+                return Result.Failed(
+                    "ADB key initialization failed: ${it.message ?: it.javaClass.simpleName}"
+                )
+            }
 
+        var connected: Dadb? = null
         var lastError: Throwable? = null
-        repeat(RETRIES) { attempt ->
-            var dadb: Dadb? = null
+
+        repeat(CONNECT_ATTEMPTS) { attempt ->
             try {
-                // dadb 1.2.8 exposes the timeout-aware five-argument create;
-                // keep-alive was added later, so it is intentionally not used here.
-                dadb = Dadb.create(
+                connected?.close()
+                connected = Dadb.create(
                     ADB_HOST,
                     ADB_PORT,
                     keyPair,
                     CONNECT_TIMEOUT_MS,
                     SOCKET_TIMEOUT_MS
                 )
-
-                // dadb 1.2.x does not expose the InstallResult type used by newer
-                // releases. Calling install and ignoring its return value keeps this
-                // source compatible with 1.2.8; install failures are surfaced as
-                // exceptions and handled by the retry/error path below.
-                dadb.install(apk, "-r")
-
-                val installedVersion = readInstalledVersion(dadb)
-                if (installedVersion != null && installedVersion < expectedVersionCode) {
-                    return Result.Failed(
-                        "ADB install reported success but installed version is $installedVersion; expected >= $expectedVersionCode"
-                    )
-                }
-                return Result.Installed(installedVersion)
+                connected!!.shell("echo overdrive-style-adb-ready")
+                lastError = null
+                return@repeat
             } catch (e: Exception) {
                 lastError = e
-            } finally {
-                runCatching { dadb?.close() }
-            }
-
-            if (attempt < RETRIES - 1) {
-                Thread.sleep(RETRY_DELAY_MS)
+                connected = null
+                if (attempt < CONNECT_ATTEMPTS - 1) {
+                    Thread.sleep(CONNECT_DELAY_MS)
+                }
             }
         }
 
-        return if (looksLikeAuthFailure(lastError?.message.orEmpty())) {
+        val dadb = connected ?: return if (looksLikeAuthFailure(lastError?.message.orEmpty())) {
             Result.AuthPending
         } else {
-            Result.Failed(lastError?.message ?: "ADB vehicle install failed")
+            Result.Failed(lastError?.message ?: "ADB connection failed")
+        }
+
+        return try {
+            // Stage the APK exactly where a shell process can consume it.
+            dadb.push(apk, REMOTE_APK)
+
+            val marker = "${BuildConfig.VERSION_NAME} (${expectedVersionCode})"
+            val script = buildInstallerScript(marker)
+            writeScript(dadb, script)
+
+            // Execute the package replacement from the ADB shell. We do not use
+            // dadb.install() here because the reference OverDrive path performs
+            // installation as an explicit shell `pm install -r` operation.
+            val run = dadb.shell("sh $REMOTE_SCRIPT")
+            if (run.exitCode != 0) {
+                return Result.Failed("Vehicle OTA shell install failed: ${run.allOutput}")
+            }
+
+            // pm install returns before/while the old app process is replaced;
+            // verify package metadata from the same shell once it is available.
+            var installedVersion: Int? = null
+            repeat(8) {
+                val response = dadb.shell(
+                    "dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'"
+                )
+                if (response.exitCode == 0) {
+                    installedVersion = Regex("versionCode=(\\d+)")
+                        .find(response.allOutput)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+                }
+                if (installedVersion != null) return@repeat
+                Thread.sleep(750L)
+            }
+
+            if (installedVersion != null && installedVersion < expectedVersionCode) {
+                return Result.Failed(
+                    "Vehicle OTA completed but installed version is $installedVersion; expected >= $expectedVersionCode"
+                )
+            }
+
+            Result.Installed(installedVersion)
+        } catch (e: Exception) {
+            if (looksLikeAuthFailure(e.message.orEmpty())) {
+                Result.AuthPending
+            } else {
+                Result.Failed(e.message ?: e.javaClass.simpleName)
+            }
+        } finally {
+            runCatching { dadb.shell("rm -f $REMOTE_APK $REMOTE_SCRIPT 2>/dev/null") }
+            runCatching { dadb.close() }
         }
     }
 
-    private fun readInstalledVersion(dadb: Dadb): Int? {
-        val response = dadb.shell(
-            "dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'"
-        )
-        if (response.exitCode != 0) return null
-        val match = Regex("versionCode=(\\d+)").find(response.output)
-        return match?.groupValues?.getOrNull(1)?.toIntOrNull()
+    private fun buildInstallerScript(marker: String): String {
+        val safeMarker = marker.replace("'", "_")
+        return """
+            #!/system/bin/sh
+            echo '$safeMarker' > $IN_PROGRESS
+            echo '$safeMarker' > $POST_UPDATE
+            echo '$safeMarker' > $VERSION_FILE
+            chmod 666 $IN_PROGRESS $POST_UPDATE $VERSION_FILE 2>/dev/null
+            pm install -r $REMOTE_APK
+            rc=\$?
+            if [ \"\$rc\" -eq 0 ]; then
+              rm -f $IN_PROGRESS 2>/dev/null
+              am force-stop ${BuildConfig.APPLICATION_ID} 2>/dev/null
+              am start -n ${BuildConfig.APPLICATION_ID}/.MainActivity --ez post_update true >/dev/null 2>&1
+            fi
+            exit \$rc
+        """.trimIndent()
+    }
+
+    private fun writeScript(dadb: Dadb, script: String) {
+        val nonce = "${System.nanoTime()}"
+        val eof = "__DRIVE_APEX_EOF_$nonce__"
+        val writeCommand = "cat > $REMOTE_SCRIPT <<'$eof'\n$script\n$eof"
+        val write = dadb.shell(writeCommand)
+        if (write.exitCode != 0) {
+            throw IllegalStateException("Vehicle OTA script staging failed: ${write.allOutput}")
+        }
+        dadb.shell("chmod 700 $REMOTE_SCRIPT 2>/dev/null")
     }
 
     private fun getOrCreateKeyPair(): AdbKeyPair {
@@ -142,6 +211,7 @@ class VehicleOtaInstaller(private val context: Context) {
             normalized.contains("unauthorized") ||
             normalized.contains("authentication") ||
             normalized.contains("public key") ||
-            normalized.contains("permission denied")
+            normalized.contains("permission denied") ||
+            normalized.contains("adb auth pending")
     }
 }
