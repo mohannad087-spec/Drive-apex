@@ -15,9 +15,22 @@ android {
         versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("DRIVEAPEX_KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("DRIVEAPEX_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("DRIVEAPEX_KEY_ALIAS")
+                keyPassword = System.getenv("DRIVEAPEX_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
