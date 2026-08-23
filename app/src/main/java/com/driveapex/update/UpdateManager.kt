@@ -17,94 +17,74 @@ import java.net.URL
 import java.security.MessageDigest
 import kotlin.concurrent.thread
 
-/** In-app updater backed by the public DriveApex GitHub latest release. */
+/**
+ * Production updater for the stable DriveApex GitHub Release channel.
+ *
+ * The updater deliberately uses GitHub's stable `releases/latest/download/*`
+ * endpoints instead of parsing the GitHub API asset list. This removes a
+ * brittle dependency on release JSON structure and asset enumeration.
+ */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
-    private val apiUrl = "https://api.github.com/repos/mohannad087-spec/Drive-apex/releases/latest"
-    private val apkName = "DriveApex.apk"
-    private val manifestName = "DriveApex-update.json"
+    private val manifestUrl = "https://github.com/mohannad087-spec/Drive-apex/releases/latest/download/DriveApex-update.json"
+    private val apkUrl = "https://github.com/mohannad087-spec/Drive-apex/releases/latest/download/DriveApex.apk"
+    private val apkName = "DriveApex-update.apk"
 
     fun checkSilently() = check(false)
 
     fun checkManually() = check(true)
 
+    fun onResume() {
+        val pending = pendingApk()
+        if (pending?.isFile == true && pending.length() > 100_000L) {
+            handler.post { installOrRequestPermission(pending) }
+        }
+    }
+
     private fun check(manual: Boolean) {
         thread(name = "DriveApex-Updater") {
             runCatching {
-                val release = getLatestRelease()
-                val assets = release.optJSONArray("assets") ?: error("Latest release has no assets")
-
-                val manifestAsset = findAsset(assets, manifestName)
-                    ?: error("Latest release has no update manifest")
-                val apkAsset = findAsset(assets, apkName)
-                    ?: error("Latest release has no DriveApex.apk")
-
-                val manifestText = downloadText(manifestAsset.getString("browser_download_url"))
-                val manifest = JSONObject(manifestText)
+                val manifest = downloadManifest()
                 val remoteVersionCode = manifest.optInt("versionCode", -1)
                 val remoteVersionName = manifest.optString("versionName", "")
+                val assetName = manifest.optString("assetName", "DriveApex.apk")
                 val expectedSha256 = manifest.optString("sha256", "").lowercase()
 
-                if (remoteVersionCode < 1 || expectedSha256.length != 64 || !expectedSha256.all { it in "0123456789abcdef" }) {
-                    error("Update manifest is invalid")
+                if (remoteVersionCode < 1) error("Update manifest has invalid versionCode")
+                if (assetName != "DriveApex.apk") error("Update manifest references an unexpected APK")
+                if (expectedSha256.length != 64 || !expectedSha256.all { it in "0123456789abcdef" }) {
+                    error("Update manifest has invalid SHA-256")
                 }
 
                 if (remoteVersionCode > BuildConfig.VERSION_CODE) {
-                    val actualAssetName = manifest.optString("assetName", apkName)
-                    if (actualAssetName != apkAsset.optString("name")) {
-                        error("Update manifest asset does not match release APK")
-                    }
                     handler.post {
-                        showUpdateDialog(remoteVersionCode, remoteVersionName, apkAsset.getString("browser_download_url"), expectedSha256)
+                        showUpdateDialog(remoteVersionCode, remoteVersionName, expectedSha256)
                     }
                 } else if (manual) {
                     handler.post {
                         showInfo(
                             "DriveApex is up to date",
-                            "Installed build: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\nLatest: ${remoteVersionName.ifBlank { remoteVersionCode.toString() }} ($remoteVersionCode)"
+                            "Installed: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\nLatest: ${remoteVersionName.ifBlank { remoteVersionCode.toString() }} ($remoteVersionCode)"
                         )
                     }
                 }
             }.onFailure {
                 if (manual) {
                     handler.post {
-                        showInfo("Update check failed", it.message ?: "Unable to contact the DriveApex update channel.")
+                        showInfo("Update check failed", readableError(it))
                     }
                 }
             }
         }
     }
 
-    private fun getLatestRelease(): JSONObject {
-        val connection = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 8000
-            readTimeout = 8000
-            setRequestProperty("Accept", "application/vnd.github+json")
-            setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
+    private fun downloadManifest(): JSONObject {
+        val connection = openConnection(manifestUrl, 15000)
+        if (connection.responseCode !in 200..299) {
+            error("Update manifest unavailable (HTTP ${connection.responseCode})")
         }
-        val code = connection.responseCode
-        if (code !in 200..299) error("GitHub returned HTTP $code")
-        return JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-    }
-
-    private fun findAsset(assets: org.json.JSONArray, name: String): JSONObject? {
-        return (0 until assets.length())
-            .asSequence()
-            .map { assets.getJSONObject(it) }
-            .firstOrNull { it.optString("name") == name }
-    }
-
-    private fun downloadText(url: String): String {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 8000
-            readTimeout = 15000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
-            setRequestProperty("Accept", "application/octet-stream")
-        }
-        if (connection.responseCode !in 200..299) error("Manifest download failed: HTTP ${connection.responseCode}")
-        return connection.inputStream.bufferedReader().use { it.readText() }
+        val text = connection.inputStream.bufferedReader().use { it.readText() }
+        return JSONObject(text)
     }
 
     private fun showInfo(title: String, message: String) {
@@ -116,62 +96,63 @@ class UpdateManager(private val activity: Activity) {
             .show()
     }
 
-    private fun showUpdateDialog(versionCode: Int, versionName: String, assetUrl: String, expectedSha256: String) {
+    private fun showUpdateDialog(versionCode: Int, versionName: String, expectedSha256: String) {
         if (activity.isFinishing || activity.isDestroyed) return
         val label = if (versionName.isBlank()) versionCode.toString() else "$versionName ($versionCode)"
         AlertDialog.Builder(activity)
             .setTitle("DriveApex update available")
             .setMessage("Version $label is ready. Download and install it now?")
             .setNegativeButton("Later", null)
-            .setPositiveButton("Update") { _, _ -> downloadAndInstall(assetUrl, expectedSha256) }
+            .setPositiveButton("Update") { _, _ -> downloadAndInstall(expectedSha256) }
             .show()
     }
 
-    private fun downloadAndInstall(assetUrl: String, expectedSha256: String) {
+    private fun downloadAndInstall(expectedSha256: String) {
         thread(name = "DriveApex-APK-Download") {
             runCatching {
-                val connection = (URL(assetUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 10000
-                    readTimeout = 30000
-                    instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
-                    setRequestProperty("Accept", "application/octet-stream")
-                }
-                if (connection.responseCode !in 200..299) error("APK download failed: HTTP ${connection.responseCode}")
-                val apk = File(activity.cacheDir, apkName)
-                connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
-                if (apk.length() < 100_000L) error("Downloaded APK is unexpectedly small")
+                val target = pendingApk() ?: error("Unable to create update file")
+                val partial = File(activity.cacheDir, "$apkName.part")
+                partial.delete()
 
-                val actualSha = sha256(apk)
-                if (!actualSha.equals(expectedSha256, ignoreCase = true)) {
-                    apk.delete()
+                val connection = openConnection(apkUrl, 30000)
+                if (connection.responseCode !in 200..299) {
+                    error("APK download failed (HTTP ${connection.responseCode})")
+                }
+
+                connection.inputStream.use { input ->
+                    partial.outputStream().use { output -> input.copyTo(output) }
+                }
+
+                if (partial.length() < 100_000L) {
+                    partial.delete()
+                    error("Downloaded APK is unexpectedly small")
+                }
+
+                val actualSha256 = sha256(partial)
+                if (!actualSha256.equals(expectedSha256, ignoreCase = true)) {
+                    partial.delete()
                     error("APK integrity check failed")
                 }
-                handler.post { install(apk) }
+
+                target.delete()
+                if (!partial.renameTo(target)) {
+                    partial.copyTo(target, overwrite = true)
+                    partial.delete()
+                }
+
+                handler.post { installOrRequestPermission(target) }
             }.onFailure {
-                handler.post { showInfo("DriveApex update failed", it.message ?: "Unable to download the update.") }
+                handler.post { showInfo("DriveApex update failed", readableError(it)) }
             }
         }
     }
 
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(8192)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun install(apk: File) {
+    private fun installOrRequestPermission(apk: File) {
+        if (activity.isFinishing || activity.isDestroyed) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
             AlertDialog.Builder(activity)
                 .setTitle("Allow DriveApex updates")
-                .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex and press Check for Update again.")
+                .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex.")
                 .setNegativeButton("Later", null)
                 .setPositiveButton("Open Settings") { _, _ ->
                     activity.startActivity(
@@ -192,5 +173,35 @@ class UpdateManager(private val activity: Activity) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         activity.startActivity(intent)
+    }
+
+    private fun pendingApk(): File? = File(activity.cacheDir, apkName)
+
+    private fun openConnection(url: String, timeoutMs: Int): HttpURLConnection {
+        return (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = timeoutMs
+            readTimeout = timeoutMs
+            instanceFollowRedirects = true
+            useCaches = false
+            setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
+            setRequestProperty("Accept", "application/json, application/octet-stream")
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun readableError(error: Throwable): String {
+        return error.message?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
     }
 }
