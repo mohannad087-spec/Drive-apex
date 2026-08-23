@@ -42,7 +42,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901) {
     fun latest(): LiveTelemetry? {
         val snapshot = latest ?: return null
         val age = diagnostics().ageMs
-        return if (age <= staleAfterMs) snapshot else safeIdleSnapshot()
+        return if (age <= staleAfterMs) snapshot else null
     }
 
     fun diagnostics(): TelemetryDiagnostics {
@@ -56,18 +56,6 @@ class UdpTelemetryReceiver(private val port: Int = 38901) {
             port = port
         )
     }
-
-    private fun safeIdleSnapshot(): LiveTelemetry = LiveTelemetry(
-        data = VehicleData(
-            rpm = 700f,
-            speedKph = 0f,
-            throttle = 0f,
-            isDriving = false,
-            brake = 0f,
-            regen = 0f
-        ),
-        source = TelemetrySource.LIVE_UDP
-    )
 
     private fun receiveLoop() {
         val buffer = ByteArray(4096)
