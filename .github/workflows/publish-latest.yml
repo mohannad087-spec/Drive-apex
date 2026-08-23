@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: write
     env:
-      DRIVEAPEX_KEYSTORE_BASE64: ${{ secrets.DRIVEAPEX_KEYSTORE_BASE64 }}
+      DRIVEAPEX_KEYSTORE_HEX: ${{ secrets.DRIVEAPEX_KEYSTORE_HEX }}
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
@@ -25,8 +25,8 @@ jobs:
       - name: Check signing configuration
         shell: bash
         run: |
-          if [[ -z "$DRIVEAPEX_KEYSTORE_BASE64" || -z "$DRIVEAPEX_KEYSTORE_PASSWORD" || -z "$DRIVEAPEX_KEY_ALIAS" || -z "$DRIVEAPEX_KEY_PASSWORD" ]]; then
-            echo "ERROR: Stable release signing is not configured. Add the four DRIVEAPEX_* repository secrets before publishing releases."
+          if [[ -z "$DRIVEAPEX_KEYSTORE_HEX" || -z "$DRIVEAPEX_KEYSTORE_PASSWORD" || -z "$DRIVEAPEX_KEY_ALIAS" || -z "$DRIVEAPEX_KEY_PASSWORD" ]]; then
+            echo "ERROR: Stable release signing is not configured. Add DRIVEAPEX_KEYSTORE_HEX plus the three DRIVEAPEX_* key/password secrets before publishing releases."
             exit 1
           fi
 
@@ -50,11 +50,21 @@ jobs:
           DRIVEAPEX_KEYSTORE_PATH: ${{ runner.temp }}/driveapex-release.jks
         run: |
           set -euo pipefail
-          # Ignore whitespace and accidental non-base64 formatting in the pasted secret.
-          printf '%s' "$DRIVEAPEX_KEYSTORE_BASE64" \
-            | tr -d '[:space:]' \
-            | base64 --decode --ignore-garbage > "$DRIVEAPEX_KEYSTORE_PATH"
 
+          # HEX is intentionally used instead of Base64 so copy/paste cannot
+          # introduce whitespace, line wrapping, or Base64 padding issues.
+          if ! printf '%s' "$DRIVEAPEX_KEYSTORE_HEX" | tr -d '[:space:]' | grep -Eq '^[0-9A-Fa-f]+$'; then
+            echo "ERROR: DRIVEAPEX_KEYSTORE_HEX contains a non-hex character."
+            exit 1
+          fi
+
+          HEX=$(printf '%s' "$DRIVEAPEX_KEYSTORE_HEX" | tr -d '[:space:]')
+          if (( ${#HEX} % 2 != 0 )); then
+            echo "ERROR: DRIVEAPEX_KEYSTORE_HEX has an odd number of hex characters."
+            exit 1
+          fi
+
+          printf '%s' "$HEX" | xxd -r -p > "$DRIVEAPEX_KEYSTORE_PATH"
           test -s "$DRIVEAPEX_KEYSTORE_PATH" || {
             echo "ERROR: decoded keystore is empty."
             exit 1
@@ -64,7 +74,7 @@ jobs:
             -keystore "$DRIVEAPEX_KEYSTORE_PATH" \
             -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" \
             -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
-              echo "ERROR: keystore decoded, but password or alias does not match the keystore."
+              echo "ERROR: keystore restored, but password or alias does not match the keystore."
               exit 1
             }
 
