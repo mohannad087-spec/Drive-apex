@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Read-only BYD vehicle-data permission used by the documented Speed HAL. -->
+    <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
+
     <application
         android:allowBackup="true"
         android:label="DriveApex"
