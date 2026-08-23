@@ -20,9 +20,9 @@ import kotlin.concurrent.thread
 /**
  * Production updater for the stable DriveApex GitHub Release channel.
  *
- * The updater deliberately uses GitHub's stable `releases/latest/download/*`
- * endpoints instead of parsing the GitHub API asset list. This removes a
- * brittle dependency on release JSON structure and asset enumeration.
+ * The updater deliberately uses GitHub's stable release download endpoints
+ * instead of parsing the GitHub API asset list. This removes a brittle
+ * dependency on release JSON structure and asset enumeration.
  */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -175,7 +175,7 @@ class UpdateManager(private val activity: Activity) {
         activity.startActivity(intent)
     }
 
-    private fun pendingApk(): File? = File(activity.cacheDir, apkName)
+    private fun pendingApk(): File = File(activity.cacheDir, apkName)
 
     private fun openConnection(url: String, timeoutMs: Int): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
