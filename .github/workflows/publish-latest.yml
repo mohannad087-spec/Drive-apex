@@ -49,7 +49,12 @@ jobs:
         env:
           DRIVEAPEX_KEYSTORE_PATH: ${{ runner.temp }}/driveapex-release.jks
         run: |
-          printf '%s' "$DRIVEAPEX_KEYSTORE_BASE64" | base64 --decode > "$DRIVEAPEX_KEYSTORE_PATH"
+          printf '%s' "$DRIVEAPEX_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$DRIVEAPEX_KEYSTORE_PATH"
+          test -s "$DRIVEAPEX_KEYSTORE_PATH" || { echo "ERROR: decoded keystore is empty."; exit 1; }
+          keytool -list -keystore "$DRIVEAPEX_KEYSTORE_PATH" -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
+            echo "ERROR: DRIVEAPEX_KEYSTORE_BASE64, DRIVEAPEX_KEYSTORE_PASSWORD, or DRIVEAPEX_KEY_ALIAS does not match the signing keystore."
+            exit 1
+          }
           echo "DRIVEAPEX_KEYSTORE_PATH=$DRIVEAPEX_KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
@@ -61,6 +66,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK" || { echo "ERROR: release APK was not produced."; exit 1; }
           NOTES="DriveApex latest build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}"
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload latest "$APK#DriveApex.apk" --clobber --repo "$GITHUB_REPOSITORY"
