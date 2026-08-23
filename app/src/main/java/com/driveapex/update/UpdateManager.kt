@@ -34,7 +34,7 @@ class UpdateManager(private val activity: Activity) {
                     connectTimeout = 8000
                     readTimeout = 8000
                     setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "DriveApex-Updater")
+                    setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
                 }
                 val code = connection.responseCode
                 if (code !in 200..299) {
@@ -46,6 +46,8 @@ class UpdateManager(private val activity: Activity) {
                 val body = json.optString("body")
                 val remoteVersionCode = Regex("versionCode\\s*[:=]\\s*(\\d+)")
                     .find(body)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                val remoteVersionName = Regex("versionName\\s*[:=]\\s*([^\\n\\r]+)")
+                    .find(body)?.groupValues?.getOrNull(1)?.trim().orEmpty()
                 val assetUrl = json.optJSONArray("assets")?.let { assets ->
                     (0 until assets.length()).asSequence()
                         .map { assets.getJSONObject(it) }
@@ -55,18 +57,15 @@ class UpdateManager(private val activity: Activity) {
 
                 if (remoteVersionCode == null || assetUrl.isNullOrBlank()) {
                     if (manual) handler.post {
-                        showInfo(
-                            "Update channel not ready",
-                            "No signed DriveApex.apk release is currently published on GitHub."
-                        )
+                        showInfo("Update channel not ready", "No signed DriveApex.apk release is currently published on GitHub.")
                     }
                     return@runCatching
                 }
 
                 if (remoteVersionCode > BuildConfig.VERSION_CODE) {
-                    handler.post { showUpdateDialog(remoteVersionCode, assetUrl) }
+                    handler.post { showUpdateDialog(remoteVersionCode, remoteVersionName, assetUrl) }
                 } else if (manual) {
-                    handler.post { showInfo("DriveApex is up to date", "Installed build: ${BuildConfig.VERSION_CODE}") }
+                    handler.post { showInfo("DriveApex is up to date", "Installed build: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})") }
                 }
             }.onFailure {
                 if (manual) handler.post {
@@ -85,11 +84,12 @@ class UpdateManager(private val activity: Activity) {
             .show()
     }
 
-    private fun showUpdateDialog(versionCode: Int, assetUrl: String) {
+    private fun showUpdateDialog(versionCode: Int, versionName: String, assetUrl: String) {
         if (activity.isFinishing || activity.isDestroyed) return
+        val label = if (versionName.isBlank()) versionCode.toString() else "$versionName ($versionCode)"
         AlertDialog.Builder(activity)
             .setTitle("DriveApex update available")
-            .setMessage("A newer DriveApex build ($versionCode) is ready. Download and install it now?")
+            .setMessage("Version $label is ready. Download and install it now?")
             .setNegativeButton("Later", null)
             .setPositiveButton("Update") { _, _ -> downloadAndInstall(assetUrl) }
             .show()
@@ -102,17 +102,16 @@ class UpdateManager(private val activity: Activity) {
                     connectTimeout = 10000
                     readTimeout = 30000
                     instanceFollowRedirects = true
-                    setRequestProperty("User-Agent", "DriveApex-Updater")
+                    setRequestProperty("User-Agent", "DriveApex-Updater/${BuildConfig.VERSION_NAME}")
                     setRequestProperty("Accept", "application/octet-stream")
                 }
-                if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
+                if (connection.responseCode !in 200..299) error("APK download failed: HTTP ${connection.responseCode}")
                 val apk = File(activity.cacheDir, apkName)
                 connection.inputStream.use { input -> apk.outputStream().use { output -> input.copyTo(output) } }
+                if (apk.length() < 100_000L) error("Downloaded APK is unexpectedly small")
                 handler.post { install(apk) }
             }.onFailure {
-                handler.post {
-                    showInfo("DriveApex update failed", it.message ?: "Unable to download the update.")
-                }
+                handler.post { showInfo("DriveApex update failed", it.message ?: "Unable to download the update.") }
             }
         }
     }
@@ -121,20 +120,21 @@ class UpdateManager(private val activity: Activity) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
             AlertDialog.Builder(activity)
                 .setTitle("Allow DriveApex updates")
-                .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex.")
+                .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex and press Check for Update again.")
                 .setNegativeButton("Later", null)
                 .setPositiveButton("Open Settings") { _, _ ->
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                        Uri.parse("package:${activity.packageName}")
+                    activity.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                            Uri.parse("package:${activity.packageName}")
+                        )
                     )
-                    activity.startActivity(intent)
                 }
                 .show()
             return
         }
 
-        val uri: Uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
+        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
