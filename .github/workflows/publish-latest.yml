@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           if [[ -z "$DRIVEAPEX_KEYSTORE_HEX" || -z "$DRIVEAPEX_KEYSTORE_PASSWORD" || -z "$DRIVEAPEX_KEY_ALIAS" || -z "$DRIVEAPEX_KEY_PASSWORD" ]]; then
-            echo "ERROR: Stable release signing is not configured. Add DRIVEAPEX_KEYSTORE_HEX plus the three DRIVEAPEX_* key/password secrets before publishing releases."
+            echo "ERROR: Stable release signing is not configured."
             exit 1
           fi
 
@@ -50,38 +50,41 @@ jobs:
           DRIVEAPEX_KEYSTORE_PATH: ${{ runner.temp }}/driveapex-release.jks
         run: |
           set -euo pipefail
-
-          # HEX is intentionally used instead of Base64 so copy/paste cannot
-          # introduce whitespace, line wrapping, or Base64 padding issues.
-          if ! printf '%s' "$DRIVEAPEX_KEYSTORE_HEX" | tr -d '[:space:]' | grep -Eq '^[0-9A-Fa-f]+$'; then
+          HEX=$(printf '%s' "$DRIVEAPEX_KEYSTORE_HEX" | tr -d '[:space:]')
+          if [[ ! "$HEX" =~ ^[0-9A-Fa-f]+$ ]]; then
             echo "ERROR: DRIVEAPEX_KEYSTORE_HEX contains a non-hex character."
             exit 1
           fi
-
-          HEX=$(printf '%s' "$DRIVEAPEX_KEYSTORE_HEX" | tr -d '[:space:]')
           if (( ${#HEX} % 2 != 0 )); then
             echo "ERROR: DRIVEAPEX_KEYSTORE_HEX has an odd number of hex characters."
             exit 1
           fi
-
           printf '%s' "$HEX" | xxd -r -p > "$DRIVEAPEX_KEYSTORE_PATH"
-          test -s "$DRIVEAPEX_KEYSTORE_PATH" || {
-            echo "ERROR: decoded keystore is empty."
+          test -s "$DRIVEAPEX_KEYSTORE_PATH" || { echo "ERROR: decoded keystore is empty."; exit 1; }
+          keytool -list -keystore "$DRIVEAPEX_KEYSTORE_PATH" -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
+            echo "ERROR: keystore restored, but password or alias does not match the keystore."
             exit 1
           }
-
-          keytool -list \
-            -keystore "$DRIVEAPEX_KEYSTORE_PATH" \
-            -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" \
-            -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null || {
-              echo "ERROR: keystore restored, but password or alias does not match the keystore."
-              exit 1
-            }
-
           echo "DRIVEAPEX_KEYSTORE_PATH=$DRIVEAPEX_KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
         run: gradle assembleRelease --stacktrace
+
+      - name: Create deterministic update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          SHA256=$(sha256sum "$APK" | awk '{print $1}')
+          cat > DriveApex-update.json <<EOF
+          {
+            "versionCode": ${DRIVEAPEX_VERSION_CODE},
+            "versionName": "${DRIVEAPEX_VERSION_NAME}",
+            "assetName": "DriveApex.apk",
+            "sha256": "${SHA256}"
+          }
+          EOF
+          cat DriveApex-update.json
 
       - name: Publish latest release
         shell: bash
@@ -94,7 +97,8 @@ jobs:
           NOTES="DriveApex latest build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}"
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload latest "$APK#DriveApex.apk" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload latest "DriveApex-update.json#DriveApex-update.json" --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit latest --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
           else
-            gh release create latest "$APK#DriveApex.apk" --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
+            gh release create latest "$APK#DriveApex.apk" "DriveApex-update.json#DriveApex-update.json" --title "DriveApex Latest" --notes "$NOTES" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
           fi
