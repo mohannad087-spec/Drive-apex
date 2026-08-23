@@ -15,8 +15,10 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: ${{ github.run_number }}
-      DRIVEAPEX_VERSION_NAME: 0.2.${{ github.run_number }}
+      # Keep the public app version deliberate. GitHub Actions run_number is
+      # not the product version and can advance from intermediate commits.
+      DRIVEAPEX_VERSION_CODE: 49
+      DRIVEAPEX_VERSION_NAME: 0.2.49
 
     steps:
       - name: Checkout
@@ -122,6 +124,10 @@ jobs:
           echo "Uploading DriveApex-update.json..."
           gh release upload "$TAG" DriveApex-update.json --clobber --repo "$GITHUB_REPOSITORY"
 
+          # This release is intentionally the product's latest release even if
+          # an intermediate workflow run created a later-numbered temporary tag.
+          gh release edit "$TAG" --latest --repo "$GITHUB_REPOSITORY"
+
           echo "Verifying release assets..."
           ASSETS=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           printf '%s\n' "$ASSETS"
@@ -154,17 +160,15 @@ jobs:
           import json
           with open('/tmp/DriveApex-update.json', 'r', encoding='utf-8') as f:
               data = json.load(f)
-          assert data.get('versionCode', 0) > 0
-          assert data.get('versionName')
+          assert data.get('versionCode') == 49
+          assert data.get('versionName') == '0.2.49'
           assert data.get('assetName') == 'DriveApex.apk'
-          assert data.get('tag', '').startswith('v')
-          assert data['tag'] == 'v' + data['versionName']
+          assert data.get('tag') == 'v0.2.49'
           apk_url = data.get('apkUrl', '')
-          assert apk_url.startswith('https://github.com/mohannad087-spec/Drive-apex/releases/download/')
-          assert apk_url.endswith('/DriveApex.apk')
+          assert apk_url == 'https://github.com/mohannad087-spec/Drive-apex/releases/download/v0.2.49/DriveApex.apk'
           sha = data.get('sha256', '')
           assert len(sha) == 64 and all(c in '0123456789abcdef' for c in sha.lower())
-          print('Verified update manifest:', data['versionName'], data['versionCode'], data['apkUrl'])
+          print('Verified update manifest: 0.2.49 49', data['apkUrl'])
           PY
 
           curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 5 --max-time 90 "$APK_URL" -o /dev/null
