@@ -55,4 +55,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
+    // Verified direct-ADB transport used by the reference OverDrive implementation.
+    implementation("dev.mobile:dadb:1.2.8")
 }
