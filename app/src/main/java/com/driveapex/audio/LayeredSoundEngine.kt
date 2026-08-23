@@ -81,7 +81,7 @@ class LayeredSoundEngine(
         var sceneEnvelope = 0f
         var eventPhase = 0.0
         var noiseState = 0x4D595DF4L
-        var textureState = 0f
+        var textureState = 0.0
 
         while (running) {
             val currentRpm = rpm
@@ -138,7 +138,7 @@ class LayeredSoundEngine(
                 // It is intentionally bounded so the sound remains clean on phone/head-unit speakers.
                 noiseState = noiseStep(noiseState)
                 val white = ((noiseState and 0xFFFFL) / 32767.5 - 1.0).coerceIn(-1.0, 1.0)
-                textureState += (white - textureState) * 0.035f
+                textureState += (white - textureState) * 0.035
                 val sheen = textureState * textureAmount * (0.45 + currentSpeed / 260.0)
                 val mechanicalTexture = sheen * (0.35 + tonalEnergy * 1.8).coerceAtMost(1.0)
 
