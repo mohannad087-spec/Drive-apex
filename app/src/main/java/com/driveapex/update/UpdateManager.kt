@@ -4,8 +4,10 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import androidx.core.content.FileProvider
 import com.driveapex.BuildConfig
 import org.json.JSONObject
@@ -14,11 +16,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
-/**
- * In-app updater backed by the public DriveApex GitHub `latest` release.
- * Android still controls package installation; the user/system may need to
- * approve installation from this source.
- */
+/** In-app updater backed by the public DriveApex GitHub `latest` release. */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
     private val apiUrl = "https://api.github.com/repos/mohannad087-spec/Drive-apex/releases/tags/latest"
@@ -88,6 +86,21 @@ class UpdateManager(private val activity: Activity) {
     }
 
     private fun install(apk: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+            AlertDialog.Builder(activity)
+                .setTitle("Allow DriveApex updates")
+                .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex.")
+                .setNegativeButton("Later", null)
+                .setPositiveButton("Open Settings") { _, _ ->
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:${activity.packageName}")
+                    )
+                    activity.startActivity(intent)
+                }
+            return
+        }
+
         val uri: Uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
