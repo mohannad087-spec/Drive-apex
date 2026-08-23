@@ -4,7 +4,6 @@ import android.content.Context
 import com.driveapex.BuildConfig
 import dadb.AdbKeyPair
 import dadb.Dadb
-import dadb.InstallResult
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -73,25 +72,19 @@ class VehicleOtaInstaller(private val context: Context) {
                     SOCKET_TIMEOUT_MS
                 )
 
-                // The -r upgrade flag is required for replacing the already-installed
-                // DriveApex package. This is the same upgrade operation as `adb install -r`.
-                when (val result = dadb.install(apk, "-r")) {
-                    InstallResult.Success -> {
-                        val installedVersion = readInstalledVersion(dadb)
-                        if (installedVersion != null && installedVersion < expectedVersionCode) {
-                            return Result.Failed(
-                                "ADB install reported success but installed version is $installedVersion; expected >= $expectedVersionCode"
-                            )
-                        }
-                        return Result.Installed(installedVersion)
-                    }
-                    is InstallResult.Failure -> {
-                        lastError = IllegalStateException(result.reason)
-                        if (!looksLikeAuthFailure(result.reason)) {
-                            return Result.Failed("ADB install failed: ${result.reason}")
-                        }
-                    }
+                // dadb 1.2.x does not expose the InstallResult type used by newer
+                // releases. Calling install and ignoring its return value keeps this
+                // source compatible with 1.2.8; install failures are surfaced as
+                // exceptions and handled by the retry/error path below.
+                dadb.install(apk, "-r")
+
+                val installedVersion = readInstalledVersion(dadb)
+                if (installedVersion != null && installedVersion < expectedVersionCode) {
+                    return Result.Failed(
+                        "ADB install reported success but installed version is $installedVersion; expected >= $expectedVersionCode"
+                    )
                 }
+                return Result.Installed(installedVersion)
             } catch (e: Exception) {
                 lastError = e
             } finally {
