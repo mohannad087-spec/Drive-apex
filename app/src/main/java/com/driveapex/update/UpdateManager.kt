@@ -28,15 +28,30 @@ class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
     private val manifestUrl = "https://github.com/mohannad087-spec/Drive-apex/releases/latest/download/DriveApex-update.json"
     private val apkName = "DriveApex-update.apk"
+    private val prefs = activity.getSharedPreferences("driveapex_updater", Activity.MODE_PRIVATE)
+    private val permissionInstallPendingKey = "permission_install_pending"
 
     fun checkSilently() = check(false)
 
     fun checkManually() = check(true)
 
+    /**
+     * Only resume an installation when Android's unknown-app permission was
+     * explicitly requested by this updater. A downloaded APK by itself must
+     * never trigger the installer on every application launch.
+     */
     fun onResume() {
+        if (!prefs.getBoolean(permissionInstallPendingKey, false)) return
+
         val pending = pendingApk()
-        if (pending.isFile && pending.length() > 100_000L) {
-            handler.post { installOrRequestPermission(pending) }
+        if (!pending.isFile || pending.length() <= 100_000L) {
+            prefs.edit().remove(permissionInstallPendingKey).apply()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || activity.packageManager.canRequestPackageInstalls()) {
+            prefs.edit().remove(permissionInstallPendingKey).apply()
+            handler.post { installApk(pending) }
         }
     }
 
@@ -155,6 +170,7 @@ class UpdateManager(private val activity: Activity) {
     private fun installOrRequestPermission(apk: File) {
         if (activity.isFinishing || activity.isDestroyed) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+            prefs.edit().putBoolean(permissionInstallPendingKey, true).apply()
             AlertDialog.Builder(activity)
                 .setTitle("Allow DriveApex updates")
                 .setMessage("Android requires permission for DriveApex to install updates downloaded from GitHub. Enable it once, then return to DriveApex.")
@@ -171,6 +187,12 @@ class UpdateManager(private val activity: Activity) {
             return
         }
 
+        prefs.edit().remove(permissionInstallPendingKey).apply()
+        installApk(apk)
+    }
+
+    private fun installApk(apk: File) {
+        if (!apk.isFile || apk.length() <= 100_000L) return
         val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
