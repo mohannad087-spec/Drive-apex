@@ -15,6 +15,10 @@ android {
         versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.1.0"
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     signingConfigs {
         create("release") {
             val keystorePath = System.getenv("DRIVEAPEX_KEYSTORE_PATH")
