@@ -1,6 +1,7 @@
 package com.driveapex
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
@@ -18,6 +19,7 @@ import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
 import com.driveapex.update.UpdateManager
+import com.driveapex.vehicle.BydTelemetryDiagnostics
 import com.driveapex.vehicle.LiveTelemetry
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
@@ -161,6 +163,11 @@ class MainActivity : Activity() {
         }, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
+            text = "BYD TELEMETRY DIAGNOSTICS"
+            setOnClickListener { showBydDiagnostics() }
+        }, marginParams(bottom = 8))
+
+        root.addView(Button(this).apply {
             text = "CHECK FOR UPDATE"
             setOnClickListener { updateManager.checkManually() }
         }, marginParams(bottom = 8))
@@ -195,6 +202,21 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (::updateManager.isInitialized) updateManager.onResume()
+    }
+
+    private fun showBydDiagnostics() {
+        Thread {
+            val report = BydTelemetryDiagnostics.probe(this)
+            val message = BydTelemetryDiagnostics.format(report)
+            handler.post {
+                if (isFinishing || isDestroyed) return@post
+                AlertDialog.Builder(this)
+                    .setTitle("BYD telemetry probe")
+                    .setMessage(message)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }.start()
     }
 
     private fun toggleTelemetryMode() {
