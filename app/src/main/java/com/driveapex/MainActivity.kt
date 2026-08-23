@@ -17,6 +17,7 @@ import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
+import com.driveapex.update.UpdateManager
 import com.driveapex.vehicle.LiveTelemetry
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
@@ -28,6 +29,7 @@ class MainActivity : Activity() {
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
+    private lateinit var updateManager: UpdateManager
     private val udpReceiver = UdpTelemetryReceiver()
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
@@ -59,6 +61,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         genomeSession = SonicGenomeSession(this)
+        updateManager = UpdateManager(this)
 
         val scroll = ScrollView(this)
         val root = LinearLayout(this).apply {
@@ -170,6 +173,11 @@ class MainActivity : Activity() {
         }, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
+            text = "CHECK FOR UPDATE"
+            setOnClickListener { updateManager.checkSilently() }
+        }, marginParams(bottom = 8))
+
+        root.addView(Button(this).apply {
             text = "STOP / SAFE"
             setOnClickListener {
                 genomeSession.finishDrive()
@@ -193,6 +201,7 @@ class MainActivity : Activity() {
 
         syncSimulator()
         setContentView(scroll)
+        handler.postDelayed({ updateManager.checkSilently() }, 1500L)
     }
 
     private fun toggleTelemetryMode() {
