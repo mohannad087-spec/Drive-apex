@@ -23,35 +23,28 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check signing configuration
-        id: signing
         shell: bash
         run: |
-          if [[ -n "$DRIVEAPEX_KEYSTORE_BASE64" && -n "$DRIVEAPEX_KEYSTORE_PASSWORD" && -n "$DRIVEAPEX_KEY_ALIAS" && -n "$DRIVEAPEX_KEY_PASSWORD" ]]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "Stable release signing is not configured yet; keeping this publish workflow idle."
+          if [[ -z "$DRIVEAPEX_KEYSTORE_BASE64" || -z "$DRIVEAPEX_KEYSTORE_PASSWORD" || -z "$DRIVEAPEX_KEY_ALIAS" || -z "$DRIVEAPEX_KEY_PASSWORD" ]]; then
+            echo "ERROR: Stable release signing is not configured. Add the four DRIVEAPEX_* repository secrets before publishing releases."
+            exit 1
           fi
 
       - name: Set up JDK 17
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Android SDK
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         uses: android-actions/setup-android@v3
 
       - name: Set up Gradle
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
       - name: Restore signing keystore
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         shell: bash
         env:
           DRIVEAPEX_KEYSTORE_PATH: ${{ runner.temp }}/driveapex-release.jks
@@ -60,11 +53,9 @@ jobs:
           echo "DRIVEAPEX_KEYSTORE_PATH=$DRIVEAPEX_KEYSTORE_PATH" >> "$GITHUB_ENV"
 
       - name: Build signed release APK
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         run: gradle assembleRelease --stacktrace
 
       - name: Publish latest release
-        if: ${{ steps.signing.outputs.configured == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
