@@ -20,9 +20,9 @@ import kotlin.concurrent.thread
 /**
  * Production updater for the stable DriveApex GitHub Release channel.
  *
- * The updater fetches one deterministic manifest from the latest release.
- * The manifest contains the exact version-pinned APK URL used for download,
- * avoiding a second floating asset lookup after the manifest is read.
+ * On a normal phone it uses Android's package installer.
+ * On a BYD/DiLink head unit it first uses the verified local ADB transport
+ * path (127.0.0.1:5555) used by the reference OverDrive implementation.
  */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -30,17 +30,23 @@ class UpdateManager(private val activity: Activity) {
     private val apkName = "DriveApex-update.apk"
     private val prefs = activity.getSharedPreferences("driveapex_updater", Activity.MODE_PRIVATE)
     private val permissionInstallPendingKey = "permission_install_pending"
+    private val vehicleInstallTargetKey = "vehicle_install_target_version"
 
     fun checkSilently() = check(false)
 
     fun checkManually() = check(true)
 
     /**
-     * Only resume an installation when Android's unknown-app permission was
-     * explicitly requested by this updater. A downloaded APK by itself must
-     * never trigger the installer on every application launch.
+     * Only resume an Android Package Installer flow that this updater explicitly
+     * requested. A downloaded APK by itself must never trigger the installer on
+     * every application launch.
      */
     fun onResume() {
+        if (prefs.getBoolean(vehicleInstallTargetKey, false) &&
+            BuildConfig.VERSION_CODE >= prefs.getInt(vehicleInstallTargetKey, Int.MAX_VALUE)) {
+            prefs.edit().remove(vehicleInstallTargetKey).apply()
+        }
+
         if (!prefs.getBoolean(permissionInstallPendingKey, false)) return
 
         val pending = pendingApk()
@@ -123,11 +129,11 @@ class UpdateManager(private val activity: Activity) {
             .setTitle("DriveApex update available")
             .setMessage("Version $label is ready. Download and install it now?")
             .setNegativeButton("Later", null)
-            .setPositiveButton("Update") { _, _ -> downloadAndInstall(apkUrl, expectedSha256) }
+            .setPositiveButton("Update") { _, _ -> downloadAndInstall(apkUrl, expectedSha256, versionCode) }
             .show()
     }
 
-    private fun downloadAndInstall(apkUrl: String, expectedSha256: String) {
+    private fun downloadAndInstall(apkUrl: String, expectedSha256: String, expectedVersionCode: Int) {
         thread(name = "DriveApex-APK-Download") {
             runCatching {
                 val target = pendingApk()
@@ -160,10 +166,77 @@ class UpdateManager(private val activity: Activity) {
                     partial.delete()
                 }
 
-                handler.post { installOrRequestPermission(target) }
+                handler.post { installDownloadedApk(target, expectedVersionCode) }
             }.onFailure {
                 handler.post { showInfo("DriveApex update failed", readableError(it)) }
             }
+        }
+    }
+
+    private fun installDownloadedApk(apk: File, expectedVersionCode: Int) {
+        if (activity.isFinishing || activity.isDestroyed) return
+        if (!apk.isFile || apk.length() <= 100_000L) {
+            showInfo("DriveApex update failed", "The verified APK disappeared before installation.")
+            return
+        }
+
+        if (VehicleOtaInstaller.isVehicleRuntime()) {
+            // A BYD head unit must not fall back to the Android package UI after
+            // a successful download. Its OTA path is the local ADB shell install.
+            prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
+            thread(name = "DriveApex-Vehicle-OTA") {
+                val result = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
+                handler.post { handleVehicleInstallResult(result, apk, expectedVersionCode) }
+            }
+            return
+        }
+
+        installOrRequestPermission(apk)
+    }
+
+    private fun handleVehicleInstallResult(
+        result: VehicleOtaInstaller.Result,
+        apk: File,
+        expectedVersionCode: Int
+    ) {
+        if (result is VehicleOtaInstaller.Result.Installed) {
+            // Package replacement normally terminates this process. Keep only the
+            // successful target marker; the new process clears it on resume.
+            return
+        }
+
+        prefs.edit().remove(vehicleInstallTargetKey).apply()
+        val message = when (result) {
+            VehicleOtaInstaller.Result.NotVehicle ->
+                "Vehicle OTA path was not selected for this runtime."
+            VehicleOtaInstaller.Result.AdbUnavailable ->
+                "BYD local ADB is not reachable on 127.0.0.1:5555. The APK was verified but was not installed."
+            VehicleOtaInstaller.Result.AuthPending ->
+                "The BYD ADB daemon is waiting for authorization. Accept the ADB authorization on the head unit, then retry."
+            is VehicleOtaInstaller.Result.Failed -> result.message
+            is VehicleOtaInstaller.Result.Installed -> ""
+        }
+
+        if (result is VehicleOtaInstaller.Result.AuthPending) {
+            AlertDialog.Builder(activity)
+                .setTitle("Vehicle OTA authorization needed")
+                .setMessage(message)
+                .setNegativeButton("Later", null)
+                .setPositiveButton("Retry") { _, _ ->
+                    prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
+                    thread(name = "DriveApex-Vehicle-OTA-Retry") {
+                        val retry = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
+                        handler.post { handleVehicleInstallResult(retry, apk, expectedVersionCode) }
+                    }
+                }
+                .show()
+        } else {
+            AlertDialog.Builder(activity)
+                .setTitle("Vehicle OTA failed")
+                .setMessage(message)
+                .setNegativeButton("OK", null)
+                .setPositiveButton("Use Android installer") { _, _ -> installOrRequestPermission(apk) }
+                .show()
         }
     }
 
