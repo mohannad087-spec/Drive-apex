@@ -21,8 +21,7 @@ import kotlin.concurrent.thread
  * Production updater for the stable DriveApex GitHub Release channel.
  *
  * On a normal phone it uses Android's package installer.
- * On a BYD/DiLink head unit it first uses the verified local ADB transport
- * path (127.0.0.1:5555) used by the reference OverDrive implementation.
+ * On a BYD/DiLink head unit it uses the verified local ADB transport path.
  */
 class UpdateManager(private val activity: Activity) {
     private val handler = Handler(Looper.getMainLooper())
@@ -36,10 +35,6 @@ class UpdateManager(private val activity: Activity) {
 
     fun checkManually() = check(true)
 
-    /**
-     * Resume only an install flow that this updater explicitly started.
-     * A staged APK alone must never cause a new install prompt on every launch.
-     */
     fun onResume() {
         val pendingVehicleTarget = prefs.getInt(vehicleInstallTargetKey, -1)
         if (pendingVehicleTarget > 0 && BuildConfig.VERSION_CODE >= pendingVehicleTarget) {
@@ -180,8 +175,6 @@ class UpdateManager(private val activity: Activity) {
         }
 
         if (VehicleOtaInstaller.isVehicleRuntime()) {
-            // A BYD head unit must use the local ADB shell installation path
-            // instead of the ordinary Android package-installer UI.
             prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
             thread(name = "DriveApex-Vehicle-OTA") {
                 val result = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
@@ -198,45 +191,32 @@ class UpdateManager(private val activity: Activity) {
         apk: File,
         expectedVersionCode: Int
     ) {
-        if (result is VehicleOtaInstaller.Result.Installed) {
-            // Package replacement normally terminates this process. The next
-            // process clears the target marker in onResume().
-            return
-        }
+        if (result is VehicleOtaInstaller.Result.Installed) return
 
         prefs.edit().remove(vehicleInstallTargetKey).apply()
         val message = when (result) {
             VehicleOtaInstaller.Result.NotVehicle ->
-                "Vehicle OTA path was not selected for this runtime."
+                "DriveApex detected no BYD vehicle runtime. No Android installer was opened."
             VehicleOtaInstaller.Result.AdbUnavailable ->
-                "BYD local ADB is not reachable on 127.0.0.1:5555. The APK was verified but was not installed."
+                "BYD local ADB transport is not reachable or is not authorized. No Android installer was opened."
             VehicleOtaInstaller.Result.AuthPending ->
-                "The BYD ADB daemon is waiting for authorization. Accept the ADB authorization on the head unit, then retry."
+                "BYD ADB authorization is still pending. Retry after the head unit accepts the key."
             is VehicleOtaInstaller.Result.Failed -> result.message
             is VehicleOtaInstaller.Result.Installed -> ""
         }
 
-        if (result is VehicleOtaInstaller.Result.AuthPending) {
-            AlertDialog.Builder(activity)
-                .setTitle("Vehicle OTA authorization needed")
-                .setMessage(message)
-                .setNegativeButton("Later", null)
-                .setPositiveButton("Retry") { _, _ ->
-                    prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
-                    thread(name = "DriveApex-Vehicle-OTA-Retry") {
-                        val retry = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
-                        handler.post { handleVehicleInstallResult(retry, apk, expectedVersionCode) }
-                    }
+        AlertDialog.Builder(activity)
+            .setTitle("Vehicle OTA failed")
+            .setMessage(message)
+            .setNegativeButton("OK", null)
+            .setPositiveButton("Retry") { _, _ ->
+                prefs.edit().putInt(vehicleInstallTargetKey, expectedVersionCode).apply()
+                thread(name = "DriveApex-Vehicle-OTA-Retry") {
+                    val retry = VehicleOtaInstaller(activity).install(apk, expectedVersionCode)
+                    handler.post { handleVehicleInstallResult(retry, apk, expectedVersionCode) }
                 }
-                .show()
-        } else {
-            AlertDialog.Builder(activity)
-                .setTitle("Vehicle OTA failed")
-                .setMessage(message)
-                .setNegativeButton("OK", null)
-                .setPositiveButton("Use Android installer") { _, _ -> installOrRequestPermission(apk) }
-                .show()
-        }
+            }
+            .show()
     }
 
     private fun installOrRequestPermission(apk: File) {
