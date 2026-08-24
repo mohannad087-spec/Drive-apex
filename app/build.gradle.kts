@@ -11,8 +11,8 @@ android {
         applicationId = "com.driveapex"
         minSdk = 26
         targetSdk = 35
-        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 51
-        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.51"
+        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 52
+        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.52"
     }
 
     buildFeatures {
@@ -21,9 +21,6 @@ android {
 
     packaging {
         resources {
-            // Explicit Android resource exclusions. The release merge was
-            // failing on repeated JUnit license/notice resources coming from
-            // the resolved runtime dependency graph.
             excludes += setOf(
                 "META-INF/LICENSE.md",
                 "META-INF/LICENSE.txt",
@@ -70,9 +67,6 @@ android {
     }
 }
 
-// JUnit/Jupiter are test-only libraries. Keep them out of the Android
-// production/runtime dependency graph so their META-INF resources cannot
-// break release packaging.
 configurations.configureEach {
     exclude(group = "org.junit.platform")
     exclude(group = "org.junit.jupiter")
@@ -81,6 +75,5 @@ configurations.configureEach {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
-    // Verified direct-ADB transport used by the reference OverDrive implementation.
     implementation("dev.mobile:dadb:1.2.8")
 }
