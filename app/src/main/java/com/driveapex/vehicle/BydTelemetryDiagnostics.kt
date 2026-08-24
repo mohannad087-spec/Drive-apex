@@ -5,11 +5,14 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
+import com.driveapex.update.VehicleAdbConnection
+import java.lang.reflect.InvocationTargetException
 import java.util.Locale
 
 /** Read-only BYD telemetry capability probe. */
 object BydTelemetryDiagnostics {
     data class Report(
+        val adbStatus: String,
         val engineApiPresent: Boolean,
         val engineMethodsPresent: Boolean,
         val engineReadable: Boolean,
@@ -21,21 +24,41 @@ object BydTelemetryDiagnostics {
         val currentSpeedKph: Double?,
         val acceleratorPercent: Int?,
         val brakePercent: Int?,
-        val motorPermissionDeclared: Boolean,
-        val energyPermissionDeclared: Boolean,
-        val gearboxPermissionDeclared: Boolean,
+        val speedCommonPermissionDeclared: Boolean,
+        val speedGetPermissionDeclared: Boolean,
+        val engineCommonPermissionDeclared: Boolean,
+        val engineGetPermissionDeclared: Boolean,
+        val motorGetPermissionDeclared: Boolean,
         val notes: List<String>
     )
 
     private const val ENGINE_DEVICE = "android.hardware.bydauto.engine.BYDAutoEngineDevice"
     private const val SPEED_DEVICE = "android.hardware.bydauto.speed.BYDAutoSpeedDevice"
+    private const val P_SPEED_COMMON = "android.permission.BYDAUTO_SPEED_COMMON"
     private const val P_SPEED_GET = "android.permission.BYDAUTO_SPEED_GET"
+    private const val P_ENGINE_COMMON = "android.permission.BYDAUTO_ENGINE_COMMON"
+    private const val P_ENGINE_GET = "android.permission.BYDAUTO_ENGINE_GET"
     private const val P_MOTOR_GET = "android.permission.BYDAUTO_MOTOR_GET"
-    private const val P_ENERGY_GET = "android.permission.BYDAUTO_ENERGY_GET"
-    private const val P_GEARBOX_GET = "android.permission.BYDAUTO_GEARBOX_GET"
 
     fun probe(activity: Activity): Report {
         val notes = mutableListOf<String>()
+
+        // Trigger the same local ADB handshake used for the OTA path. When the
+        // key is not authorized, the head unit can display its ADB authorization
+        // prompt; the background poller remains active after this call returns.
+        val adbConnection = runCatching { VehicleAdbConnection(activity).connect() }.getOrNull()
+        val adbStatus = when {
+            adbConnection != null -> "AUTHORIZED"
+            VehicleAdbConnection.isAuthPending() -> "AUTH PENDING"
+            else -> "UNAVAILABLE"
+        }
+        notes += "ADB bootstrap: $adbStatus"
+        if (adbConnection != null) {
+            notes += "ADB shell is available; read-only BYD HAL permissions were requested through pm grant."
+        } else if (VehicleAdbConnection.isAuthPending()) {
+            notes += "Accept the ADB authorization prompt on the head unit, then run diagnostics again."
+        }
+
         var engineApiPresent = false
         var engineMethodsPresent = false
         var engineReadable = false
@@ -44,7 +67,8 @@ object BydTelemetryDiagnostics {
         var engineType: Int? = null
 
         // BYD SDK clients can enforce signature permissions on the supplied Context.
-        // This mirrors the read-only Context-wrapper strategy used by OverDrive.
+        // The wrapper mirrors the permission-bypass context used by OverDrive,
+        // while ADB pm grant is used to set the actual OS permission state.
         val bydContext = BydPermissionContext(activity.applicationContext)
 
         runCatching {
@@ -61,7 +85,8 @@ object BydTelemetryDiagnostics {
             engineType = (getType.invoke(device) as Number).toInt()
             engineReadable = true
         }.onFailure {
-            notes += "Engine API probe: ${it.javaClass.simpleName}: ${it.message ?: "unavailable"}"
+            val root = rootCause(it)
+            notes += "Engine API probe: ${root.javaClass.simpleName}: ${root.message ?: "unavailable"}"
         }
 
         var speedApiPresent = false
@@ -83,7 +108,8 @@ object BydTelemetryDiagnostics {
             brake = (getBrakeDeepness.invoke(device) as Number).toInt()
             speedReadable = true
         }.onFailure {
-            notes += "Speed API probe: ${it.javaClass.simpleName}: ${it.message ?: "unavailable"}"
+            val root = rootCause(it)
+            notes += "Speed API probe: ${root.javaClass.simpleName}: ${root.message ?: "unavailable"}"
         }
 
         fun declared(permission: String): Boolean = runCatching {
@@ -93,30 +119,49 @@ object BydTelemetryDiagnostics {
             ).requestedPermissions?.contains(permission) == true
         }.getOrDefault(false)
 
-        val motorPermissionDeclared = declared(P_MOTOR_GET)
-        val energyPermissionDeclared = declared(P_ENERGY_GET)
-        val gearboxPermissionDeclared = declared(P_GEARBOX_GET)
-        val speedPermissionDeclared = declared(P_SPEED_GET)
+        val speedCommonPermissionDeclared = declared(P_SPEED_COMMON)
+        val speedGetPermissionDeclared = declared(P_SPEED_GET)
+        val engineCommonPermissionDeclared = declared(P_ENGINE_COMMON)
+        val engineGetPermissionDeclared = declared(P_ENGINE_GET)
+        val motorGetPermissionDeclared = declared(P_MOTOR_GET)
 
-        if (!speedPermissionDeclared) notes += "$P_SPEED_GET is not declared."
-        if (!motorPermissionDeclared) notes += "$P_MOTOR_GET is not declared; engine class is tested directly."
-        if (!energyPermissionDeclared) notes += "$P_ENERGY_GET is not declared."
-        if (!gearboxPermissionDeclared) notes += "$P_GEARBOX_GET is not declared."
+        if (!speedCommonPermissionDeclared) notes += "$P_SPEED_COMMON is not declared."
+        if (!speedGetPermissionDeclared) notes += "$P_SPEED_GET is not declared."
+        if (!engineCommonPermissionDeclared) notes += "$P_ENGINE_COMMON is not declared."
+        if (!engineGetPermissionDeclared) notes += "$P_ENGINE_GET is not declared."
+        if (!motorGetPermissionDeclared) notes += "$P_MOTOR_GET is not declared."
         notes += if (Build.VERSION.SDK_INT >= 29) {
             "Head unit Android API ${Build.VERSION.SDK_INT}; BYD framework behavior is hardware/firmware dependent."
         } else "Head unit Android API ${Build.VERSION.SDK_INT}."
         notes += "RPM source: BYDAutoEngineDevice.getEngineSpeed(); no derived RPM is used."
-        notes += "No ADB connection is required by this diagnostic path."
+        notes += "Telemetry reads are through BYD HAL; ADB is used for the first-launch authentication and shell-side permission bootstrap."
 
         return Report(
-            engineApiPresent, engineMethodsPresent, engineReadable, engineRpm, engineCode, engineType,
-            speedApiPresent, speedReadable, currentSpeed, accelerator, brake,
-            motorPermissionDeclared, energyPermissionDeclared, gearboxPermissionDeclared, notes
+            adbStatus,
+            engineApiPresent,
+            engineMethodsPresent,
+            engineReadable,
+            engineRpm,
+            engineCode,
+            engineType,
+            speedApiPresent,
+            speedReadable,
+            currentSpeed,
+            accelerator,
+            brake,
+            speedCommonPermissionDeclared,
+            speedGetPermissionDeclared,
+            engineCommonPermissionDeclared,
+            engineGetPermissionDeclared,
+            motorGetPermissionDeclared,
+            notes
         )
     }
 
     fun format(report: Report): String = buildString {
-        appendLine("BYD TELEMETRY DIAGNOSTICS 43")
+        appendLine("BYD TELEMETRY DIAGNOSTICS 53")
+        appendLine()
+        appendLine("ADB bootstrap: ${report.adbStatus}")
         appendLine()
         appendLine("Engine API: ${if (report.engineApiPresent) "FOUND" else "NOT FOUND"}")
         appendLine("Engine methods: ${if (report.engineMethodsPresent) "FOUND" else "NOT FOUND"}")
@@ -131,11 +176,25 @@ object BydTelemetryDiagnostics {
         report.acceleratorPercent?.let { appendLine("Accelerator: $it%") }
         report.brakePercent?.let { appendLine("Brake: $it%") }
         appendLine()
-        appendLine("Motor GET permission declared: ${report.motorPermissionDeclared}")
-        appendLine("Energy GET permission declared: ${report.energyPermissionDeclared}")
-        appendLine("Gearbox GET permission declared: ${report.gearboxPermissionDeclared}")
+        appendLine("Speed COMMON permission declared: ${report.speedCommonPermissionDeclared}")
+        appendLine("Speed GET permission declared: ${report.speedGetPermissionDeclared}")
+        appendLine("Engine COMMON permission declared: ${report.engineCommonPermissionDeclared}")
+        appendLine("Engine GET permission declared: ${report.engineGetPermissionDeclared}")
+        appendLine("Motor GET permission declared: ${report.motorGetPermissionDeclared}")
         appendLine()
         report.notes.forEach { appendLine("• $it") }
+    }
+
+    private fun rootCause(error: Throwable): Throwable {
+        var current = error
+        val seen = HashSet<Throwable>()
+        while (current is InvocationTargetException && current.targetException != null && seen.add(current)) {
+            current = current.targetException
+        }
+        while (current.cause != null && current.cause !== current && seen.add(current)) {
+            current = current.cause!!
+        }
+        return current
     }
 
     private class BydPermissionContext(base: Context) : ContextWrapper(base) {
