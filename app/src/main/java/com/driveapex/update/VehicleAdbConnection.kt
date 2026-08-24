@@ -1,6 +1,7 @@
 package com.driveapex.update
 
 import android.content.Context
+import com.driveapex.BuildConfig
 import dadb.AdbKeyPair
 import dadb.Dadb
 import java.io.File
@@ -13,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * A short foreground connection attempt is paired with a separate, bounded
  * background authorization poller so the app never blocks on the ADB handshake.
+ * Once ADB is authorized, the shell is also used to grant the read-only BYD HAL
+ * permissions that the native framework can enforce outside the app Context.
  */
 internal class VehicleAdbConnection(private val context: Context) {
 
@@ -23,6 +26,14 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val SOCKET_TIMEOUT_MS = 45_000
         private const val QUICK_WAIT_MS = 2_000L
         private const val MAX_POLLS = 60
+
+        private val BYD_READ_PERMISSIONS = arrayOf(
+            "android.permission.BYDAUTO_SPEED_COMMON",
+            "android.permission.BYDAUTO_SPEED_GET",
+            "android.permission.BYDAUTO_ENGINE_COMMON",
+            "android.permission.BYDAUTO_ENGINE_GET",
+            "android.permission.BYDAUTO_MOTOR_GET"
+        )
 
         @Volatile private var shared: Dadb? = null
         private val sharedLock = Object()
@@ -40,13 +51,33 @@ internal class VehicleAdbConnection(private val context: Context) {
         }
 
         fun isAuthPending(): Boolean = authPending.get()
+
+        /** Starts the same first-launch ADB handshake that OverDrive requires. */
+        fun warmUp(context: Context) {
+            if (!isVehicleRuntime()) return
+            val appContext = context.applicationContext
+            Thread({
+                runCatching { VehicleAdbConnection(appContext).connect() }
+            }, "driveapex-adb-bootstrap").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        private fun isVehicleRuntime(): Boolean = runCatching {
+            Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice")
+            true
+        }.getOrDefault(false)
     }
 
     fun connect(): Dadb? {
         synchronized(sharedLock) {
             shared?.let { existing ->
                 try {
-                    if (existing.shell("echo ok").exitCode == 0) return existing
+                    if (existing.shell("echo ok").exitCode == 0) {
+                        grantBydReadPermissions(existing)
+                        return existing
+                    }
                 } catch (_: Exception) {
                 }
                 runCatching { existing.close() }
@@ -68,13 +99,14 @@ internal class VehicleAdbConnection(private val context: Context) {
                 shared = connected
                 authPending.set(false)
                 pollingStarted.set(false)
+                grantBydReadPermissions(connected)
                 authCallback?.invoke()
                 return connected
             }
 
             // Timeout/handshake failure is intentionally left to the independent
-            // poller. On BYD, accepting the ADB authorization can happen after the
-            // first connection attempt has already timed out.
+            // poller. Accepting the ADB authorization can happen after the first
+            // connection attempt has already timed out.
             return null
         }
     }
@@ -110,6 +142,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                 }
                 authPending.set(false)
                 pollingStarted.set(false)
+                grantBydReadPermissions(candidate)
                 authCallback?.invoke()
                 return@execute
             }
@@ -117,6 +150,14 @@ internal class VehicleAdbConnection(private val context: Context) {
             if (authPending.get()) {
                 authPending.set(false)
                 pollingStarted.set(false)
+            }
+        }
+    }
+
+    private fun grantBydReadPermissions(dadb: Dadb) {
+        BYD_READ_PERMISSIONS.forEach { permission ->
+            runCatching {
+                dadb.shell("pm grant ${BuildConfig.APPLICATION_ID} $permission 2>/dev/null || true")
             }
         }
     }
