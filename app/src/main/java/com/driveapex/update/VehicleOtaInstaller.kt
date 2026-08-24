@@ -2,21 +2,17 @@ package com.driveapex.update
 
 import android.content.Context
 import com.driveapex.BuildConfig
-import dadb.AdbKeyPair
 import dadb.Dadb
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Socket
 
 /**
  * BYD/DiLink vehicle OTA installer.
  *
- * This follows the same important transport model used by OverDrive:
- * the app connects to the local ADB daemon at 127.0.0.1:5555, keeps a
- * persistent ADB key, stages the APK under /data/local/tmp, and performs
- * the actual package replacement through the ADB shell with `pm install -r`.
- *
- * The normal Android package-installer path remains the phone fallback.
+ * The transport deliberately goes through the persistent OverDrive-style ADB
+ * connection rather than creating a separate DADB session for every update.
+ * The APK is staged through ADB push and the replacement is performed by the
+ * shell with `pm install -r -d`; the normal Android package-installer UI is not
+ * used for vehicle updates.
  */
 class VehicleOtaInstaller(private val context: Context) {
 
@@ -29,12 +25,6 @@ class VehicleOtaInstaller(private val context: Context) {
     }
 
     companion object {
-        private const val ADB_HOST = "127.0.0.1"
-        private const val ADB_PORT = 5555
-        private const val CONNECT_TIMEOUT_MS = 3_000
-        private const val SOCKET_TIMEOUT_MS = 45_000
-        private const val CONNECT_ATTEMPTS = 20
-        private const val CONNECT_DELAY_MS = 1_500L
         private const val REMOTE_APK = "/data/local/tmp/driveapex_update.apk"
         private const val REMOTE_SCRIPT = "/data/local/tmp/driveapex_install.sh"
         private const val IN_PROGRESS = "/data/local/tmp/driveapex_update_in_progress"
@@ -58,66 +48,28 @@ class VehicleOtaInstaller(private val context: Context) {
             return Result.Failed("Verified APK is missing or unexpectedly small")
         }
 
-        if (!adbPortOpen()) return Result.AdbUnavailable
-
-        val keyPair = runCatching { getOrCreateKeyPair() }
-            .getOrElse {
-                return Result.Failed(
-                    "ADB key initialization failed: ${it.message ?: it.javaClass.simpleName}"
-                )
+        val transport = VehicleAdbConnection(context)
+        val dadb = transport.connect()
+            ?: return if (VehicleAdbConnection.isAuthPending()) {
+                Result.AuthPending
+            } else {
+                Result.AdbUnavailable
             }
 
-        var connected: Dadb? = null
-        var lastError: Throwable? = null
-
-        for (attempt in 0 until CONNECT_ATTEMPTS) {
-            try {
-                connected?.close()
-                connected = Dadb.create(
-                    ADB_HOST,
-                    ADB_PORT,
-                    keyPair,
-                    CONNECT_TIMEOUT_MS,
-                    SOCKET_TIMEOUT_MS
-                )
-                val probe = connected!!.shell("echo overdrive-style-adb-ready")
-                if (probe.exitCode == 0) {
-                    lastError = null
-                    break
-                }
-                throw IllegalStateException(probe.allOutput.ifBlank { "ADB shell probe failed" })
-            } catch (e: Exception) {
-                lastError = e
-                connected = null
-                if (attempt < CONNECT_ATTEMPTS - 1) {
-                    Thread.sleep(CONNECT_DELAY_MS)
-                }
-            }
-        }
-
-        val dadb = connected ?: return if (looksLikeAuthFailure(lastError?.message.orEmpty())) {
-            Result.AuthPending
-        } else {
-            Result.Failed(lastError?.message ?: "ADB connection failed")
-        }
-
+        var installSucceeded = false
         return try {
-            // Stage the APK exactly where a shell process can consume it.
+            // Match the reference flow: stage the already SHA-256-verified APK
+            // under /data/local/tmp, then let the shell perform the install.
             dadb.push(apk, REMOTE_APK)
 
             val marker = "${BuildConfig.VERSION_NAME} (${expectedVersionCode})"
             writeScript(dadb, buildInstallerScript(marker))
 
-            // Execute the package replacement from the ADB shell. We do not use
-            // dadb.install() here because the reference OverDrive path performs
-            // installation as an explicit shell `pm install -r` operation.
             val run = dadb.shell("sh $REMOTE_SCRIPT")
             if (run.exitCode != 0) {
                 return Result.Failed("Vehicle OTA shell install failed: ${run.allOutput}")
             }
 
-            // pm install may replace this process while the shell transport survives;
-            // poll package metadata before declaring success.
             var installedVersion: Int? = null
             repeat(8) {
                 val response = runCatching {
@@ -142,16 +94,29 @@ class VehicleOtaInstaller(private val context: Context) {
                 )
             }
 
+            installSucceeded = true
             Result.Installed(installedVersion)
         } catch (e: Exception) {
-            if (looksLikeAuthFailure(e.message.orEmpty())) {
+            val text = e.message.orEmpty()
+            if (text.contains("auth", ignoreCase = true) ||
+                text.contains("unauthorized", ignoreCase = true) ||
+                text.contains("authentication", ignoreCase = true) ||
+                text.contains("public key", ignoreCase = true) ||
+                text.contains("permission denied", ignoreCase = true)
+            ) {
                 Result.AuthPending
             } else {
-                Result.Failed(e.message ?: e.javaClass.simpleName)
+                Result.Failed(text.ifBlank { e.javaClass.simpleName })
             }
         } finally {
-            runCatching { dadb.shell("rm -f $REMOTE_APK $REMOTE_SCRIPT 2>/dev/null") }
-            runCatching { dadb.close() }
+            // Do not tear down the process-wide ADB transport after success.
+            // The shell script has already requested the app restart and the
+            // process may be in the replacement/relaunch window.
+            if (!installSucceeded) {
+                runCatching {
+                    dadb.shell("rm -f $REMOTE_APK $REMOTE_SCRIPT 2>/dev/null")
+                }
+            }
         }
     }
 
@@ -163,7 +128,7 @@ class VehicleOtaInstaller(private val context: Context) {
             echo '$safeMarker' > $POST_UPDATE
             echo '$safeMarker' > $VERSION_FILE
             chmod 666 $IN_PROGRESS $POST_UPDATE $VERSION_FILE 2>/dev/null
-            pm install -r $REMOTE_APK
+            pm install -r -d $REMOTE_APK
             rc=${'$'}?
             if [ "${'$'}rc" -eq 0 ]; then
               rm -f $IN_PROGRESS 2>/dev/null
@@ -175,7 +140,7 @@ class VehicleOtaInstaller(private val context: Context) {
     }
 
     private fun writeScript(dadb: Dadb, script: String) {
-        val nonce = System.nanoTime().toString()
+        val nonce = "${System.nanoTime()}"
         val eof = "__DRIVE_APEX_EOF_${nonce}__"
         val writeCommand = "cat > $REMOTE_SCRIPT <<'$eof'\n$script\n$eof"
         val write = dadb.shell(writeCommand)
@@ -183,39 +148,5 @@ class VehicleOtaInstaller(private val context: Context) {
             throw IllegalStateException("Vehicle OTA script staging failed: ${write.allOutput}")
         }
         dadb.shell("chmod 700 $REMOTE_SCRIPT 2>/dev/null")
-    }
-
-    private fun getOrCreateKeyPair(): AdbKeyPair {
-        val dir = File(context.filesDir, "vehicle_adb")
-        if (!dir.exists() && !dir.mkdirs()) {
-            throw IllegalStateException("Cannot create ADB key directory")
-        }
-        val privateKey = File(dir, "adbkey")
-        val publicKey = File(dir, "adbkey.pub")
-        if (!privateKey.isFile || !publicKey.isFile) {
-            privateKey.delete()
-            publicKey.delete()
-            AdbKeyPair.generate(privateKey, publicKey)
-        }
-        return AdbKeyPair.read(privateKey, publicKey)
-    }
-
-    private fun adbPortOpen(): Boolean {
-        return runCatching {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress(ADB_HOST, ADB_PORT), 1_000)
-            }
-            true
-        }.getOrDefault(false)
-    }
-
-    private fun looksLikeAuthFailure(text: String): Boolean {
-        val normalized = text.lowercase()
-        return normalized.contains("auth") ||
-            normalized.contains("unauthorized") ||
-            normalized.contains("authentication") ||
-            normalized.contains("public key") ||
-            normalized.contains("permission denied") ||
-            normalized.contains("adb auth pending")
     }
 }
