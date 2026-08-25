@@ -193,7 +193,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             val command = "pm grant --user $userId ${BuildConfig.APPLICATION_ID} $permission"
             runCatching {
                 val result = dadb.shell(command)
-                val detail = listOf(result.stdout, result.stderr)
+                val detail = listOf(result.output, result.errorOutput)
                     .filter { it.isNotBlank() }
                     .joinToString(" | ")
                 val granted = result.exitCode == 0 || permissionCheck(dadb, userId, permission)
@@ -206,16 +206,16 @@ internal class VehicleAdbConnection(private val context: Context) {
 
     private fun permissionCheck(dadb: Dadb, userId: Int, permission: String): Boolean = runCatching {
         val result = dadb.shell("pm check-permission --user $userId ${BuildConfig.APPLICATION_ID} $permission")
-        result.stdout.contains("granted", ignoreCase = true)
+        result.output.contains("granted", ignoreCase = true)
     }.getOrDefault(false)
 
     private fun currentUserId(dadb: Dadb): Int = runCatching {
         val result = dadb.shell("cmd activity get-current-user")
-        result.stdout.trim().toInt()
+        result.output.trim().toInt()
     }.getOrElse {
         runCatching {
             val result = dadb.shell("pm list users")
-            Regex("UserInfo\\{(\\d+):").find(result.stdout)?.groupValues?.get(1)?.toInt() ?: 0
+            Regex("UserInfo\\{(\\d+):").find(result.output)?.groupValues?.get(1)?.toInt() ?: 0
         }.getOrDefault(0)
     }
 
