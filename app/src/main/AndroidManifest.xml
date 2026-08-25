@@ -9,12 +9,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Read-only BYD HAL permissions used by OverDrive and our verified paths. -->
+    <!-- Read-only BYD permissions mirrored from the DiPlus vehicle-data path. -->
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_MOTOR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_ENERGY_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_GET" />
 
     <application
         android:name=".DriveApexApplication"
