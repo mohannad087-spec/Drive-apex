@@ -18,6 +18,7 @@ import com.driveapex.audio.ETronInspiredSoundProfile
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
+import com.driveapex.update.BydAdbSetup
 import com.driveapex.update.UpdateManager
 import com.driveapex.vehicle.BydTelemetryDiagnostics
 import com.driveapex.vehicle.LiveTelemetry
@@ -163,6 +164,11 @@ class MainActivity : Activity() {
         }, marginParams(bottom = 8))
 
         root.addView(Button(this).apply {
+            text = "BYD ADB SETUP / AUTHORIZE"
+            setOnClickListener { runAdbSetup(forceOpen = true) }
+        }, marginParams(bottom = 8))
+
+        root.addView(Button(this).apply {
             text = "BYD TELEMETRY DIAGNOSTICS"
             setOnClickListener { showBydDiagnostics() }
         }, marginParams(bottom = 8))
@@ -196,12 +202,28 @@ class MainActivity : Activity() {
 
         syncSimulator()
         setContentView(scroll)
+        handler.postDelayed({ runAdbSetup(forceOpen = false) }, 500L)
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
     }
 
     override fun onResume() {
         super.onResume()
         if (::updateManager.isInitialized) updateManager.onResume()
+    }
+
+    private fun runAdbSetup(forceOpen: Boolean) {
+        val result = BydAdbSetup.prepare(this, forceOpen)
+        val message = when (result) {
+            BydAdbSetup.Result.ALREADY_AVAILABLE -> "ADB port 5555 is available. The app is attempting the persistent ADB key connection."
+            BydAdbSetup.Result.SETTINGS_OPENED -> "BYD ADB settings opened. Enable ADB over Wi-Fi. Android will show the RSA authorization dialog for this app's key the first time the connection is accepted."
+            BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD Development Tools ADB settings activity was not found. Enable wireless ADB manually, then retry."
+        }
+        liveDiagnosticsValue.text = "ADB: ${result.name}"
+        AlertDialog.Builder(this)
+            .setTitle("BYD ADB setup")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun showBydDiagnostics() {
