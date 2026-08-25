@@ -1,8 +1,8 @@
 package com.driveapex.vehicle
 
 import android.content.Context
-import android.content.ContextWrapper
-import android.content.pm.PackageManager
+import com.driveapex.update.VehicleAdbConnection
+import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -10,16 +10,19 @@ import java.util.concurrent.TimeUnit
 /**
  * Read-only BYD telemetry bridge.
  *
- * Speed/throttle/brake come from BYDAutoSpeedDevice and motor RPM comes from
- * BYDAutoEngineDevice.getEngineSpeed(). RPM is never synthesized or derived.
- * The proprietary framework is resolved at runtime and no vehicle-control API
- * is called.
+ * ADB is used for authorization/permission bootstrap. Once that is complete,
+ * vehicle values are read from the BYD framework itself. No fake permission
+ * Context is used: the framework sees the real OS permission state granted by
+ * the ADB bootstrap layer.
  */
 class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     private val appContext = context.applicationContext
-    private val bydContext = BydPermissionContext(appContext)
+    private val adb = VehicleAdbConnection(appContext)
     private val validator = VehicleTelemetryValidator(500L)
-    private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+    private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "driveapex-byd-telemetry").apply { isDaemon = true }
+    }
+
     @Volatile private var running = false
     @Volatile private var latestFrame: TelemetryFrame? = null
     @Volatile private var lastError: String? = null
@@ -41,13 +44,19 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     fun latest(): TelemetryFrame? = latestFrame
 
     override fun start(onFrame: (TelemetryFrame) -> Unit) {
-        if (running || !isAvailable()) return
+        if (running) return
         running = true
+        executor.execute {
+            // Give the ADB bootstrap a chance to authorize/grant before the first HAL call.
+            adb.connect()
+            ensureApi()
+        }
         executor.scheduleAtFixedRate({
+            if (!isAvailable()) return@scheduleAtFixedRate
             val frame = readFrame() ?: return@scheduleAtFixedRate
             latestFrame = frame
             onFrame(frame)
-        }, 0L, 50L, TimeUnit.MILLISECONDS)
+        }, 250L, 50L, TimeUnit.MILLISECONDS)
     }
 
     override fun stop() {
@@ -59,16 +68,16 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         if (speedDevice != null && engineDevice != null) return
         runCatching {
             val speedClass = Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
-            speedDevice = speedClass.getMethod("getInstance", Context::class.java)
-                .invoke(null, bydContext)
+            val speedInstance = speedClass.getMethod("getInstance", Context::class.java)
             getSpeed = speedClass.getMethod("getCurrentSpeed")
             getThrottle = speedClass.getMethod("getAccelerateDeepness")
             getBrake = speedClass.getMethod("getBrakeDeepness")
+            speedDevice = speedInstance.invoke(null, appContext)
 
             val engineClass = Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice")
-            engineDevice = engineClass.getMethod("getInstance", Context::class.java)
-                .invoke(null, bydContext)
+            val engineInstance = engineClass.getMethod("getInstance", Context::class.java)
             getEngineSpeed = engineClass.getMethod("getEngineSpeed")
+            engineDevice = engineInstance.invoke(null, appContext)
             lastError = null
         }.onFailure {
             speedDevice = null
@@ -77,15 +86,17 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
             getThrottle = null
             getBrake = null
             getEngineSpeed = null
-            lastError = it.javaClass.simpleName + ": " + (it.message ?: "BYD telemetry API unavailable")
+            lastError = rootCause(it).let { e ->
+                "${e.javaClass.simpleName}: ${e.message ?: "BYD telemetry API unavailable"}"
+            }
         }
     }
 
     private fun readFrame(): TelemetryFrame? = runCatching {
-        val speed = (getSpeed?.invoke(speedDevice) as Number).toDouble().toFloat()
-        val throttlePct = (getThrottle?.invoke(speedDevice) as Number).toFloat()
-        val brakePct = (getBrake?.invoke(speedDevice) as Number).toFloat()
-        val rpm = (getEngineSpeed?.invoke(engineDevice) as Number).toFloat()
+        val speed = (getSpeed!!.invoke(speedDevice) as Number).toDouble().toFloat()
+        val throttlePct = (getThrottle!!.invoke(speedDevice) as Number).toFloat()
+        val brakePct = (getBrake!!.invoke(speedDevice) as Number).toFloat()
+        val rpm = (getEngineSpeed!!.invoke(engineDevice) as Number).toFloat()
         val now = System.currentTimeMillis()
 
         val frame = TelemetryFrame(
@@ -100,41 +111,20 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
 
         if (validator.validate(frame, now) is VehicleTelemetryValidator.Result.Valid) frame else null
     }.onFailure {
-        lastError = it.javaClass.simpleName + ": " + (it.message ?: "BYD telemetry read failed")
+        lastError = rootCause(it).let { e ->
+            "${e.javaClass.simpleName}: ${e.message ?: "BYD telemetry read failed"}"
+        }
     }.getOrNull()
 
-    private class BydPermissionContext(base: Context) : ContextWrapper(base) {
-        private fun isByd(permission: String?): Boolean =
-            permission?.startsWith("android.permission.BYD") == true
-
-        override fun getApplicationContext(): Context = this
-
-        override fun checkPermission(permission: String, pid: Int, uid: Int): Int =
-            if (isByd(permission)) PackageManager.PERMISSION_GRANTED
-            else super.checkPermission(permission, pid, uid)
-
-        override fun checkSelfPermission(permission: String): Int =
-            if (isByd(permission)) PackageManager.PERMISSION_GRANTED
-            else super.checkSelfPermission(permission)
-
-        override fun checkCallingPermission(permission: String): Int =
-            if (isByd(permission)) PackageManager.PERMISSION_GRANTED
-            else super.checkCallingPermission(permission)
-
-        override fun checkCallingOrSelfPermission(permission: String): Int =
-            if (isByd(permission)) PackageManager.PERMISSION_GRANTED
-            else super.checkCallingOrSelfPermission(permission)
-
-        override fun enforcePermission(permission: String, pid: Int, uid: Int, message: String?) {
-            if (!isByd(permission)) super.enforcePermission(permission, pid, uid, message)
+    private fun rootCause(error: Throwable): Throwable {
+        var current = error
+        val seen = HashSet<Throwable>()
+        while (current is InvocationTargetException && current.targetException != null && seen.add(current)) {
+            current = current.targetException
         }
-
-        override fun enforceCallingPermission(permission: String, message: String?) {
-            if (!isByd(permission)) super.enforceCallingPermission(permission, message)
+        while (current.cause != null && current.cause !== current && seen.add(current)) {
+            current = current.cause!!
         }
-
-        override fun enforceCallingOrSelfPermission(permission: String, message: String?) {
-            if (!isByd(permission)) super.enforceCallingOrSelfPermission(permission, message)
-        }
+        return current
     }
 }
