@@ -50,6 +50,7 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydTelemetryDaemon"
         private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"
         private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
+        private const val TELEMETRY_DAEMON_APK = "/data/local/tmp/driveapex-byd.apk"
         private const val TELEMETRY_DAEMON_PORT = 18765
 
         @Volatile private var shared: Dadb? = null
@@ -143,8 +144,9 @@ internal class VehicleAdbConnection(private val context: Context) {
     fun ensureTelemetryDaemon(): Boolean {
         val dadb = connect() ?: return false
         return runCatching {
-            val ping = dadb.shell("printf 'daemon-ping' 2>/dev/null").output
-            val listening = dadb.shell("(nc -z 127.0.0.1 $TELEMETRY_DAEMON_PORT || toybox nc -z 127.0.0.1 $TELEMETRY_DAEMON_PORT) 2>/dev/null; echo \$?").output.trim() == "0"
+            val listening = dadb.shell(
+                "(nc -z $HOST $TELEMETRY_DAEMON_PORT || toybox nc -z $HOST $TELEMETRY_DAEMON_PORT) 2>/dev/null; echo \$?"
+            ).output.trim() == "0"
             if (listening) return@runCatching true
 
             val apkPath = dadb.shell(
@@ -155,12 +157,25 @@ internal class VehicleAdbConnection(private val context: Context) {
                 return@runCatching false
             }
 
-            dadb.shell(
-                "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
-                    "rm -f $TELEMETRY_DAEMON_LOG; " +
-                    "CLASSPATH=$apkPath setsid app_process /system/bin --nice-name=$TELEMETRY_DAEMON_NAME $TELEMETRY_DAEMON_CLASS " +
-                    "> $TELEMETRY_DAEMON_LOG 2>&1 &"
-            )
+            // DiPlus launches its shell-UID server from /data/local/tmp with
+            // `app_process -Djava.class.path=... / <main-class>`. Keep the
+            // same execution shape instead of wrapping app_process in setsid.
+            val launch =
+                "rm -f $TELEMETRY_DAEMON_LOG; " +
+                    "rm -f $TELEMETRY_DAEMON_APK; " +
+                    "cp \"$apkPath\" $TELEMETRY_DAEMON_APK; " +
+                    "chmod 644 $TELEMETRY_DAEMON_APK; " +
+                    "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
+                    "app_process -Djava.class.path=$TELEMETRY_DAEMON_APK / $TELEMETRY_DAEMON_CLASS " +
+                    "> $TELEMETRY_DAEMON_LOG 2>&1 < /dev/null &"
+            val launchResult = dadb.shell(launch)
+            if (launchResult.exitCode != 0) {
+                lastError = listOf(launchResult.output, launchResult.errorOutput)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" | ")
+                    .ifBlank { "Telemetry daemon launch command failed: exit=${launchResult.exitCode}" }
+                return@runCatching false
+            }
 
             repeat(30) {
                 Thread.sleep(100L)
@@ -168,10 +183,23 @@ internal class VehicleAdbConnection(private val context: Context) {
                     Socket(HOST, TELEMETRY_DAEMON_PORT).use { true }
                 }.getOrDefault(false)
                 if (probe) return@runCatching true
+
+                val process = runCatching {
+                    dadb.shell("ps -A | grep -w $TELEMETRY_DAEMON_CLASS | grep -v grep").output.trim()
+                }.getOrDefault("")
+                if (process.isBlank()) {
+                    val log = runCatching {
+                        dadb.shell("tail -n 40 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                    }.getOrDefault("")
+                    if (log.isNotBlank()) lastError = log
+                }
             }
 
-            lastError = dadb.shell("tail -n 12 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
-                .ifBlank { "Telemetry daemon did not open localhost:$TELEMETRY_DAEMON_PORT" }
+            lastError = runCatching {
+                dadb.shell("tail -n 40 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+            }.getOrDefault("").ifBlank {
+                "Telemetry daemon did not open localhost:$TELEMETRY_DAEMON_PORT"
+            }
             false
         }.getOrElse {
             lastError = "Telemetry daemon: ${it.message ?: it.javaClass.simpleName}"
