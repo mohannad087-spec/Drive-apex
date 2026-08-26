@@ -8,8 +8,6 @@ import java.io.OutputStreamWriter
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
  * BYD telemetry daemon launched through ADB/app_process (UID 2000).
@@ -61,9 +59,7 @@ object BydTelemetryDaemon {
                 val throttlePct = speed.readNumber("getAccelerateDeepness")
                 val brakePct = speed.readNumber("getBrakeDeepness")
 
-                // The BYD motor SDK exposes getMotorSpeed() as the motor-speed value.
-                // DriveApex treats it as the RPM source when available. EngineSpeed is
-                // retained as a secondary fallback for trims that expose it reliably.
+                // Front/motor speed is the primary RPM source when available.
                 val motorRpm = motor.readNumber("getMotorSpeed")
                 val engineRpm = engine.readNumber("getEngineSpeed")
                 val rpm = when {
@@ -106,9 +102,6 @@ object BydTelemetryDaemon {
         override fun checkCallingOrSelfPermission(permission: String): Int = PackageManager.PERMISSION_GRANTED
         override fun checkPermission(permission: String, pid: Int, uid: Int): Int = PackageManager.PERMISSION_GRANTED
         override fun checkSelfPermission(permission: String): Int = PackageManager.PERMISSION_GRANTED
-        override fun enforceCallingOrSelfPermission(permission: String, message: String) = Unit
-        override fun enforceCallingPermission(permission: String, message: String) = Unit
-        override fun enforcePermission(permission: String, pid: Int, uid: Int, message: String) = Unit
     }
 
     private class ReflectDevice(
