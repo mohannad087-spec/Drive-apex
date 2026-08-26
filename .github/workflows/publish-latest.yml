@@ -61,6 +61,20 @@ jobs:
       - name: Build signed release APK
         run: gradle assembleRelease --stacktrace
 
+      - name: Audit published signing certificates
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -x "$APKSIGNER"
+          echo "=== Current build (0.2.55) certificate ==="
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
+          echo "=== Published 0.2.54 certificate ==="
+          curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
+            -o /tmp/DriveApex-0.2.54.apk \
+            https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.54/DriveApex.apk
+          "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.54.apk
+
       - name: Prepare deterministic update assets
         shell: bash
         run: |
