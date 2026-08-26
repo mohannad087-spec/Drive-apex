@@ -12,8 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * BYD/DiPlus-style local ADB transport.
  *
- * ADB is used only for bootstrap/authorization and shell-side permission
- * provisioning. Vehicle telemetry itself is read through the BYD HAL layer.
+ * ADB is used for authorization, shell-side permission provisioning, and launching
+ * the shell-UID telemetry daemon. Vehicle telemetry is then read by that daemon
+ * through the BYD HAL layer.
  */
 internal class VehicleAdbConnection(private val context: Context) {
 
@@ -33,7 +34,6 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val QUICK_WAIT_MS = 2_000L
         private const val MAX_POLLS = 60
 
-        // Read-only BYD permissions observed in the DiPlus APK for vehicle data.
         private val BYD_READ_PERMISSIONS = arrayOf(
             "android.permission.BYDAUTO_SPEED_COMMON",
             "android.permission.BYDAUTO_SPEED_GET",
@@ -46,6 +46,11 @@ internal class VehicleAdbConnection(private val context: Context) {
             "android.permission.BYDAUTO_GEARBOX_GET",
             "android.permission.BYDAUTO_VEHICLE_DATA_GET"
         )
+
+        private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydTelemetryDaemon"
+        private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"
+        private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
+        private const val TELEMETRY_DAEMON_PORT = 18765
 
         @Volatile private var shared: Dadb? = null
         private val sharedLock = Object()
@@ -70,7 +75,6 @@ internal class VehicleAdbConnection(private val context: Context) {
         fun lastError(): String? = lastError
         fun permissionResults(): List<PermissionResult> = lastPermissionResults
 
-        /** Starts the first-launch ADB handshake without blocking the UI. */
         fun warmUp(context: Context) {
             if (!isVehicleRuntime()) return
             val appContext = context.applicationContext
@@ -135,8 +139,49 @@ internal class VehicleAdbConnection(private val context: Context) {
         }
     }
 
+    /** Launch the shell-UID BYD telemetry daemon from this installed APK. */
+    fun ensureTelemetryDaemon(): Boolean {
+        val dadb = connect() ?: return false
+        return runCatching {
+            val ping = dadb.shell("printf 'daemon-ping' 2>/dev/null").output
+            val listening = dadb.shell("(nc -z 127.0.0.1 $TELEMETRY_DAEMON_PORT || toybox nc -z 127.0.0.1 $TELEMETRY_DAEMON_PORT) 2>/dev/null; echo \$?").output.trim() == "0"
+            if (listening) return@runCatching true
+
+            val apkPath = dadb.shell(
+                "pm path ${BuildConfig.APPLICATION_ID} | sed -n 's/^package://p' | head -n 1"
+            ).output.trim()
+            if (!apkPath.startsWith("/")) {
+                lastError = "Cannot resolve APK path for telemetry daemon"
+                return@runCatching false
+            }
+
+            dadb.shell(
+                "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
+                    "rm -f $TELEMETRY_DAEMON_LOG; " +
+                    "CLASSPATH=$apkPath setsid app_process /system/bin --nice-name=$TELEMETRY_DAEMON_NAME $TELEMETRY_DAEMON_CLASS " +
+                    "> $TELEMETRY_DAEMON_LOG 2>&1 &"
+            )
+
+            repeat(30) {
+                Thread.sleep(100L)
+                val probe = runCatching {
+                    Socket(HOST, TELEMETRY_DAEMON_PORT).use { true }
+                }.getOrDefault(false)
+                if (probe) return@runCatching true
+            }
+
+            lastError = dadb.shell("tail -n 12 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                .ifBlank { "Telemetry daemon did not open localhost:$TELEMETRY_DAEMON_PORT" }
+            false
+        }.getOrElse {
+            lastError = "Telemetry daemon: ${it.message ?: it.javaClass.simpleName}"
+            false
+        }
+    }
+
     fun close() {
         synchronized(sharedLock) {
+            runCatching { shared?.shell("killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true") }
             runCatching { shared?.close() }
             shared = null
             state = State.OFF
@@ -183,10 +228,6 @@ internal class VehicleAdbConnection(private val context: Context) {
         }
     }
 
-    /**
-     * Mirrors DiPlus's `pm grant --user ...` strategy. Failures are retained and
-     * exposed to diagnostics instead of being swallowed with `|| true`.
-     */
     private fun grantBydReadPermissions(dadb: Dadb): List<PermissionResult> {
         val userId = currentUserId(dadb)
         return BYD_READ_PERMISSIONS.map { permission ->
