@@ -158,15 +158,15 @@ internal class VehicleAdbConnection(private val context: Context) {
             }
 
             // DiPlus launches its shell-UID server from /data/local/tmp with
-            // `app_process -Djava.class.path=... / <main-class>`. Keep the
-            // same execution shape instead of wrapping app_process in setsid.
+            // `app_process -Djava.class.path=... / <main-class>`. Keep the same
+            // app_process execution shape and give our process a stable name.
             val launch =
                 "rm -f $TELEMETRY_DAEMON_LOG; " +
                     "rm -f $TELEMETRY_DAEMON_APK; " +
                     "cp \"$apkPath\" $TELEMETRY_DAEMON_APK; " +
                     "chmod 644 $TELEMETRY_DAEMON_APK; " +
                     "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
-                    "app_process -Djava.class.path=$TELEMETRY_DAEMON_APK / $TELEMETRY_DAEMON_CLASS " +
+                    "app_process -Djava.class.path=$TELEMETRY_DAEMON_APK /system/bin --nice-name=$TELEMETRY_DAEMON_NAME $TELEMETRY_DAEMON_CLASS " +
                     "> $TELEMETRY_DAEMON_LOG 2>&1 < /dev/null &"
             val launchResult = dadb.shell(launch)
             if (launchResult.exitCode != 0) {
@@ -185,7 +185,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                 if (probe) return@runCatching true
 
                 val process = runCatching {
-                    dadb.shell("ps -A | grep -w $TELEMETRY_DAEMON_CLASS | grep -v grep").output.trim()
+                    dadb.shell("ps -A | grep -w $TELEMETRY_DAEMON_NAME | grep -v grep").output.trim()
                 }.getOrDefault("")
                 if (process.isBlank()) {
                     val log = runCatching {
