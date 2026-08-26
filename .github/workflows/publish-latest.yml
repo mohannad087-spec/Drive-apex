@@ -15,8 +15,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 54
-      DRIVEAPEX_VERSION_NAME: 0.2.54
+      DRIVEAPEX_VERSION_CODE: 55
+      DRIVEAPEX_VERSION_NAME: 0.2.55
 
     steps:
       - name: Checkout
@@ -123,10 +123,10 @@ jobs:
           import json
           with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
               d=json.load(f)
-          assert d['versionCode'] == 54
-          assert d['versionName'] == '0.2.54'
+          assert d['versionCode'] == 55
+          assert d['versionName'] == '0.2.55'
           assert d['assetName'] == 'DriveApex.apk'
-          assert d['tag'] == 'v0.2.54'
+          assert d['tag'] == 'v0.2.55'
           assert len(d['sha256']) == 64
           print('Verified update manifest:', d['versionName'], d['versionCode'])
           PY
