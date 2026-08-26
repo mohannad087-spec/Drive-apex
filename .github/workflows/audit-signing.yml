@@ -32,10 +32,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== DriveApex 0.2.54 ==='
-          apksigner verify --verbose --print-certs /tmp/DriveApex-0.2.54.apk
-          echo '=== DriveApex 0.2.55 ==='
-          apksigner verify --verbose --print-certs /tmp/DriveApex-0.2.55.apk
-          echo '=== SHA-256 certificate comparison ==='
-          apksigner verify --print-certs /tmp/DriveApex-0.2.54.apk 2>&1 | grep 'Signer #1 certificate SHA-256 digest:' || true
-          apksigner verify --print-certs /tmp/DriveApex-0.2.55.apk 2>&1 | grep 'Signer #1 certificate SHA-256 digest:' || true
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          test -x "$APKSIGNER"
+          {
+            echo '=== DriveApex 0.2.54 ==='
+            "$APKSIGNER" verify --verbose --print-certs /tmp/DriveApex-0.2.54.apk
+            echo '=== DriveApex 0.2.55 ==='
+            "$APKSIGNER" verify --verbose --print-certs /tmp/DriveApex-0.2.55.apk
+            echo '=== SHA-256 certificate comparison ==='
+            "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.54.apk | grep 'Signer #1 certificate SHA-256 digest:' || true
+            "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.55.apk | grep 'Signer #1 certificate SHA-256 digest:' || true
+          } | tee /tmp/signing-audit.txt
+
+          CERT54=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.54.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
+          CERT55=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.55.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
+          {
+            echo "0.2.54 certificate SHA-256: ${CERT54:-UNKNOWN}"
+            echo "0.2.55 certificate SHA-256: ${CERT55:-UNKNOWN}"
+            if [[ -n "$CERT54" && "$CERT54" == "$CERT55" ]]; then
+              echo 'RESULT: MATCH'
+            else
+              echo 'RESULT: MISMATCH'
+            fi
+          } >> /tmp/signing-audit.txt
+
+      - name: Publish signing audit artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: driveapex-signing-audit
+          path: /tmp/signing-audit.txt
+          if-no-files-found: error
+          retention-days: 7
