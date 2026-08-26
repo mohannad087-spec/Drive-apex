@@ -8,7 +8,6 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 /**
  * Live BYD telemetry bridge.
@@ -27,6 +26,9 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     @Volatile private var latestFrame: TelemetryFrame? = null
     @Volatile private var lastError: String? = null
 
+    /** Backwards-compatible capability check used by UdpTelemetryReceiver. */
+    fun isAvailable(): Boolean = adb.ensureTelemetryDaemon() || isDaemonReachable()
+
     fun isDaemonReachable(): Boolean = runCatching {
         Socket().use { it.connect(InetSocketAddress("127.0.0.1", 18765), 250) }
         true
@@ -41,7 +43,7 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         running = true
         executor.execute {
             if (!adb.ensureTelemetryDaemon()) {
-                lastError = adb.errorString()
+                lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
                 return@execute
             }
             while (running) {
@@ -91,5 +93,3 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         frame.takeIf { frame.timestampMs > 0L && frame.rpm.isFinite() && frame.speedKph.isFinite() }
     }.getOrNull()
 }
-
-private fun VehicleAdbConnection.errorString(): String = lastError() ?: "ADB telemetry daemon unavailable"
