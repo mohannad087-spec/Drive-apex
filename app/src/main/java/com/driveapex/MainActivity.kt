@@ -189,7 +189,7 @@ class MainActivity : Activity() {
         box.addView(telemetry)
         signatureValue = label("BALANCED   •   AGG 0%   •   SMOOTH 0%", 11f, PURPLE, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(9), 0, 0) }
         box.addView(signatureValue)
-        genomeValue = label("GENOME: NEW  •  MATURITY 0%  •  OBS 0", 10f, MUTED, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(7), 0, 0) }
+        genomeValue = label("GENOME: NEW  •  OBS 0", 10f, MUTED, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(7), 0, 0) }
         box.addView(genomeValue)
         return box
     }
@@ -324,7 +324,7 @@ class MainActivity : Activity() {
         telemetry.text = String.format(Locale.US, "%.0f km/h   •   Throttle %d%%   •   Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.regen * 100).toInt())
         sceneValue.text = scene.name.replace('_', ' ')
         signatureValue.text = String.format(Locale.US, "%s   •   AGG %d%%   •   SMOOTH %d%%", signature.label(), (signature.aggression * 100).toInt(), (signature.smoothness * 100).toInt())
-        genomeValue.text = String.format(Locale.US, "GENOME: %s  •  MATURITY %d%%  •  OBS %d", signature.label(), (signature.maturity * 100).toInt(), genome.observations.coerceAtMost(999_999L))
+        genomeValue.text = String.format(Locale.US, "GENOME: %s  •  OBS %d", signature.label(), genome.observations.coerceAtMost(999_999L))
         eventValue.text = String.format(Locale.US, "EVENTS L:%d A:%d O:%d R:%d B:%d S:%d", (events.launch * 100).toInt(), (events.accelerationHit * 100).toInt(), (events.liftOff * 100).toInt(), (events.regenerationHit * 100).toInt(), (events.brakeHit * 100).toInt(), (events.speedRush * 100).toInt())
     }
 
