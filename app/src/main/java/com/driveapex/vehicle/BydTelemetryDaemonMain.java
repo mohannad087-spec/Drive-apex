@@ -105,12 +105,12 @@ public final class BydTelemetryDaemonMain {
     }
 
     private static double valueOrZero(Double value) {
-        return value != null && value.isFinite() ? value : 0.0;
+        return value != null && Double.isFinite(value) ? value : 0.0;
     }
 
     private static double firstNonNegativeFinite(Double first, Double second, double fallback) {
-        if (first != null && first.isFinite() && first >= 0.0) return first;
-        if (second != null && second.isFinite() && second >= 0.0) return second;
+        if (first != null && Double.isFinite(first) && first >= 0.0) return first;
+        if (second != null && Double.isFinite(second) && second >= 0.0) return second;
         return fallback;
     }
 
