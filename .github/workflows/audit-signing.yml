@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for version in 55 58; do
+          for version in 58 59; do
             curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
               -o "/tmp/DriveApex-${version}.apk" \
               "https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.${version}/DriveApex.apk"
@@ -30,9 +30,9 @@ jobs:
           set -euo pipefail
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           test -x "$APKSIGNER"
-          CERT55=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-55.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
           CERT58=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-58.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
-          echo "0.2.55 certificate SHA-256: ${CERT55:-UNKNOWN}"
+          CERT59=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-59.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
           echo "0.2.58 certificate SHA-256: ${CERT58:-UNKNOWN}"
-          [[ -n "$CERT55" && "$CERT55" == "$CERT58" ]] || { echo 'RESULT: MISMATCH'; exit 1; }
+          echo "0.2.59 certificate SHA-256: ${CERT59:-UNKNOWN}"
+          [[ -n "$CERT58" && "$CERT58" == "$CERT59" ]] || { echo 'RESULT: MISMATCH'; exit 1; }
           echo 'RESULT: MATCH'
