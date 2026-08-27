@@ -28,52 +28,47 @@ object BydAdbSetup {
     }
 
     fun prepare(activity: Activity, forceOpen: Boolean = false): Result {
+        val appContext = activity.applicationContext
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val alreadyRequested = prefs.getBoolean(KEY_SETTINGS_REQUESTED, false)
 
-        // A listening ADB port does not mean this app's key is authorized.
-        // DiPlus first drives the BYD ADB settings flow, then performs the
-        // client connection while the settings/system UI is in the foreground.
-        if (isAdbPortOpen()) {
-            val state = VehicleAdbConnection.state()
-            if (state == VehicleAdbConnection.State.AUTHORIZED) {
-                VehicleAdbConnection.warmUp(activity.applicationContext)
-                return Result.ALREADY_AVAILABLE
-            }
-
-            if (forceOpen || !alreadyRequested) {
-                val opened = openBydAdbSettings(activity)
-                if (opened) {
-                    prefs.edit().putBoolean(KEY_SETTINGS_REQUESTED, true).apply()
-                    // Start the ADB client after the BYD settings activity is
-                    // visible so the RSA authorization prompt is not hidden.
-                    mainHandler.postDelayed({
-                        VehicleAdbConnection.warmUp(activity.applicationContext)
-                    }, 900L)
-                    return Result.SETTINGS_OPENED
-                }
-            }
-
-            VehicleAdbConnection.warmUp(activity.applicationContext)
+        // The authoritative state is the real ADB authentication handshake.
+        // A listening port or an OEM settings Activity is only a bootstrap hint.
+        val connected = runCatching { VehicleAdbConnection(appContext).connect() }.getOrNull()
+        if (connected != null && VehicleAdbConnection.state() == VehicleAdbConnection.State.AUTHORIZED) {
+            prefs.edit().remove(KEY_SETTINGS_REQUESTED).apply()
             return Result.ALREADY_AVAILABLE
         }
 
         if (!forceOpen && alreadyRequested) return Result.SETTINGS_UNAVAILABLE
 
+        if (isAdbPortOpen()) {
+            // Port 5555 is already live but this app key is not authorized yet.
+            // Do not report a fake "activity missing" error when no OEM activity is exported.
+            val opened = openBydAdbSettings(activity)
+            if (opened) {
+                prefs.edit().putBoolean(KEY_SETTINGS_REQUESTED, true).apply()
+                mainHandler.postDelayed({
+                    VehicleAdbConnection.warmUp(appContext)
+                }, 900L)
+                return Result.SETTINGS_OPENED
+            }
+            VehicleAdbConnection.warmUp(appContext)
+            return Result.ALREADY_AVAILABLE
+        }
+
         val opened = openBydAdbSettings(activity)
         if (opened) {
             prefs.edit().putBoolean(KEY_SETTINGS_REQUESTED, true).apply()
-            // The settings screen may enable the TCP listener asynchronously.
-            // Retry the ADB client after it has had time to come up.
             mainHandler.postDelayed({
-                VehicleAdbConnection.warmUp(activity.applicationContext)
+                VehicleAdbConnection.warmUp(appContext)
             }, 1200L)
             return Result.SETTINGS_OPENED
         }
+
         return Result.SETTINGS_UNAVAILABLE
     }
 
-    /** Resume a deferred authorization attempt after returning from BYD settings. */
     fun onResume(activity: Activity) {
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean(KEY_SETTINGS_REQUESTED, false)) return
@@ -83,10 +78,6 @@ object BydAdbSetup {
         }, 350L)
     }
 
-    /**
-     * DiPlus contains the concrete BYD component name on this firmware family.
-     * Prefer it, then fall back to runtime discovery for other variants.
-     */
     fun openBydAdbSettings(activity: Activity): Boolean = runCatching {
         val pm = activity.packageManager
 
