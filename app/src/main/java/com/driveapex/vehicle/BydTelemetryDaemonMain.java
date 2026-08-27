@@ -3,9 +3,11 @@ package com.driveapex.vehicle;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
+import android.os.Looper;
 
 import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
@@ -91,15 +93,40 @@ public final class BydTelemetryDaemonMain {
     }
 
     private static Context createPackageContext() throws Exception {
+        // app_process starts this class on a plain shell thread, unlike a normal
+        // application process. ActivityThread's constructor creates an internal
+        // Handler, so a Looper must exist before we instantiate ActivityThread.
+        if (Looper.myLooper() == null) {
+            Looper.prepare();
+        }
+
         Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-        Method current = activityThreadClass.getDeclaredMethod("currentActivityThread");
-        current.setAccessible(true);
-        Object thread = current.invoke(null);
+        Object thread = null;
+
+        // Preferred shell-safe path: construct ActivityThread without calling
+        // systemMain(), which would attach this shell process as the Android
+        // system process and is the source of the previous startup crash path.
+        try {
+            Constructor<?> ctor = activityThreadClass.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            thread = ctor.newInstance();
+        } catch (Throwable constructorFailure) {
+            System.err.println("ActivityThread ctor path failed: " + message(constructorFailure));
+        }
+
+        // Firmware compatibility fallback. The Looper is already prepared, so
+        // systemMain() will no longer fail while constructing ActivityThread.H.
+        if (thread == null) {
+            Method current = activityThreadClass.getDeclaredMethod("currentActivityThread");
+            current.setAccessible(true);
+            thread = current.invoke(null);
+        }
         if (thread == null) {
             Method systemMain = activityThreadClass.getDeclaredMethod("systemMain");
             systemMain.setAccessible(true);
             thread = systemMain.invoke(null);
         }
+
         Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
         getSystemContext.setAccessible(true);
         Context systemContext = (Context) getSystemContext.invoke(thread);
@@ -167,12 +194,12 @@ public final class BydTelemetryDaemonMain {
                 } catch (Throwable ignored) {}
             }
             try {
-                java.lang.reflect.Constructor<?> ctor = clazz.getDeclaredConstructor(Context.class);
+                Constructor<?> ctor = clazz.getDeclaredConstructor(Context.class);
                 ctor.setAccessible(true);
                 return ctor.newInstance(context);
             } catch (Throwable ignored) {}
             try {
-                java.lang.reflect.Constructor<?> ctor = clazz.getDeclaredConstructor();
+                Constructor<?> ctor = clazz.getDeclaredConstructor();
                 ctor.setAccessible(true);
                 return ctor.newInstance();
             } catch (Throwable ignored) {}
