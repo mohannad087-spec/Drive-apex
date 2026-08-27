@@ -3,6 +3,8 @@ package com.driveapex.vehicle;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 
 import java.io.BufferedWriter;
@@ -13,6 +15,8 @@ import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /** Java-only shell-UID entry point for BYD telemetry. */
 public final class BydTelemetryDaemonMain {
@@ -23,19 +27,56 @@ public final class BydTelemetryDaemonMain {
 
     private BydTelemetryDaemonMain() {}
 
+    private static final class TelemetrySnapshot {
+        volatile long timestamp;
+        volatile double rpm;
+        volatile double speedKph;
+        volatile double throttlePct;
+        volatile double brakePct;
+        volatile boolean valid;
+    }
+
     public static void main(String[] args) {
+        HandlerThread halThread = null;
         try {
             Context context = createPackageContext();
-            ReflectDevice speed = new ReflectDevice("android.hardware.bydauto.speed.BYDAutoSpeedDevice", context);
-            ReflectDevice motor = new ReflectDevice("android.hardware.bydauto.motor.BYDAutoMotorDevice", context);
-            ReflectDevice engine = new ReflectDevice("android.hardware.bydauto.engine.BYDAutoEngineDevice", context);
+            ReflectDevice speed = new ReflectDevice(
+                    "android.hardware.bydauto.speed.BYDAutoSpeedDevice", context);
+            ReflectDevice motor = new ReflectDevice(
+                    "android.hardware.bydauto.motor.BYDAutoMotorDevice", context);
+            ReflectDevice engine = new ReflectDevice(
+                    "android.hardware.bydauto.engine.BYDAutoEngineDevice", context);
+            TelemetrySnapshot snapshot = new TelemetrySnapshot();
 
-            try (ServerSocket server = new ServerSocket(PORT, 4, InetAddress.getByName(HOST))) {
+            halThread = new HandlerThread("driveapex-byd-hal");
+            halThread.start();
+            Handler halHandler = new Handler(halThread.getLooper());
+            CountDownLatch initialized = new CountDownLatch(1);
+            halHandler.post(() -> {
+                boolean speedReady = speed.initialize();
+                boolean motorReady = motor.initialize();
+                boolean engineReady = engine.initialize();
+                System.out.println("BYD HAL init speed=" + speedReady
+                        + " motor=" + motorReady + " engine=" + engineReady);
+                initialized.countDown();
+                halHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        sample(speed, motor, engine, snapshot);
+                        halHandler.postDelayed(this, POLL_MS);
+                    }
+                });
+            });
+            initialized.await(3, TimeUnit.SECONDS);
+
+            try (ServerSocket server = new ServerSocket(
+                    PORT, 4, InetAddress.getByName(HOST))) {
                 System.out.println("DriveApex BYD daemon ready on " + HOST + ":" + PORT);
                 while (!server.isClosed()) {
                     try {
                         final Socket client = server.accept();
-                        Thread worker = new Thread(() -> serveClient(client, speed, motor, engine), "driveapex-byd-client");
+                        Thread worker = new Thread(
+                                () -> serveClient(client, snapshot), "driveapex-byd-client");
                         worker.setDaemon(true);
                         worker.start();
                     } catch (Exception acceptError) {
@@ -47,29 +88,59 @@ public final class BydTelemetryDaemonMain {
         } catch (Throwable t) {
             System.err.println("DriveApex BYD daemon startup failed: " + message(t));
             t.printStackTrace(System.err);
+        } finally {
+            if (halThread != null) {
+                halThread.quitSafely();
+            }
         }
     }
 
-    private static void serveClient(Socket socket, ReflectDevice speed, ReflectDevice motor, ReflectDevice engine) {
-        try (Socket ignored = socket;
-             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"))) {
-            while (!socket.isClosed()) {
-                double speedKph = valueOrZero(speed.readNumber("getCurrentSpeed"));
-                double throttlePct = valueOrZero(speed.readNumber("getAccelerateDeepness"));
-                double brakePct = valueOrZero(speed.readNumber("getBrakeDeepness"));
-                Double motorRpm = motor.readNumber("getMotorSpeed");
-                Double engineRpm = engine.readNumber("getEngineSpeed");
-                double rpm = firstNonNegativeFinite(motorRpm, engineRpm, 0.0);
+    private static void sample(
+            ReflectDevice speed,
+            ReflectDevice motor,
+            ReflectDevice engine,
+            TelemetrySnapshot snapshot) {
+        Double speedKph = speed.readNumber("getCurrentSpeed");
+        Double throttlePct = speed.readNumber("getAccelerateDeepness");
+        Double brakePct = speed.readNumber("getBrakeDeepness");
+        Double motorRpm = motor.readNumber("getMotorSpeed");
+        Double engineRpm = engine.readNumber("getEngineSpeed");
+        boolean valid = speedKph != null
+                || throttlePct != null
+                || brakePct != null
+                || motorRpm != null
+                || engineRpm != null;
+        if (!valid) {
+            snapshot.valid = false;
+            return;
+        }
 
-                writer.write(Long.toString(System.currentTimeMillis()));
+        snapshot.speedKph = valueOrZero(speedKph);
+        snapshot.throttlePct = valueOrZero(throttlePct);
+        snapshot.brakePct = valueOrZero(brakePct);
+        snapshot.rpm = firstNonNegativeFinite(motorRpm, engineRpm, 0.0);
+        snapshot.timestamp = System.currentTimeMillis();
+        snapshot.valid = true;
+    }
+
+    private static void serveClient(Socket socket, TelemetrySnapshot snapshot) {
+        try (Socket ignored = socket;
+             BufferedWriter writer = new BufferedWriter(
+                     new OutputStreamWriter(socket.getOutputStream(), "UTF-8"))) {
+            while (!socket.isClosed()) {
+                if (!snapshot.valid || snapshot.timestamp <= 0L) {
+                    Thread.sleep(POLL_MS);
+                    continue;
+                }
+                writer.write(Long.toString(snapshot.timestamp));
                 writer.write(',');
-                writer.write(Double.toString(rpm));
+                writer.write(Double.toString(snapshot.rpm));
                 writer.write(',');
-                writer.write(Double.toString(speedKph));
+                writer.write(Double.toString(snapshot.speedKph));
                 writer.write(',');
-                writer.write(Double.toString(throttlePct));
+                writer.write(Double.toString(snapshot.throttlePct));
                 writer.write(',');
-                writer.write(Double.toString(brakePct));
+                writer.write(Double.toString(snapshot.brakePct));
                 writer.write(",BYD_DAEMON");
                 writer.newLine();
                 writer.flush();
@@ -93,19 +164,11 @@ public final class BydTelemetryDaemonMain {
     }
 
     private static Context createPackageContext() throws Exception {
-        // app_process starts this class on a plain shell thread, unlike a normal
-        // application process. ActivityThread's constructor creates an internal
-        // Handler, so a Looper must exist before we instantiate ActivityThread.
         if (Looper.myLooper() == null) {
             Looper.prepare();
         }
-
         Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
         Object thread = null;
-
-        // Preferred shell-safe path: construct ActivityThread without calling
-        // systemMain(), which would attach this shell process as the Android
-        // system process and is the source of the previous startup crash path.
         try {
             Constructor<?> ctor = activityThreadClass.getDeclaredConstructor();
             ctor.setAccessible(true);
@@ -113,9 +176,6 @@ public final class BydTelemetryDaemonMain {
         } catch (Throwable constructorFailure) {
             System.err.println("ActivityThread ctor path failed: " + message(constructorFailure));
         }
-
-        // Firmware compatibility fallback. The Looper is already prepared, so
-        // systemMain() will no longer fail while constructing ActivityThread.H.
         if (thread == null) {
             Method current = activityThreadClass.getDeclaredMethod("currentActivityThread");
             current.setAccessible(true);
@@ -126,20 +186,26 @@ public final class BydTelemetryDaemonMain {
             systemMain.setAccessible(true);
             thread = systemMain.invoke(null);
         }
-
         Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
         getSystemContext.setAccessible(true);
         Context systemContext = (Context) getSystemContext.invoke(thread);
         Context packageContext = systemContext.createPackageContext(
-                PACKAGE_NAME, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+                PACKAGE_NAME,
+                Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
         return new BydPermissionContext(packageContext);
     }
 
     private static final class BydPermissionContext extends ContextWrapper {
         BydPermissionContext(Context base) { super(base); }
-        @Override public int checkCallingOrSelfPermission(String permission) { return PackageManager.PERMISSION_GRANTED; }
-        @Override public int checkPermission(String permission, int pid, int uid) { return PackageManager.PERMISSION_GRANTED; }
-        @Override public int checkSelfPermission(String permission) { return PackageManager.PERMISSION_GRANTED; }
+        @Override public int checkCallingOrSelfPermission(String permission) {
+            return PackageManager.PERMISSION_GRANTED;
+        }
+        @Override public int checkPermission(String permission, int pid, int uid) {
+            return PackageManager.PERMISSION_GRANTED;
+        }
+        @Override public int checkSelfPermission(String permission) {
+            return PackageManager.PERMISSION_GRANTED;
+        }
     }
 
     private static final class ReflectDevice {
@@ -152,6 +218,10 @@ public final class BydTelemetryDaemonMain {
             this.context = context;
         }
 
+        boolean initialize() {
+            return ensure() != null;
+        }
+
         private Object ensure() {
             Object cached = device;
             if (cached != null) return cached;
@@ -160,7 +230,10 @@ public final class BydTelemetryDaemonMain {
                 try {
                     Class<?> clazz = Class.forName(className);
                     Object created = invokeFactory(clazz);
-                    if (created == null) throw new IllegalStateException("No usable factory/instance for " + className);
+                    if (created == null) {
+                        throw new IllegalStateException(
+                                "No usable factory/instance for " + className);
+                    }
                     device = created;
                     return created;
                 } catch (Throwable t) {
@@ -174,14 +247,23 @@ public final class BydTelemetryDaemonMain {
             String[] names = {"getInstance", "getSingleton", "create", "getDevice", "get"};
             for (String name : names) {
                 for (Method method : clazz.getDeclaredMethods()) {
-                    if (!method.getName().equals(name) || !java.lang.reflect.Modifier.isStatic(method.getModifiers())) continue;
+                    if (!method.getName().equals(name)
+                            || !java.lang.reflect.Modifier.isStatic(method.getModifiers())) {
+                        continue;
+                    }
                     Class<?>[] params = method.getParameterTypes();
                     try {
                         method.setAccessible(true);
                         if (params.length == 0) return method.invoke(null);
-                        if (params.length == 1 && params[0].isAssignableFrom(context.getClass())) return method.invoke(null, context);
-                        if (params.length == 1 && params[0].isAssignableFrom(Context.class)) return method.invoke(null, context);
-                    } catch (Throwable ignored) {}
+                        if (params.length == 1
+                                && params[0].isAssignableFrom(context.getClass())) {
+                            return method.invoke(null, context);
+                        }
+                        if (params.length == 1 && params[0].isAssignableFrom(Context.class)) {
+                            return method.invoke(null, context);
+                        }
+                    } catch (Throwable ignored) {
+                    }
                 }
             }
             String[] fields = {"INSTANCE", "instance", "sInstance", "mInstance"};
@@ -191,18 +273,21 @@ public final class BydTelemetryDaemonMain {
                     field.setAccessible(true);
                     Object value = field.get(null);
                     if (value != null) return value;
-                } catch (Throwable ignored) {}
+                } catch (Throwable ignored) {
+                }
             }
             try {
                 Constructor<?> ctor = clazz.getDeclaredConstructor(Context.class);
                 ctor.setAccessible(true);
                 return ctor.newInstance(context);
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
             try {
                 Constructor<?> ctor = clazz.getDeclaredConstructor();
                 ctor.setAccessible(true);
                 return ctor.newInstance();
-            } catch (Throwable ignored) {}
+            } catch (Throwable ignored) {
+            }
             return null;
         }
 
@@ -217,7 +302,8 @@ public final class BydTelemetryDaemonMain {
                 if (result instanceof Number) return ((Number) result).doubleValue();
                 if (result instanceof String) return Double.parseDouble((String) result);
             } catch (Throwable t) {
-                System.err.println(className + "." + methodName + " failed: " + message(t));
+                System.err.println(className + "." + methodName
+                        + " failed: " + message(t));
             }
             return null;
         }
@@ -225,7 +311,10 @@ public final class BydTelemetryDaemonMain {
         private Method findNoArgMethod(Class<?> clazz, String name) {
             for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
                 for (Method method : c.getDeclaredMethods()) {
-                    if (method.getName().equals(name) && method.getParameterTypes().length == 0) return method;
+                    if (method.getName().equals(name)
+                            && method.getParameterTypes().length == 0) {
+                        return method;
+                    }
                 }
             }
             return null;
@@ -234,7 +323,9 @@ public final class BydTelemetryDaemonMain {
 
     private static String message(Throwable t) {
         Throwable current = t;
-        while (current.getCause() != null && current.getCause() != current) current = current.getCause();
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
         String message = current.getMessage();
         return message == null || message.trim().isEmpty()
                 ? current.getClass().getSimpleName()
