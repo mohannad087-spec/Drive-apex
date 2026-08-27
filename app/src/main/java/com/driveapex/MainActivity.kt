@@ -150,17 +150,9 @@ class MainActivity : Activity() {
         setContentView(scroll)
         handler.postDelayed({ BydAdbSetup.prepare(this, false) }, 500L)
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
-
-        // On an in-car BYD runtime, start the verified live pipeline automatically.
-        // On phones/normal Android this probe fails and the simulator remains active.
         handler.postDelayed({
             if (isBydVehicleRuntime() && !liveMode) toggleTelemetryMode()
-        }, 900L)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (::updateManager.isInitialized) updateManager.onResume()
+        }, 2200L)
     }
 
     private fun isBydVehicleRuntime(): Boolean = runCatching {
@@ -168,6 +160,93 @@ class MainActivity : Activity() {
         Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
         true
     }.getOrDefault(false)
+
+    private fun header(): LinearLayout {
+        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brand.addView(label("DRIVE APEX", 25f, Color.WHITE, true))
+        brand.addView(label("BYD Yuan Plus 2023  •  Sonic Control", 12f, MUTED, false).apply { setPadding(0, dp(2), 0, 0) })
+        row.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        modeButton = action("TEST", 0xFF102E26.toInt(), GREEN)
+        modeButton.setOnClickListener { toggleTelemetryMode() }
+        row.addView(modeButton, LinearLayout.LayoutParams(dp(86), dp(44)))
+        return row
+    }
+
+    private fun heroCard(): LinearLayout {
+        val box = card(18)
+        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        sceneValue = label("IDLE", 13f, BLUE, true)
+        top.addView(sceneValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        sourceValue = label("SIMULATOR", 11f, MUTED, true)
+        top.addView(sourceValue)
+        box.addView(top)
+        box.addView(label("DRIVE SOUND", 11f, MUTED, true).apply { setPadding(0, dp(16), 0, 0) })
+        rpmValue = label("700 RPM", 58f, Color.WHITE, true).apply { gravity = Gravity.CENTER; setIncludeFontPadding(false) }
+        box.addView(rpmValue, LinearLayout.LayoutParams.MATCH_PARENT, dp(78))
+        box.addView(label("RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        telemetry = label("0 km/h   •   Throttle 0%   •   Regen 0%", 13f, SOFT, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) }
+        box.addView(telemetry)
+        signatureValue = label("BALANCED   •   AGG 0%   •   SMOOTH 0%", 11f, PURPLE, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(9), 0, 0) }
+        box.addView(signatureValue)
+        genomeValue = label("GENOME: NEW  •  MATURITY 0%  •  OBS 0", 10f, MUTED, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(7), 0, 0) }
+        box.addView(genomeValue)
+        return box
+    }
+
+    private fun liveCard(): LinearLayout {
+        val box = card(13)
+        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        row.addView(label("●", 13f, GREEN, true), LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT))
+        liveDiagnosticsValue = label("LIVE READY  •  VEHICLE DATA STANDBY", 11f, SOFT, true)
+        row.addView(liveDiagnosticsValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        box.addView(row)
+        return box
+    }
+
+    private fun section(title: String, subtitle: String): LinearLayout {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(label(title, 13f, Color.WHITE, true))
+        box.addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
+        return box
+    }
+
+    private fun controlCard(title: String, bar: SeekBar): LinearLayout {
+        val box = card(11)
+        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        row.addView(label(title, 11f, MUTED, true), LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(bar, LinearLayout.LayoutParams(0, dp(44), 1f))
+        box.addView(row)
+        return box
+    }
+
+    private fun chips(vararg items: Pair<String, () -> Unit>): HorizontalScrollView {
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        items.forEach { (text, click) -> row.addView(action(text, PANEL, SOFT).apply { setOnClickListener { click() } }, LinearLayout.LayoutParams(dp(94), dp(52)).apply { marginEnd = dp(8) }) }
+        scroll.addView(row)
+        return scroll
+    }
+
+    private fun profiles(): HorizontalScrollView {
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(profile("EV GT", "Electric GT", BLUE) { engine.setLayers(ETronInspiredSoundProfile.layers) }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("APEX", "Performance", PURPLE) { engine.setLayers(ApexSoundProfile.layers) }, LinearLayout.LayoutParams(dp(156), dp(92)))
+        scroll.addView(row)
+        return scroll
+    }
+
+    private fun profile(name: String, subtitle: String, accent: Int, click: () -> Unit): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(10), dp(14), dp(10))
+        background = rounded(PANEL, dp(14), STROKE)
+        setOnClickListener { click() }
+        addView(label(name, 18f, Color.WHITE, true))
+        addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
+        addView(label("●  READY", 10f, accent, true).apply { setPadding(0, dp(8), 0, 0) })
+    }
 
     private fun runAdbSetup(forceOpen: Boolean) {
         val result = BydAdbSetup.prepare(this, forceOpen)
@@ -307,5 +386,35 @@ class MainActivity : Activity() {
         setColor(fill)
         cornerRadius = radius.toFloat()
         setStroke(dp(1), stroke)
+    }
+
+    private fun margin(bottom: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(bottom) }
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
+    private fun formatRpm(rpm: Float) = String.format(Locale.US, "%,.0f RPM", rpm)
+
+    override fun onResume() {
+        super.onResume()
+        if (::updateManager.isInitialized) updateManager.onResume()
+    }
+
+    override fun onStop() {
+        handler.removeCallbacks(livePoller)
+        genomeSession.finishDrive()
+        udpReceiver.stop()
+        engine.stop()
+        super.onStop()
+    }
+
+    companion object {
+        private const val BG = 0xFF07090C.toInt()
+        private const val PANEL = 0xFF10151B.toInt()
+        private const val PANEL_2 = 0xFF0C1116.toInt()
+        private const val STROKE = 0xFF26303A.toInt()
+        private const val BLUE = 0xFF1D9BF0.toInt()
+        private const val GREEN = 0xFF35D07F.toInt()
+        private const val PURPLE = 0xFFA778FF.toInt()
+        private const val AMBER = 0xFFFFB74D.toInt()
+        private const val SOFT = 0xFFE5EAF0.toInt()
+        private const val MUTED = 0xFF8995A3.toInt()
     }
 }
