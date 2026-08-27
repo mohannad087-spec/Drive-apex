@@ -42,6 +42,11 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         if (running) return
         running = true
         executor.execute {
+            // A previous APK version can leave the shell daemon listening on 18765.
+            // Always terminate that process before launching the daemon from the
+            // newly installed APK, otherwise the vehicle can keep executing stale
+            // Java bytecode even after an OTA update.
+            restartDaemonForCurrentApk()
             if (!adb.ensureTelemetryDaemon()) {
                 lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
                 return@execute
@@ -60,6 +65,18 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     override fun stop() {
         running = false
         latestFrame = null
+    }
+
+    private fun restartDaemonForCurrentApk() {
+        runCatching {
+            val connection = adb.connect() ?: return
+            val result = connection.shell("killall driveapex-byd 2>/dev/null || true")
+            if (result.exitCode != 0 && result.errorOutput.isNotBlank()) {
+                lastError = "daemon restart: ${result.errorOutput.trim()}"
+            }
+        }.onFailure {
+            lastError = "daemon restart: ${it.message ?: it.javaClass.simpleName}"
+        }
     }
 
     private fun consumeStream(onFrame: (TelemetryFrame) -> Unit) {
