@@ -12,9 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * BYD/DiPlus-style local ADB transport.
  *
- * ADB is used for authorization, shell-side permission provisioning, and launching
- * the shell-UID telemetry daemon. Vehicle telemetry is then read by that daemon
- * through the BYD HAL layer.
+ * ADB is used for the real authorization handshake, shell-side permission
+ * provisioning, and launching the shell-UID telemetry daemon. Vehicle telemetry
+ * is then read by that daemon through the BYD HAL layer.
  */
 internal class VehicleAdbConnection(private val context: Context) {
 
@@ -31,12 +31,12 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val PORT = 5555
         private const val CONNECT_TIMEOUT_MS = 3_000
         private const val SOCKET_TIMEOUT_MS = 45_000
-        private const val QUICK_WAIT_MS = 2_000L
-        private const val MAX_POLLS = 60
+        private const val QUICK_WAIT_MS = 7_000L
+        private const val MAX_POLLS = 120
 
-        // These are the BYD runtime permissions observed as changeable/grantable
-        // in the tested vehicle runtime. Signature/install-only permissions are
-        // still declared by the app and are intentionally not sent through pm grant.
+        // These COMMON permissions are the changeable permissions observed on
+        // the target DiLink runtime. GET/signature permissions are not sent
+        // through `pm grant` because PackageManager rejects them as immutable.
         private val BYD_RUNTIME_GRANT_PERMISSIONS = arrayOf(
             "android.permission.BYDAUTO_SPEED_COMMON",
             "android.permission.BYDAUTO_ENGINE_COMMON",
@@ -44,7 +44,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             "android.permission.BYDAUTO_GEARBOX_COMMON"
         )
 
-        private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydTelemetryDaemon"
+        private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydTelemetryDaemonMain"
         private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"
         private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
         private const val TELEMETRY_DAEMON_APK = "/data/local/tmp/driveapex-byd.apk"
@@ -119,7 +119,9 @@ internal class VehicleAdbConnection(private val context: Context) {
                 startAuthPolling(key)
             }
 
-            val connected = runCatching { tryConnectWithTimeout(key, QUICK_WAIT_MS) }.getOrNull()
+            val connected = runCatching { tryConnectWithTimeout(key, QUICK_WAIT_MS) }
+                .onFailure { lastError = "ADB connect: ${it.message ?: it.javaClass.simpleName}" }
+                .getOrNull()
             if (connected != null) {
                 shared = connected
                 authPending.set(false)
@@ -132,7 +134,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             }
 
             state = State.AUTH_REQUIRED
-            lastError = "ADB authorization is not complete"
+            lastError = lastError ?: "ADB authorization is not complete"
             return null
         }
     }
@@ -154,9 +156,10 @@ internal class VehicleAdbConnection(private val context: Context) {
                 return@runCatching false
             }
 
-            // DiPlus launches its shell-UID server from /data/local/tmp with
-            // `app_process -Djava.class.path=... / <main-class>`. Keep the same
-            // app_process execution shape and give our process a stable name.
+            // DiPlus uses the same shell-UID app_process pattern. DriveApex now
+            // starts a tiny Java-only entry point that is anchored from the
+            // Application class, so app_process does not depend on Kotlin,
+            // AndroidX, or secondary dex files being resolved.
             val launch =
                 "rm -f $TELEMETRY_DAEMON_LOG; " +
                     "rm -f $TELEMETRY_DAEMON_APK; " +
@@ -174,27 +177,31 @@ internal class VehicleAdbConnection(private val context: Context) {
                 return@runCatching false
             }
 
-            repeat(30) {
+            repeat(40) {
                 Thread.sleep(100L)
                 val probe = runCatching {
                     Socket(HOST, TELEMETRY_DAEMON_PORT).use { true }
                 }.getOrDefault(false)
-                if (probe) return@runCatching true
+                if (probe) {
+                    lastError = null
+                    return@runCatching true
+                }
 
                 val process = runCatching {
                     dadb.shell("ps -A | grep -w $TELEMETRY_DAEMON_NAME | grep -v grep").output.trim()
                 }.getOrDefault("")
                 if (process.isBlank()) {
                     val log = runCatching {
-                        dadb.shell("tail -n 40 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                        dadb.shell("tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
                     }.getOrDefault("")
                     if (log.isNotBlank()) lastError = log
                 }
             }
 
-            lastError = runCatching {
-                dadb.shell("tail -n 40 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
-            }.getOrDefault("").ifBlank {
+            val finalLog = runCatching {
+                dadb.shell("tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+            }.getOrDefault("")
+            lastError = finalLog.ifBlank {
                 "Telemetry daemon did not open localhost:$TELEMETRY_DAEMON_PORT"
             }
             false
@@ -220,8 +227,9 @@ internal class VehicleAdbConnection(private val context: Context) {
                 attempts++
                 try {
                     val backoffMs = when {
-                        attempts <= 3 -> 3_000L
-                        else -> minOf(3_000L * (1L shl minOf(attempts - 3, 4)), 30_000L)
+                        attempts <= 4 -> 2_000L
+                        attempts <= 12 -> 4_000L
+                        else -> 10_000L
                     }
                     Thread.sleep(backoffMs)
                 } catch (_: InterruptedException) {
@@ -230,7 +238,9 @@ internal class VehicleAdbConnection(private val context: Context) {
 
                 if (!authPending.get() || !adbPortOpen()) continue
                 state = State.CONNECTING
-                val candidate = runCatching { tryConnectWithTimeout(key, QUICK_WAIT_MS) }.getOrNull() ?: continue
+                val candidate = runCatching { tryConnectWithTimeout(key, QUICK_WAIT_MS) }
+                    .onFailure { lastError = "ADB auth poll: ${it.message ?: it.javaClass.simpleName}" }
+                    .getOrNull() ?: continue
 
                 synchronized(sharedLock) {
                     runCatching { shared?.close() }
