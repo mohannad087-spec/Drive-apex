@@ -82,22 +82,16 @@ class MainActivity : Activity() {
         }
         scroll.addView(root)
 
-        // Header
-        val header = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            orientation = LinearLayout.HORIZONTAL
-        }
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         brand.addView(label("DRIVE APEX", 25f, Color.WHITE, true))
         brand.addView(label("Yuan Plus 2023  •  Sonic Control", 12f, MUTED, false))
         header.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        modeButton = actionButton("LIVE", 0xFF12352A.toInt(), GREEN)
+        modeButton = actionButton("TEST", 0xFF12352A.toInt(), GREEN)
         modeButton.setOnClickListener { toggleTelemetryMode() }
         header.addView(modeButton, LinearLayout.LayoutParams(dp(82), dp(44)))
         root.addView(header, margin(bottom = 18))
 
-        // Main hero card
         val hero = card()
         val heroTop = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         sceneValue = label("IDLE", 13f, BLUE, true)
@@ -105,7 +99,6 @@ class MainActivity : Activity() {
         sourceValue = label("SIMULATOR", 11f, MUTED, true)
         heroTop.addView(sourceValue)
         hero.addView(heroTop)
-
         hero.addView(label("DRIVE SOUND", 11f, MUTED, true).apply { setPadding(0, dp(14), 0, 0) })
         rpmValue = label("700", 62f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
@@ -113,13 +106,11 @@ class MainActivity : Activity() {
         }
         hero.addView(rpmValue, LinearLayout.LayoutParams.MATCH_PARENT, dp(72))
         hero.addView(label("RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
-
         telemetry = label("0 km/h     •     Throttle 0%     •     Regen 0%", 13f, SOFT, false).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, 0)
         }
         hero.addView(telemetry)
-
         signatureValue = label("BALANCED  •  AGG 0%  •  SMOOTH 0%", 11f, PURPLE, true).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, 0)
@@ -127,25 +118,25 @@ class MainActivity : Activity() {
         hero.addView(signatureValue)
         root.addView(hero, margin(bottom = 14))
 
-        // Live status strip
         val liveCard = card(padding = 14)
         val liveRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        val liveDot = label("●", 13f, GREEN, true)
-        liveRow.addView(liveDot, LinearLayout.LayoutParams(dp(20), ViewGroup.LayoutParams.WRAP_CONTENT))
+        liveRow.addView(label("●", 13f, GREEN, true), LinearLayout.LayoutParams(dp(20), ViewGroup.LayoutParams.WRAP_CONTENT))
         liveDiagnosticsValue = label("LIVE READY  •  VEHICLE DATA STANDBY", 11f, SOFT, true)
         liveRow.addView(liveDiagnosticsValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         liveCard.addView(liveRow)
         root.addView(liveCard, margin(bottom = 18))
 
-        // Drive controls
         root.addView(sectionTitle("DRIVE CONTROLS", "Live values remain linked to the existing vehicle/audio pipeline."))
-        root.addView(controlCard("RPM", rpmBar = seek(6300, 200)), margin(bottom = 10))
-        root.addView(controlCard("THROTTLE", throttleBar = seek(100, 10)), margin(bottom = 10))
-        root.addView(controlCard("SPEED  /  km/h", speedBar = seek(240, 0)), margin(bottom = 18))
+        rpmBar = seek(6300, 200)
+        root.addView(controlCard("RPM", rpmBar), margin(bottom = 10))
+        throttleBar = seek(100, 10)
+        root.addView(controlCard("THROTTLE", throttleBar), margin(bottom = 10))
+        speedBar = seek(240, 0)
+        root.addView(controlCard("SPEED  /  km/h", speedBar), margin(bottom = 18))
 
-        // Quick scenes
         root.addView(sectionTitle("QUICK SCENES", "One-tap driving situations for tuning."))
-        val scenes = horizontalRow()
+        val scenesScroll = horizontalRow()
+        val scenes = scenesScroll.getChildAt(0) as LinearLayout
         listOf(
             "IDLE" to { setControls(900, 5, 0, 0, 0) },
             "PULL" to { setControls(3000, 65, 45, 0, 0) },
@@ -155,20 +146,19 @@ class MainActivity : Activity() {
         ).forEach { (title, action) ->
             scenes.addView(chipButton(title, action), LinearLayout.LayoutParams(dp(94), dp(52)).apply { marginEnd = dp(8) })
         }
-        root.addView(scenes, margin(bottom = 18))
+        root.addView(scenesScroll, margin(bottom = 18))
 
-        // Sound profiles
         root.addView(sectionTitle("SOUND DNA", "Choose the acoustic character without changing telemetry."))
-        val profiles = horizontalRow()
+        val profilesScroll = horizontalRow()
+        val profiles = profilesScroll.getChildAt(0) as LinearLayout
         profiles.addView(profileCard("EV GT", "Electric GT", BLUE) {
             engine.setLayers(ETronInspiredSoundProfile.layers)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         profiles.addView(profileCard("APEX", "Performance", PURPLE) {
             engine.setLayers(ApexSoundProfile.layers)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
-        root.addView(profiles, margin(bottom = 18))
+        root.addView(profilesScroll, margin(bottom = 18))
 
-        // Primary actions
         startButton = primaryButton("START DRIVE SOUND")
         startButton.setOnClickListener {
             engine.start()
@@ -187,22 +177,15 @@ class MainActivity : Activity() {
         }
         root.addView(stop, margin(bottom = 18))
 
-        // Advanced / service tools kept out of the main visual hierarchy.
         root.addView(sectionTitle("SERVICE", "Diagnostics and maintenance tools."))
         val service = card(padding = 12)
-        service.addView(serviceButton("BYD ADB SETUP / AUTHORIZE") {
-            runAdbSetup(forceOpen = true)
-        }, margin(bottom = 8))
-        service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") {
-            showBydDiagnostics()
-        }, margin(bottom = 8))
+        service.addView(serviceButton("BYD ADB SETUP / AUTHORIZE") { runAdbSetup(forceOpen = true) }, margin(bottom = 8))
+        service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") { showBydDiagnostics() }, margin(bottom = 8))
         service.addView(serviceButton("RESET SONIC GENOME") {
             genomeSession.reset()
             if (!liveMode) syncSimulator()
         }, margin(bottom = 8))
-        service.addView(serviceButton("CHECK FOR UPDATE") {
-            updateManager.checkManually()
-        })
+        service.addView(serviceButton("CHECK FOR UPDATE") { updateManager.checkManually() })
         root.addView(service, margin(bottom = 12))
 
         eventValue = label("EVENTS  L:0  A:0  O:0  R:0  B:0  S:0", 1f, Color.TRANSPARENT, false)
@@ -233,11 +216,7 @@ class MainActivity : Activity() {
             BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD Development Tools ADB settings activity was not found. Enable wireless ADB manually, then retry."
         }
         liveDiagnosticsValue.text = "ADB: ${result.name}"
-        AlertDialog.Builder(this)
-            .setTitle("BYD ADB setup")
-            .setMessage(message)
-            .setPositiveButton("OK", null)
-            .show()
+        AlertDialog.Builder(this).setTitle("BYD ADB setup").setMessage(message).setPositiveButton("OK", null).show()
     }
 
     private fun showBydDiagnostics() {
@@ -246,11 +225,7 @@ class MainActivity : Activity() {
             val message = BydTelemetryDiagnostics.format(report)
             handler.post {
                 if (isFinishing || isDestroyed) return@post
-                AlertDialog.Builder(this)
-                    .setTitle("BYD telemetry probe")
-                    .setMessage(message)
-                    .setPositiveButton("OK", null)
-                    .show()
+                AlertDialog.Builder(this).setTitle("BYD telemetry probe").setMessage(message).setPositiveButton("OK", null).show()
             }
         }.start()
     }
@@ -309,31 +284,10 @@ class MainActivity : Activity() {
         val signature = genome.toSignature()
         val events = controller.events()
         rpmValue.text = formatRpm(data.rpm)
-        telemetry.text = String.format(
-            Locale.US,
-            "%.0f km/h     •     Throttle %d%%     •     Regen %d%%",
-            data.speedKph,
-            (data.throttle * 100).toInt(),
-            (data.regen * 100).toInt()
-        )
+        telemetry.text = String.format(Locale.US, "%.0f km/h     •     Throttle %d%%     •     Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.regen * 100).toInt())
         sceneValue.text = scene.name.replace('_', ' ')
-        signatureValue.text = String.format(
-            Locale.US,
-            "%s  •  AGG %d%%  •  SMOOTH %d%%",
-            signature.label(),
-            (signature.aggression * 100).toInt(),
-            (signature.smoothness * 100).toInt()
-        )
-        eventValue.text = String.format(
-            Locale.US,
-            "EVENTS  L:%d  A:%d  O:%d  R:%d  B:%d  S:%d",
-            (events.launch * 100).toInt(),
-            (events.accelerationHit * 100).toInt(),
-            (events.liftOff * 100).toInt(),
-            (events.regenerationHit * 100).toInt(),
-            (events.brakeHit * 100).toInt(),
-            (events.speedRush * 100).toInt()
-        )
+        signatureValue.text = String.format(Locale.US, "%s  •  AGG %d%%  •  SMOOTH %d%%", signature.label(), (signature.aggression * 100).toInt(), (signature.smoothness * 100).toInt())
+        eventValue.text = String.format(Locale.US, "EVENTS  L:%d  A:%d  O:%d  R:%d  B:%d  S:%d", (events.launch * 100).toInt(), (events.accelerationHit * 100).toInt(), (events.liftOff * 100).toInt(), (events.regenerationHit * 100).toInt(), (events.brakeHit * 100).toInt(), (events.speedRush * 100).toInt())
     }
 
     private fun syncSimulator() {
@@ -361,8 +315,7 @@ class MainActivity : Activity() {
         return box
     }
 
-    private fun controlCard(title: String, rpmBar: SeekBar? = null, throttleBar: SeekBar? = null, speedBar: SeekBar? = null): LinearLayout {
-        val bar = rpmBar ?: throttleBar ?: speedBar ?: seek(100, 0)
+    private fun controlCard(title: String, bar: SeekBar): LinearLayout {
         val box = card(padding = 12)
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         row.addView(label(title, 11f, MUTED, true), LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT))
