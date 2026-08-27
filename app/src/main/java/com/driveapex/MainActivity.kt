@@ -26,6 +26,7 @@ import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
 import com.driveapex.vehicle.UdpTelemetryReceiver
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
     private val engine = LayeredSoundEngine(ETronInspiredSoundProfile.layers)
@@ -246,7 +247,7 @@ class MainActivity : Activity() {
         if (liveMode) {
             udpReceiver.start()
             modeButton.text = "SWITCH TO SIMULATOR"
-            sourceValue.text = "SOURCE: LIVE VEHICLE / UDP FALLBACK"
+            sourceValue.text = "SOURCE: LIVE VEHICLE / BYD DAEMON"
             sourceValue.setTextColor(Color.rgb(90, 230, 150))
             rpmBar.isEnabled = false
             throttleBar.isEnabled = false
@@ -274,19 +275,22 @@ class MainActivity : Activity() {
         liveDiagnosticsValue.text = String.format(
             Locale.US,
             "LIVE: %s  •  PKT %d  •  INVALID %d  •  AGE %s  •  SRC %s",
-            if (d.packetCount > 0 && d.ageMs <= 250L) "VALID" else "NO VEHICLE DATA",
+            if (d.packetCount > 0 && d.ageMs <= 1500L) "VALID" else "NO VEHICLE DATA",
             d.packetCount,
             d.invalidPacketCount,
             ageText,
             d.source
         )
-        liveDiagnosticsValue.setTextColor(if (d.packetCount > 0 && d.ageMs <= 250L) Color.rgb(90, 230, 150) else Color.rgb(255, 100, 100))
+        liveDiagnosticsValue.setTextColor(if (d.packetCount > 0 && d.ageMs <= 1500L) Color.rgb(90, 230, 150) else Color.rgb(255, 100, 100))
     }
 
     private fun showNoVehicleData() {
-        rpmValue.text = "NO VEHICLE DATA"
-        telemetry.text = "Waiting for verified live telemetry…"
-        sceneValue.text = "SCENE: LIVE WAIT"
+        // Do not erase the last verified sample during a short transport gap.
+        // The receiver already applies the 1.5s freshness boundary.
+        if (rpmValue.text.toString() == "NO VEHICLE DATA") {
+            telemetry.text = "Waiting for verified live telemetry…"
+            sceneValue.text = "SCENE: LIVE WAIT"
+        }
     }
 
     private fun applyTelemetry(packet: LiveTelemetry) {
@@ -295,6 +299,13 @@ class MainActivity : Activity() {
         val genome = genomeSession.update(data)
         val signature = genome.toSignature()
         val events = controller.events()
+
+        // These were previously left at their simulator positions. In live mode
+        // they must be driven from the verified BYD sample as well.
+        rpmBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, rpmBar.max)
+        throttleBar.progress = (data.throttle * 100f).roundToInt().coerceIn(0, throttleBar.max)
+        speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
+
         rpmValue.text = formatRpm(data.rpm)
         telemetry.text = String.format(Locale.US, "%.0f km/h  •  Throttle %d%%  •  Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.regen * 100).toInt())
         sceneValue.text = "SCENE: ${scene.name.replace('_', ' ')}"
