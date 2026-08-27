@@ -49,6 +49,12 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
         private const val TELEMETRY_DAEMON_APK = "/data/local/tmp/driveapex-byd.apk"
         private const val TELEMETRY_DAEMON_PORT = 18765
+        // DiPlus launches BYD Java HAL classes with bmmcamera.jar on the
+        // app_process class path. Without it the daemon can bind the TCP port
+        // but Class.forName(BYDAuto*) / getInstance() can fail, producing the
+        // exact "daemon found / live read failed" state shown by diagnostics.
+        private const val BYD_FRAMEWORK_JAR = "/system/framework/bmmcamera.jar"
+        private const val BYD_NATIVE_LIB_PATH = "/system/lib64:/product/lib64"
 
         @Volatile private var shared: Dadb? = null
         private val sharedLock = Object()
@@ -156,17 +162,17 @@ internal class VehicleAdbConnection(private val context: Context) {
                 return@runCatching false
             }
 
-            // DiPlus uses the same shell-UID app_process pattern. DriveApex now
-            // starts a tiny Java-only entry point that is anchored from the
-            // Application class, so app_process does not depend on Kotlin,
-            // AndroidX, or secondary dex files being resolved.
+            // DiPlus uses app_process with the BYD camera framework jar on the
+            // class path and the vendor/system native library locations exposed.
+            // Keep the same structure here: the DriveApex APK supplies only our
+            // Java entry point while bmmcamera.jar supplies BYD OEM classes.
             val launch =
                 "rm -f $TELEMETRY_DAEMON_LOG; " +
                     "rm -f $TELEMETRY_DAEMON_APK; " +
                     "cp \"$apkPath\" $TELEMETRY_DAEMON_APK; " +
                     "chmod 644 $TELEMETRY_DAEMON_APK; " +
                     "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
-                    "app_process -Djava.class.path=$TELEMETRY_DAEMON_APK /system/bin --nice-name=$TELEMETRY_DAEMON_NAME $TELEMETRY_DAEMON_CLASS " +
+                    "app_process -Djava.class.path=$BYD_FRAMEWORK_JAR:$TELEMETRY_DAEMON_APK -Djava.library.path=$BYD_NATIVE_LIB_PATH /system/bin --nice-name=$TELEMETRY_DAEMON_NAME $TELEMETRY_DAEMON_CLASS " +
                     "> $TELEMETRY_DAEMON_LOG 2>&1 < /dev/null &"
             val launchResult = dadb.shell(launch)
             if (launchResult.exitCode != 0) {
