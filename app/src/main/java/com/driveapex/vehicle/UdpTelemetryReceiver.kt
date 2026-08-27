@@ -9,8 +9,8 @@ import java.net.InetSocketAddress
 
 /**
  * Live telemetry receiver.
- * On a BYD head unit it prefers direct in-process BYD HAL access, then the
- * shell-UID BYD daemon, and finally the UDP development receiver.
+ * On a BYD head unit it prefers the shell-UID BYD daemon, then direct HAL
+ * access, and finally the UDP development receiver.
  */
 class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
     private val staleAfterMs = 1500L
@@ -37,15 +37,9 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         invalidPacketCount = 0L
         lastSource = "NONE"
 
-        // Prefer direct HAL because compatible BYD firmware commonly exposes
-        // the vendor classes to an installed vehicle app. The daemon remains
-        // the second path for firmware where direct class loading is blocked.
-        useDirect = direct?.isAvailable() == true
-        if (useDirect) {
-            thread = Thread(::directLoop, "DriveApex-BYDHAL").also { it.start() }
-            return
-        }
-
+        // The shell-UID daemon is the verified path on the target BYD firmware.
+        // Direct in-process HAL access is only a fallback because the app UID
+        // may not be allowed to cross the vendor Binder permission boundary.
         useByd = byd?.isAvailable() == true
         if (useByd) {
             byd?.start { frame ->
@@ -61,9 +55,16 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                     )
                 )
             }
-        } else {
-            thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
+            return
         }
+
+        useDirect = direct?.isAvailable() == true
+        if (useDirect) {
+            thread = Thread(::directLoop, "DriveApex-BYDHAL").also { it.start() }
+            return
+        }
+
+        thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
     }
 
     fun stop() {
@@ -79,10 +80,6 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     }
 
     fun latest(): LiveTelemetry? {
-        if (useDirect) {
-            val snapshot = latest ?: return null
-            return snapshot.takeIf { System.currentTimeMillis() - it.timestampMs <= staleAfterMs }
-        }
         if (useByd) {
             val frame = byd?.latest() ?: return null
             val frameAge = System.currentTimeMillis() - frame.timestampMs
@@ -99,6 +96,10 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 TelemetrySource.LIVE_BRIDGE,
                 frame.timestampMs
             )
+        }
+        if (useDirect) {
+            val snapshot = latest ?: return null
+            return snapshot.takeIf { System.currentTimeMillis() - it.timestampMs <= staleAfterMs }
         }
         val snapshot = latest ?: return null
         return snapshot.takeIf { diagnostics().ageMs <= staleAfterMs }
