@@ -19,8 +19,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 71
-      DRIVEAPEX_VERSION_NAME: 0.2.71
+      DRIVEAPEX_VERSION_CODE: 72
+      DRIVEAPEX_VERSION_NAME: 0.2.72
 
     steps:
       - name: Checkout
@@ -96,6 +96,18 @@ jobs:
           cp "$APK_SOURCE" DriveApex.apk
           test -s DriveApex.apk
 
+      - name: Refuse duplicate release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${DRIVEAPEX_VERSION_NAME}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "ERROR: Release tag $TAG already exists. Bump DRIVEAPEX_VERSION_CODE/DRIVEAPEX_VERSION_NAME before publishing another build."
+            exit 1
+          fi
+
       - name: Publish versioned release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,14 +133,16 @@ jobs:
           MANIFEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex-update.json"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex.apk"
           curl -fsSL --retry 8 --retry-delay 3 --connect-timeout 5 --max-time 30 "$MANIFEST_URL" -o /tmp/DriveApex-update.json
-          python3 - <<'PY'
-          import json
+          python3 - "$DRIVEAPEX_VERSION_CODE" "$DRIVEAPEX_VERSION_NAME" <<'PY'
+          import json, sys
+          expected_code = int(sys.argv[1])
+          expected_name = sys.argv[2]
           with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
               d=json.load(f)
-          assert d['versionCode'] == 71
-          assert d['versionName'] == '0.2.71'
+          assert d['versionCode'] == expected_code
+          assert d['versionName'] == expected_name
           assert d['assetName'] == 'DriveApex.apk'
-          assert d['tag'] == 'v0.2.71'
+          assert d['tag'] == 'v' + expected_name
           assert len(d['sha256']) == 64
           print('Verified update manifest:', d['versionName'], d['versionCode'])
           PY
