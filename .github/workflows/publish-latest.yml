@@ -15,8 +15,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 68
-      DRIVEAPEX_VERSION_NAME: 0.2.68
+      DRIVEAPEX_VERSION_CODE: 69
+      DRIVEAPEX_VERSION_NAME: 0.2.69
 
     steps:
       - name: Checkout
@@ -99,16 +99,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${DRIVEAPEX_VERSION_NAME}"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; updating its assets."
-          else
-            gh release create "$TAG" \
-              --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" \
-              --notes "DriveApex telemetry build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" \
-              --target "$GITHUB_SHA" \
-              --latest \
-              --repo "$GITHUB_REPOSITORY"
-          fi
+          gh release create "$TAG" \
+            --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" \
+            --notes "DriveApex telemetry build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" \
+            --target "$GITHUB_SHA" \
+            --latest \
+            --repo "$GITHUB_REPOSITORY"
           gh release upload "$TAG" DriveApex.apk --clobber --repo "$GITHUB_REPOSITORY"
           gh release upload "$TAG" DriveApex-update.json --clobber --repo "$GITHUB_REPOSITORY"
           gh release edit "$TAG" --latest --repo "$GITHUB_REPOSITORY"
@@ -120,21 +116,17 @@ jobs:
           TAG="v${DRIVEAPEX_VERSION_NAME}"
           MANIFEST_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex-update.json"
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/DriveApex.apk"
-          for attempt in {1..12}; do
-            if curl -fsSL --retry 2 --connect-timeout 5 --max-time 20 "$MANIFEST_URL" -o /tmp/DriveApex-update.json; then break; fi
-            [[ "$attempt" == "12" ]] && { echo "ERROR: manifest is not reachable."; exit 1; }
-            sleep 5
-          done
+          curl -fsSL --retry 8 --retry-delay 3 --connect-timeout 5 --max-time 30 "$MANIFEST_URL" -o /tmp/DriveApex-update.json
           python3 - <<'PY'
           import json
           with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
               d=json.load(f)
-          assert d['versionCode'] == 68
-          assert d['versionName'] == '0.2.68'
+          assert d['versionCode'] == 69
+          assert d['versionName'] == '0.2.69'
           assert d['assetName'] == 'DriveApex.apk'
-          assert d['tag'] == 'v0.2.68'
+          assert d['tag'] == 'v0.2.69'
           assert len(d['sha256']) == 64
           print('Verified update manifest:', d['versionName'], d['versionCode'])
           PY
-          curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 5 --max-time 90 "$APK_URL" -o /dev/null
+          curl -fsSL --retry 8 --retry-delay 3 --connect-timeout 5 --max-time 90 "$APK_URL" -o /dev/null
           echo "Verified DriveApex.apk is reachable from $TAG."
