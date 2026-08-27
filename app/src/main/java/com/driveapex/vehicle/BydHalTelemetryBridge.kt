@@ -41,10 +41,10 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         if (running) return
         running = true
         executor.execute {
-            // Keep the startup path identical to the last vehicle build that
-            // produced verified BYD telemetry (0.2.64). Do not kill/restart a
-            // working OEM-compatible daemon here; ensureTelemetryDaemon() only
-            // launches one when the local port is actually unavailable.
+            // The daemon binary is copied from the installed DriveApex APK.
+            // Always terminate our previous daemon first so an OTA update cannot
+            // leave an older telemetry implementation bound to port 18765.
+            adb.close()
             if (!adb.ensureTelemetryDaemon()) {
                 lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
                 return@execute
@@ -84,15 +84,21 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     private fun parse(line: String): TelemetryFrame? = runCatching {
         val p = line.split(',')
         if (p.size < 6) return null
+        val rawRpm = p[1].toFloat()
+        val rpm = when {
+            !rawRpm.isFinite() -> return null
+            rawRpm == 8191f || rawRpm == -8191f || rawRpm == 32767f || rawRpm == -32768f || rawRpm == 65535f -> 0f
+            else -> rawRpm.coerceIn(0f, 7000f)
+        }
         val frame = TelemetryFrame(
             timestampMs = p[0].toLong(),
-            rpm = p[1].toFloat(),
+            rpm = rpm,
             speedKph = p[2].toFloat(),
             throttle = (p[3].toFloat() / 100f).coerceIn(0f, 1f),
             brake = (p[4].toFloat() / 100f).coerceIn(0f, 1f),
             regen = 0f,
             source = p[5]
         )
-        frame.takeIf { frame.timestampMs > 0L && frame.rpm.isFinite() && frame.speedKph.isFinite() }
+        frame.takeIf { frame.timestampMs > 0L && frame.speedKph.isFinite() }
     }.getOrNull()
 }
