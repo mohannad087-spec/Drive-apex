@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 /** Java-only shell-UID entry point for BYD telemetry. */
 public final class BydTelemetryDaemonMain {
     private static final String PACKAGE_NAME = "com.driveapex";
+    private static final String BYD_AVC_PACKAGE = "com.byd.avc";
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 18765;
     private static final long POLL_MS = 50L;
@@ -40,13 +41,13 @@ public final class BydTelemetryDaemonMain {
     public static void main(String[] args) {
         HandlerThread halThread = null;
         try {
-            Context context = createPackageContext();
+            Context[] contexts = createContexts();
             ReflectDevice speed = new ReflectDevice(
-                    "android.hardware.bydauto.speed.BYDAutoSpeedDevice", context);
+                    "android.hardware.bydauto.speed.BYDAutoSpeedDevice", contexts);
             ReflectDevice motor = new ReflectDevice(
-                    "android.hardware.bydauto.motor.BYDAutoMotorDevice", context);
+                    "android.hardware.bydauto.motor.BYDAutoMotorDevice", contexts);
             ReflectDevice engine = new ReflectDevice(
-                    "android.hardware.bydauto.engine.BYDAutoEngineDevice", context);
+                    "android.hardware.bydauto.engine.BYDAutoEngineDevice", contexts);
             TelemetrySnapshot snapshot = new TelemetrySnapshot();
 
             halThread = new HandlerThread("driveapex-byd-hal");
@@ -158,7 +159,26 @@ public final class BydTelemetryDaemonMain {
         return fallback;
     }
 
-    private static Context createPackageContext() throws Exception {
+    private static Context[] createContexts() throws Exception {
+        Context systemContext = createSystemContext();
+        Context appContext = systemContext.createPackageContext(
+                PACKAGE_NAME, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+        Context bydContext = null;
+        try {
+            bydContext = systemContext.createPackageContext(
+                    BYD_AVC_PACKAGE, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+            System.out.println("Using BYD AVC package context: " + BYD_AVC_PACKAGE);
+        } catch (Throwable t) {
+            System.err.println("BYD AVC context unavailable: " + message(t));
+        }
+        return new Context[] {
+                bydContext == null ? null : new BydPermissionContext(bydContext),
+                new BydPermissionContext(appContext),
+                new BydPermissionContext(systemContext),
+        };
+    }
+
+    private static Context createSystemContext() throws Exception {
         if (Looper.myLooper() == null) Looper.prepare();
         Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
         Object thread = null;
@@ -179,10 +199,7 @@ public final class BydTelemetryDaemonMain {
         }
         Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
         getSystemContext.setAccessible(true);
-        Context systemContext = (Context) getSystemContext.invoke(thread);
-        Context packageContext = systemContext.createPackageContext(
-                PACKAGE_NAME, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-        return new BydPermissionContext(packageContext);
+        return (Context) getSystemContext.invoke(thread);
     }
 
     private static final class BydPermissionContext extends ContextWrapper {
@@ -200,12 +217,12 @@ public final class BydTelemetryDaemonMain {
 
     private static final class ReflectDevice {
         private final String className;
-        private final Context context;
+        private final Context[] contexts;
         private volatile Object device;
 
-        ReflectDevice(String className, Context context) {
+        ReflectDevice(String className, Context[] contexts) {
             this.className = className;
-            this.context = context;
+            this.contexts = contexts;
         }
 
         boolean initialize() {
@@ -219,13 +236,18 @@ public final class BydTelemetryDaemonMain {
                 if (device != null) return device;
                 try {
                     Class<?> clazz = Class.forName(className);
-                    Object created = invokeGetInstance(clazz);
-                    if (created == null) created = invokeManager(clazz);
-                    if (created == null) created = invokeFactory(clazz);
-                    if (created == null) throw new IllegalStateException("No usable instance for " + className);
-                    device = created;
-                    System.out.println(className + " receiver=" + created.getClass().getName());
-                    return created;
+                    for (Context context : contexts) {
+                        if (context == null) continue;
+                        Object created = invokeGetInstance(clazz, context);
+                        if (created == null) created = invokeFactory(clazz, context);
+                        if (created != null && clazz.isInstance(created)) {
+                            device = created;
+                            System.out.println(className + " receiver=" + created.getClass().getName()
+                                    + " context=" + context.getPackageName());
+                            return created;
+                        }
+                    }
+                    throw new IllegalStateException("No usable instance for " + className);
                 } catch (Throwable t) {
                     System.err.println(className + " init failed: " + message(t));
                     return null;
@@ -233,59 +255,31 @@ public final class BydTelemetryDaemonMain {
             }
         }
 
-        private Object invokeGetInstance(Class<?> clazz) {
+        private Object invokeGetInstance(Class<?> clazz, Context context) {
             try {
                 Method m = clazz.getDeclaredMethod("getInstance", Context.class);
                 m.setAccessible(true);
-                Object out = m.invoke(null, context);
-                if (out != null && clazz.isInstance(out)) return out;
+                return m.invoke(null, context);
             } catch (Throwable t) {
                 System.err.println(className + ".getInstance(Context) failed: " + message(t));
+                return null;
             }
-            return null;
         }
 
-        private Object invokeManager(Class<?> clazz) {
-            try {
-                Class<?> managerClass = Class.forName("android.hardware.bydauto.BYDAutoDeviceManager");
-                Method getInstance = managerClass.getDeclaredMethod("getInstance", Context.class);
-                getInstance.setAccessible(true);
-                Object manager = getInstance.invoke(null, context);
-                if (manager == null) return null;
-                for (Method m : managerClass.getMethods()) {
-                    if (!m.getName().equals("getDevice") || m.getParameterTypes().length != 1
-                            || m.getParameterTypes()[0] != int.class) continue;
-                    m.setAccessible(true);
-                    for (int id = 0; id <= 2048; id++) {
-                        try {
-                            Object out = m.invoke(manager, id);
-                            if (out != null && clazz.isInstance(out)) return out;
-                        } catch (Throwable ignored) {}
-                    }
-                }
-            } catch (Throwable t) {
-                System.err.println(className + " manager path failed: " + message(t));
-            }
-            return null;
-        }
-
-        private Object invokeFactory(Class<?> clazz) {
-            String[] names = {"getSingleton", "create", "getDevice", "get"};
+        private Object invokeFactory(Class<?> clazz, Context context) {
+            String[] names = {"getInstance", "getSingleton", "create", "getDevice", "get"};
             for (String name : names) {
                 for (Method method : clazz.getDeclaredMethods()) {
                     if (!method.getName().equals(name) || !Modifier.isStatic(method.getModifiers())) continue;
                     Class<?>[] params = method.getParameterTypes();
                     try {
                         method.setAccessible(true);
-                        if (params.length == 0) {
-                            Object out = method.invoke(null);
-                            if (out != null && clazz.isInstance(out)) return out;
-                        } else if (params.length == 1 && params[0].isAssignableFrom(context.getClass())) {
-                            Object out = method.invoke(null, context);
-                            if (out != null && clazz.isInstance(out)) return out;
-                        } else if (params.length == 1 && params[0] == Context.class) {
-                            Object out = method.invoke(null, context);
-                            if (out != null && clazz.isInstance(out)) return out;
+                        if (params.length == 0) return method.invoke(null);
+                        if (params.length == 1 && params[0].isAssignableFrom(context.getClass())) {
+                            return method.invoke(null, context);
+                        }
+                        if (params.length == 1 && params[0] == Context.class) {
+                            return method.invoke(null, context);
                         }
                     } catch (Throwable t) {
                         System.err.println(className + "." + name + " failed: " + message(t));
