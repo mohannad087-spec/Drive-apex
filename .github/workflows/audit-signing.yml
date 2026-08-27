@@ -20,13 +20,13 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
-            -o /tmp/DriveApex-0.2.54.apk \
-            https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.54/DriveApex.apk
-          curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
             -o /tmp/DriveApex-0.2.55.apk \
             https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.55/DriveApex.apk
-          test -s /tmp/DriveApex-0.2.54.apk
+          curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
+            -o /tmp/DriveApex-0.2.56.apk \
+            https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.56/DriveApex.apk
           test -s /tmp/DriveApex-0.2.55.apk
+          test -s /tmp/DriveApex-0.2.56.apk
 
       - name: Compare APK signing certificates
         shell: bash
@@ -35,26 +35,27 @@ jobs:
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           test -x "$APKSIGNER"
           {
-            echo '=== DriveApex 0.2.54 ==='
-            "$APKSIGNER" verify --verbose --print-certs /tmp/DriveApex-0.2.54.apk
             echo '=== DriveApex 0.2.55 ==='
             "$APKSIGNER" verify --verbose --print-certs /tmp/DriveApex-0.2.55.apk
+            echo '=== DriveApex 0.2.56 ==='
+            "$APKSIGNER" verify --verbose --print-certs /tmp/DriveApex-0.2.56.apk
             echo '=== SHA-256 certificate comparison ==='
-            "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.54.apk | grep 'Signer #1 certificate SHA-256 digest:' || true
             "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.55.apk | grep 'Signer #1 certificate SHA-256 digest:' || true
+            "$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.56.apk | grep 'Signer #1 certificate SHA-256 digest:' || true
           } | tee /tmp/signing-audit.txt
 
-          CERT54=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.54.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
           CERT55=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.55.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
+          CERT56=$("$APKSIGNER" verify --print-certs /tmp/DriveApex-0.2.56.apk | awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
           {
-            echo "0.2.54 certificate SHA-256: ${CERT54:-UNKNOWN}"
             echo "0.2.55 certificate SHA-256: ${CERT55:-UNKNOWN}"
-            if [[ -n "$CERT54" && "$CERT54" == "$CERT55" ]]; then
+            echo "0.2.56 certificate SHA-256: ${CERT56:-UNKNOWN}"
+            if [[ -n "$CERT55" && "$CERT55" == "$CERT56" ]]; then
               echo 'RESULT: MATCH'
             else
               echo 'RESULT: MISMATCH'
+              exit 1
             fi
-          } >> /tmp/signing-audit.txt
+          } | tee -a /tmp/signing-audit.txt
 
       - name: Publish signing audit artifact
         uses: actions/upload-artifact@v4.6.2
