@@ -1,26 +1,17 @@
 package com.driveapex.update
 
 import android.app.Activity
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import java.net.Socket
 
-/**
- * BYD/DiPlus-style ADB bootstrap.
- *
- * The BYD development tools expose an ADB settings activity. We use that as the
- * user-facing switch, then let the normal Android ADB daemon issue its one-time
- * RSA authorization prompt when the persistent key connects to 127.0.0.1:5555.
- */
+/** BYD/DiPlus-style ADB bootstrap. */
 object BydAdbSetup {
     private const val HOST = "127.0.0.1"
     private const val PORT = 5555
     private const val PREFS = "driveapex_adb_setup"
     private const val KEY_SETTINGS_REQUESTED = "settings_requested"
-
     private const val BYD_DEV_PACKAGE = "com.byd.byddevelopmenttools"
-    private const val BYD_ADB_SETTINGS = "com.byd.byddevelopmenttools.ADBSettingsActivity"
 
     enum class Result {
         ALREADY_AVAILABLE,
@@ -47,11 +38,16 @@ object BydAdbSetup {
         return Result.SETTINGS_UNAVAILABLE
     }
 
+    /**
+     * Firmware variants do not expose one stable ADBSettingsActivity name.
+     * The development-tools package itself is stable in the reference dump,
+     * so resolve and launch its exported main activity instead of hard-coding
+     * an activity class that may not exist on the head unit.
+     */
     fun openBydAdbSettings(activity: Activity): Boolean = runCatching {
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            component = ComponentName(BYD_DEV_PACKAGE, BYD_ADB_SETTINGS)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+        val intent = activity.packageManager.getLaunchIntentForPackage(BYD_DEV_PACKAGE)
+            ?: return false
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity.startActivity(intent)
         true
     }.getOrDefault(false)
