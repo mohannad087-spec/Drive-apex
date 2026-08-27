@@ -3,6 +3,7 @@ package com.driveapex.vehicle
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
+import com.driveapex.BuildConfig
 import com.driveapex.update.VehicleAdbConnection
 import java.util.Locale
 
@@ -70,7 +71,7 @@ object BydTelemetryDiagnostics {
         val undeclared = REQUIRED_PERMISSIONS - declared.toSet()
         if (undeclared.isNotEmpty()) notes += "Undeclared BYD permissions: ${undeclared.joinToString()}"
         if (failedPermissionGrants.isNotEmpty()) {
-            notes += "Some pm grants are expected to be non-changeable signature/install permissions."
+            notes += "Some ADB-grantable permissions were rejected by the current package manager."
         }
 
         val bridge = BydHalTelemetryBridge(activity)
@@ -133,7 +134,7 @@ object BydTelemetryDiagnostics {
     }
 
     fun format(report: Report): String = buildString {
-        appendLine("BYD TELEMETRY DIAGNOSTICS 55")
+        appendLine("BYD TELEMETRY DIAGNOSTICS ${BuildConfig.VERSION_NAME}")
         appendLine()
         appendLine("ADB: ${report.adbStatus}")
         report.adbError?.let { appendLine("ADB error: $it") }
