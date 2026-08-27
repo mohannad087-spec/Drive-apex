@@ -202,7 +202,7 @@ class MainActivity : Activity() {
 
         syncSimulator()
         setContentView(scroll)
-        handler.postDelayed({ runAdbSetup(forceOpen = false) }, 500L)
+        handler.postDelayed({ BydAdbSetup.prepare(this, forceOpen = false) }, 500L)
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
     }
 
