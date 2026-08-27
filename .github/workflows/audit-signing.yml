@@ -22,9 +22,15 @@ jobs:
           curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
             -o /tmp/DriveApex-0.2.55.apk \
             https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.55/DriveApex.apk
-          curl -fsSL --retry 5 --connect-timeout 10 --max-time 120 \
-            -o /tmp/DriveApex-0.2.56.apk \
-            https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.56/DriveApex.apk
+          for attempt in {1..12}; do
+            if curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 \
+              -o /tmp/DriveApex-0.2.56.apk \
+              https://github.com/${GITHUB_REPOSITORY}/releases/download/v0.2.56/DriveApex.apk; then
+              break
+            fi
+            [[ "$attempt" == "12" ]] && { echo "ERROR: v0.2.56 APK was not published."; exit 1; }
+            sleep 5
+          done
           test -s /tmp/DriveApex-0.2.55.apk
           test -s /tmp/DriveApex-0.2.56.apk
 
