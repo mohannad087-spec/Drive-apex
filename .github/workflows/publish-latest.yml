@@ -15,8 +15,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 64
-      DRIVEAPEX_VERSION_NAME: 0.2.64
+      DRIVEAPEX_VERSION_CODE: 65
+      DRIVEAPEX_VERSION_NAME: 0.2.65
 
     steps:
       - name: Checkout
@@ -104,7 +104,7 @@ jobs:
           else
             gh release create "$TAG" \
               --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" \
-              --notes "DriveApex latest build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" \
+              --notes "DriveApex cockpit UI for BYD Yuan Plus 2023\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" \
               --target "$GITHUB_SHA" \
               --latest \
               --repo "$GITHUB_REPOSITORY"
@@ -129,10 +129,10 @@ jobs:
           import json
           with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
               d=json.load(f)
-          assert d['versionCode'] == 64
-          assert d['versionName'] == '0.2.64'
+          assert d['versionCode'] == 65
+          assert d['versionName'] == '0.2.65'
           assert d['assetName'] == 'DriveApex.apk'
-          assert d['tag'] == 'v0.2.64'
+          assert d['tag'] == 'v0.2.65'
           assert len(d['sha256']) == 64
           print('Verified update manifest:', d['versionName'], d['versionCode'])
           PY
