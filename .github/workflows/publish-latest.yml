@@ -5,6 +5,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: driveapex-release
+  cancel-in-progress: true
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -15,8 +19,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 69
-      DRIVEAPEX_VERSION_NAME: 0.2.69
+      DRIVEAPEX_VERSION_CODE: 70
+      DRIVEAPEX_VERSION_NAME: 0.2.70
 
     steps:
       - name: Checkout
@@ -121,10 +125,10 @@ jobs:
           import json
           with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
               d=json.load(f)
-          assert d['versionCode'] == 69
-          assert d['versionName'] == '0.2.69'
+          assert d['versionCode'] == 70
+          assert d['versionName'] == '0.2.70'
           assert d['assetName'] == 'DriveApex.apk'
-          assert d['tag'] == 'v0.2.69'
+          assert d['tag'] == 'v0.2.70'
           assert len(d['sha256']) == 64
           print('Verified update manifest:', d['versionName'], d['versionCode'])
           PY
