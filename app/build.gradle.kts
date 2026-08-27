@@ -11,24 +11,17 @@ android {
         applicationId = "com.driveapex"
         minSdk = 26
         targetSdk = 35
-        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 67
-        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.67"
+        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 68
+        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.68"
     }
 
-    buildFeatures {
-        buildConfig = true
-    }
+    buildFeatures { buildConfig = true }
 
     packaging {
         resources {
             excludes += setOf(
-                "META-INF/LICENSE.md",
-                "META-INF/LICENSE.txt",
-                "META-INF/LICENSE",
-                "META-INF/NOTICE.md",
-                "META-INF/NOTICE.txt",
-                "META-INF/NOTICE",
-                "META-INF/DEPENDENCIES"
+                "META-INF/LICENSE.md", "META-INF/LICENSE.txt", "META-INF/LICENSE",
+                "META-INF/NOTICE.md", "META-INF/NOTICE.txt", "META-INF/NOTICE", "META-INF/DEPENDENCIES"
             )
         }
     }
@@ -50,10 +43,7 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -61,10 +51,7 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 configurations.configureEach {
