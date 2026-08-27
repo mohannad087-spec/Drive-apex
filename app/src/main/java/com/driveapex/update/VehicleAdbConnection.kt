@@ -34,17 +34,14 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val QUICK_WAIT_MS = 2_000L
         private const val MAX_POLLS = 60
 
-        private val BYD_READ_PERMISSIONS = arrayOf(
+        // These are the BYD runtime permissions observed as changeable/grantable
+        // in the tested vehicle runtime. Signature/install-only permissions are
+        // still declared by the app and are intentionally not sent through pm grant.
+        private val BYD_RUNTIME_GRANT_PERMISSIONS = arrayOf(
             "android.permission.BYDAUTO_SPEED_COMMON",
-            "android.permission.BYDAUTO_SPEED_GET",
             "android.permission.BYDAUTO_ENGINE_COMMON",
-            "android.permission.BYDAUTO_ENGINE_GET",
-            "android.permission.BYDAUTO_MOTOR_GET",
             "android.permission.BYDAUTO_ENERGY_COMMON",
-            "android.permission.BYDAUTO_ENERGY_GET",
-            "android.permission.BYDAUTO_GEARBOX_COMMON",
-            "android.permission.BYDAUTO_GEARBOX_GET",
-            "android.permission.BYDAUTO_VEHICLE_DATA_GET"
+            "android.permission.BYDAUTO_GEARBOX_COMMON"
         )
 
         private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydTelemetryDaemon"
@@ -258,7 +255,7 @@ internal class VehicleAdbConnection(private val context: Context) {
 
     private fun grantBydReadPermissions(dadb: Dadb): List<PermissionResult> {
         val userId = currentUserId(dadb)
-        return BYD_READ_PERMISSIONS.map { permission ->
+        return BYD_RUNTIME_GRANT_PERMISSIONS.map { permission ->
             val command = "pm grant --user $userId ${BuildConfig.APPLICATION_ID} $permission"
             runCatching {
                 val result = dadb.shell(command)
