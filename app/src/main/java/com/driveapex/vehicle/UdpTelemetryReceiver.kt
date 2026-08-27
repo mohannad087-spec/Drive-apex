@@ -9,11 +9,14 @@ import java.net.InetSocketAddress
 
 /**
  * Live telemetry receiver.
- * On a BYD head unit it prefers the verified read-only BYD Speed HAL;
+ * On a BYD head unit it prefers the verified BYD Speed HAL;
  * otherwise it remains the UDP development receiver on port 38901.
  */
 class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
-    private val staleAfterMs = 250L
+    // The BYD daemon is a local TCP stream. Keep the last verified frame for
+    // a short grace period so UI polling does not blank the live values during
+    // a transient scheduling/socket gap.
+    private val staleAfterMs = 1500L
     private val validator = VehicleTelemetryValidator(staleAfterMs)
     private val byd = context?.let { BydHalTelemetryBridge(it) }
     @Volatile private var useByd = false
@@ -46,7 +49,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                     brake = frame.brake,
                     regen = frame.regen
                 )
-                latest = LiveTelemetry(data, TelemetrySource.LIVE_BRIDGE)
+                latest = LiveTelemetry(data, TelemetrySource.LIVE_BRIDGE, frame.timestampMs)
                 packetCount += 1L
                 lastPacketAtMs = SystemClock.elapsedRealtime()
                 lastSource = frame.source
@@ -68,8 +71,31 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
 
     fun latest(): LiveTelemetry? {
         val snapshot = latest ?: return null
-        val age = diagnostics().ageMs
-        return if (age <= staleAfterMs) snapshot else null
+        val age = if (useByd) {
+            // The bridge owns the authoritative BYD stream. Use the bridge's
+            // latest frame and its own connection health rather than requiring
+            // a second, tighter local timestamp gate.
+            val frame = byd?.latest() ?: return null
+            val frameAge = System.currentTimeMillis() - frame.timestampMs
+            if (frameAge > staleAfterMs) return null
+            LiveTelemetry(
+                VehicleData(
+                    rpm = frame.rpm,
+                    speedKph = frame.speedKph,
+                    throttle = frame.throttle,
+                    isDriving = frame.speedKph > 1f,
+                    brake = frame.brake,
+                    regen = frame.regen
+                ),
+                TelemetrySource.LIVE_BRIDGE,
+                frame.timestampMs
+            )
+        } else {
+            diagnostics().ageMs.let { localAge ->
+                if (localAge > staleAfterMs) null else snapshot
+            }
+        }
+        return age
     }
 
     fun diagnostics(): TelemetryDiagnostics {
@@ -132,7 +158,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             brake = frame.brake.coerceIn(0f, 1f),
             regen = frame.regen.coerceIn(0f, 1f)
         )
-        LiveTelemetry(data, TelemetrySource.LIVE_UDP)
+        LiveTelemetry(data, TelemetrySource.LIVE_UDP, frame.timestampMs)
     }.getOrNull()
 }
 
