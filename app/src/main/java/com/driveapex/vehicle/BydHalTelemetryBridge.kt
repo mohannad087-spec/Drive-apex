@@ -26,7 +26,6 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     @Volatile private var latestFrame: TelemetryFrame? = null
     @Volatile private var lastError: String? = null
 
-    /** Backwards-compatible capability check used by UdpTelemetryReceiver. */
     fun isAvailable(): Boolean = adb.ensureTelemetryDaemon() || isDaemonReachable()
 
     fun isDaemonReachable(): Boolean = runCatching {
@@ -42,11 +41,10 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         if (running) return
         running = true
         executor.execute {
-            // A previous APK version can leave the shell daemon listening on 18765.
-            // Always terminate that process before launching the daemon from the
-            // newly installed APK, otherwise the vehicle can keep executing stale
-            // Java bytecode even after an OTA update.
-            restartDaemonForCurrentApk()
+            // Keep the startup path identical to the last vehicle build that
+            // produced verified BYD telemetry (0.2.64). Do not kill/restart a
+            // working OEM-compatible daemon here; ensureTelemetryDaemon() only
+            // launches one when the local port is actually unavailable.
             if (!adb.ensureTelemetryDaemon()) {
                 lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
                 return@execute
@@ -65,18 +63,6 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     override fun stop() {
         running = false
         latestFrame = null
-    }
-
-    private fun restartDaemonForCurrentApk() {
-        runCatching {
-            val connection = adb.connect() ?: return
-            val result = connection.shell("killall driveapex-byd 2>/dev/null || true")
-            if (result.exitCode != 0 && result.errorOutput.isNotBlank()) {
-                lastError = "daemon restart: ${result.errorOutput.trim()}"
-            }
-        }.onFailure {
-            lastError = "daemon restart: ${it.message ?: it.javaClass.simpleName}"
-        }
     }
 
     private fun consumeStream(onFrame: (TelemetryFrame) -> Unit) {
