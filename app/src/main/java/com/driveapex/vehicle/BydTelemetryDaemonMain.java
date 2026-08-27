@@ -19,10 +19,11 @@ import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-/** Java-only shell-UID entry point for BYD telemetry. */
+/** Shell-UID entry point for BYD telemetry using the same package-context model as DiPlus. */
 public final class BydTelemetryDaemonMain {
-    private static final String PACKAGE_NAME = "com.driveapex";
-    private static final String BYD_AVC_PACKAGE = "com.byd.avc";
+    private static final String DEFAULT_PACKAGE = "com.driveapex";
+    private static final String PREFERRED_PACKAGE = "com.overdrive.app";
+    private static final String FALLBACK_PACKAGE = "com.byd.avc";
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 18765;
     private static final long POLL_MS = 50L;
@@ -41,7 +42,9 @@ public final class BydTelemetryDaemonMain {
     public static void main(String[] args) {
         HandlerThread halThread = null;
         try {
-            Context[] contexts = createContexts();
+            LaunchArgs launchArgs = LaunchArgs.parse(args);
+            Context[] contexts = createContexts(launchArgs.packageName);
+
             ReflectDevice speed = new ReflectDevice(
                     "android.hardware.bydauto.speed.BYDAutoSpeedDevice", contexts);
             ReflectDevice motor = new ReflectDevice(
@@ -59,7 +62,8 @@ public final class BydTelemetryDaemonMain {
                 boolean motorReady = motor.initialize();
                 boolean engineReady = engine.initialize();
                 System.out.println("BYD HAL init speed=" + speedReady
-                        + " motor=" + motorReady + " engine=" + engineReady);
+                        + " motor=" + motorReady + " engine=" + engineReady
+                        + " package=" + launchArgs.packageName);
                 initialized.countDown();
                 halHandler.post(new Runnable() {
                     @Override
@@ -105,12 +109,14 @@ public final class BydTelemetryDaemonMain {
         Double brakePct = speed.readNumber("getBrakeDeepness");
         Double motorRpm = motor.readNumber("getMotorSpeed");
         Double engineRpm = engine.readNumber("getEngineSpeed");
+
         boolean valid = speedKph != null || throttlePct != null || brakePct != null
                 || motorRpm != null || engineRpm != null;
         if (!valid) {
             snapshot.valid = false;
             return;
         }
+
         snapshot.speedKph = valueOrZero(speedKph);
         snapshot.throttlePct = valueOrZero(throttlePct);
         snapshot.brakePct = valueOrZero(brakePct);
@@ -159,23 +165,37 @@ public final class BydTelemetryDaemonMain {
         return fallback;
     }
 
-    private static Context[] createContexts() throws Exception {
+    private static Context[] createContexts(String requestedPackage) throws Exception {
         Context systemContext = createSystemContext();
-        Context appContext = systemContext.createPackageContext(
-                PACKAGE_NAME, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-        Context bydContext = null;
-        try {
-            bydContext = systemContext.createPackageContext(
-                    BYD_AVC_PACKAGE, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-            System.out.println("Using BYD AVC package context: " + BYD_AVC_PACKAGE);
-        } catch (Throwable t) {
-            System.err.println("BYD AVC context unavailable: " + message(t));
-        }
+        Context requested = tryPackageContext(systemContext, requestedPackage);
+        Context preferred = tryPackageContext(systemContext, PREFERRED_PACKAGE);
+        Context byd = tryPackageContext(systemContext, FALLBACK_PACKAGE);
+        Context app = tryPackageContext(systemContext, DEFAULT_PACKAGE);
+
         return new Context[] {
-                bydContext == null ? null : new BydPermissionContext(bydContext),
-                new BydPermissionContext(appContext),
-                new BydPermissionContext(systemContext),
+                wrap(requested),
+                wrap(preferred),
+                wrap(byd),
+                wrap(app),
+                wrap(systemContext)
         };
+    }
+
+    private static Context tryPackageContext(Context systemContext, String packageName) {
+        if (packageName == null || packageName.trim().isEmpty()) return null;
+        try {
+            Context ctx = systemContext.createPackageContext(
+                    packageName, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+            System.out.println("BYD candidate package context: " + packageName);
+            return ctx;
+        } catch (Throwable t) {
+            System.err.println("BYD package context unavailable " + packageName + ": " + message(t));
+            return null;
+        }
+    }
+
+    private static Context wrap(Context context) {
+        return context == null ? null : new BydPermissionContext(context);
     }
 
     private static Context createSystemContext() throws Exception {
@@ -212,6 +232,25 @@ public final class BydTelemetryDaemonMain {
         }
         @Override public int checkSelfPermission(String permission) {
             return PackageManager.PERMISSION_GRANTED;
+        }
+    }
+
+    private static final class LaunchArgs {
+        final String packageName;
+        private LaunchArgs(String packageName) { this.packageName = packageName; }
+
+        static LaunchArgs parse(String[] args) {
+            String packageName = null;
+            if (args != null) {
+                for (String arg : args) {
+                    if (arg != null && arg.startsWith("--package=")) {
+                        packageName = arg.substring("--package=".length()).trim();
+                        break;
+                    }
+                }
+            }
+            if (packageName == null || packageName.isEmpty()) packageName = DEFAULT_PACKAGE;
+            return new LaunchArgs(packageName);
         }
     }
 
