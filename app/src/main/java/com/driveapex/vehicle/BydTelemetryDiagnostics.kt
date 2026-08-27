@@ -72,8 +72,19 @@ object BydTelemetryDiagnostics {
         }
 
         val direct = DirectBydTelemetryReader(activity)
-        val directFrame = runCatching { direct.readOnce() }.getOrNull()
-        val directRead = directFrame != null
+        val directSourceFrame = runCatching { direct.readOnce() }.getOrNull()
+        val directRead = directSourceFrame != null
+        val directFrame = directSourceFrame?.let { source ->
+            TelemetryFrame(
+                timestampMs = source.timestampMs,
+                rpm = source.rpm,
+                speedKph = source.speedKph,
+                throttle = source.throttle,
+                brake = source.brake,
+                regen = 0f,
+                source = source.source
+            )
+        }
         if (directRead) {
             notes += "Telemetry source: direct BYD HAL via Overdrive-compatible permission context."
         }
