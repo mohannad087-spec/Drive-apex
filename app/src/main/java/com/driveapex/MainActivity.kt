@@ -57,7 +57,7 @@ class MainActivity : Activity() {
     private lateinit var eventValue: TextView
     private lateinit var startButton: Button
     private lateinit var modeButton: Button
-    private lateinit var rpmBar: SeekBar
+    private lateinit var motorSpeedBar: SeekBar
     private lateinit var throttleBar: SeekBar
     private lateinit var speedBar: SeekBar
 
@@ -92,10 +92,10 @@ class MainActivity : Activity() {
         root.addView(liveDashboardCard(), margin(18))
         root.addView(section("DRIVE CONTROLS", "Manual controls are disabled automatically in LIVE mode."), margin(8))
 
-        rpmBar = seek(6300, 200)
+        motorSpeedBar = seek(25000, 0)
         throttleBar = seek(100, 10)
         speedBar = seek(240, 0)
-        root.addView(controlCard("RPM", rpmBar), margin(8))
+        root.addView(controlCard("MOTOR SPEED", motorSpeedBar), margin(8))
         root.addView(controlCard("THROTTLE", throttleBar), margin(8))
         root.addView(controlCard("SPEED / km/h", speedBar), margin(16))
 
@@ -150,7 +150,7 @@ class MainActivity : Activity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
             override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
         }
-        rpmBar.setOnSeekBarChangeListener(listener)
+        motorSpeedBar.setOnSeekBarChangeListener(listener)
         throttleBar.setOnSeekBarChangeListener(listener)
         speedBar.setOnSeekBarChangeListener(listener)
 
@@ -192,12 +192,12 @@ class MainActivity : Activity() {
         top.addView(sourceValue)
         box.addView(top)
         box.addView(label("DRIVE SOUND", 11f, MUTED, true).apply { setPadding(0, dp(16), 0, 0) })
-        rpmValue = label("700 RPM", 58f, Color.WHITE, true).apply {
+        rpmValue = label("0 MOTOR SPEED", 58f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER
             setIncludeFontPadding(false)
         }
         box.addView(rpmValue, LinearLayout.LayoutParams.MATCH_PARENT, dp(78))
-        box.addView(label("RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        box.addView(label("MOTOR SPEED / RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
         telemetry = label("0 km/h   •   Throttle 0%   •   Brake 0%   •   Regen 0%", 13f, SOFT, false).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, 0)
@@ -335,7 +335,7 @@ class MainActivity : Activity() {
             modeButton.text = "LIVE"
             sourceValue.text = "LIVE VEHICLE"
             sourceValue.setTextColor(GREEN)
-            rpmBar.isEnabled = false
+            motorSpeedBar.isEnabled = false
             throttleBar.isEnabled = false
             speedBar.isEnabled = false
             updateLiveStatus()

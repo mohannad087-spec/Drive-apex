@@ -100,7 +100,7 @@ class LayeredSoundEngine(
 
             if (phases.size != snapshot.size) phases = DoubleArray(snapshot.size)
 
-            val baseCyclesPerSecond = (currentRpm / 60.0).coerceAtLeast(11.666)
+            val baseCyclesPerSecond = (currentRpm / 60.0).coerceAtLeast(1.0)
             val baseAngular = baseCyclesPerSecond * 2.0 * PI
             val rpmRate = abs(currentRpm - previousRpm) / 600f
             val loadRate = abs(currentLoad - previousLoad) * 2f
