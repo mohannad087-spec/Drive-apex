@@ -1,11 +1,11 @@
 package com.driveapex.vehicle;
 
+import android.app.ActivityThread;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
-import android.os.Handler;
-import android.os.HandlerThread;
 import android.os.Looper;
+import android.os.UserHandle;
 
 import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
@@ -40,10 +40,10 @@ public final class BydTelemetryDaemonMain {
     }
 
     public static void main(String[] args) {
-        HandlerThread halThread = null;
+        HandlerThreadCompat halThread = null;
         try {
             LaunchArgs launchArgs = LaunchArgs.parse(args);
-            Context[] contexts = createContexts(launchArgs.packageName);
+            Context[] contexts = createContexts(launchArgs.packageName, launchArgs.userId);
 
             ReflectDevice speed = new ReflectDevice(
                     "android.hardware.bydauto.speed.BYDAutoSpeedDevice", contexts);
@@ -53,9 +53,9 @@ public final class BydTelemetryDaemonMain {
                     "android.hardware.bydauto.engine.BYDAutoEngineDevice", contexts);
             TelemetrySnapshot snapshot = new TelemetrySnapshot();
 
-            halThread = new HandlerThread("driveapex-byd-hal");
+            halThread = new HandlerThreadCompat("driveapex-byd-hal");
             halThread.start();
-            Handler halHandler = new Handler(halThread.getLooper());
+            android.os.Handler halHandler = new android.os.Handler(halThread.getLooper());
             CountDownLatch initialized = new CountDownLatch(1);
             halHandler.post(() -> {
                 boolean speedReady = speed.initialize();
@@ -63,7 +63,7 @@ public final class BydTelemetryDaemonMain {
                 boolean engineReady = engine.initialize();
                 System.out.println("BYD HAL init speed=" + speedReady
                         + " motor=" + motorReady + " engine=" + engineReady
-                        + " package=" + launchArgs.packageName);
+                        + " package=" + launchArgs.packageName + " user=" + launchArgs.userId);
                 initialized.countDown();
                 halHandler.post(new Runnable() {
                     @Override
@@ -165,65 +165,60 @@ public final class BydTelemetryDaemonMain {
         return fallback;
     }
 
-    private static Context[] createContexts(String requestedPackage) throws Exception {
+    private static Context[] createContexts(String requestedPackage, int userId) throws Exception {
         Context systemContext = createSystemContext();
-        Context requested = tryPackageContext(systemContext, requestedPackage);
-        Context preferred = tryPackageContext(systemContext, PREFERRED_PACKAGE);
-        Context byd = tryPackageContext(systemContext, FALLBACK_PACKAGE);
-        Context app = tryPackageContext(systemContext, DEFAULT_PACKAGE);
+        Context requested = tryPackageContext(systemContext, requestedPackage, userId);
+        Context preferred = tryPackageContext(systemContext, PREFERRED_PACKAGE, userId);
+        Context byd = tryPackageContext(systemContext, FALLBACK_PACKAGE, userId);
+        Context app = tryPackageContext(systemContext, DEFAULT_PACKAGE, userId);
 
         return new Context[] {
-                wrap(requested),
-                wrap(preferred),
-                wrap(byd),
-                wrap(app),
-                wrap(systemContext)
+                wrap(requested, requestedPackage),
+                wrap(preferred, PREFERRED_PACKAGE),
+                wrap(byd, FALLBACK_PACKAGE),
+                wrap(app, DEFAULT_PACKAGE),
+                wrap(systemContext, "android")
         };
     }
 
-    private static Context tryPackageContext(Context systemContext, String packageName) {
+    private static Context tryPackageContext(Context systemContext, String packageName, int userId) {
         if (packageName == null || packageName.trim().isEmpty()) return null;
         try {
-            Context ctx = systemContext.createPackageContext(
-                    packageName, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-            System.out.println("BYD candidate package context: " + packageName);
+            Method m = Context.class.getMethod("createPackageContextAsUser", String.class, int.class, UserHandle.class);
+            Context ctx = (Context) m.invoke(systemContext, packageName,
+                    Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY,
+                    UserHandle.of(userId));
+            System.out.println("BYD candidate package context: " + packageName + " user=" + userId);
             return ctx;
-        } catch (Throwable t) {
-            System.err.println("BYD package context unavailable " + packageName + ": " + message(t));
-            return null;
+        } catch (Throwable ignored) {
+            try {
+                Context ctx = systemContext.createPackageContext(
+                        packageName, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+                System.out.println("BYD legacy package context: " + packageName);
+                return ctx;
+            } catch (Throwable t) {
+                System.err.println("BYD package context unavailable " + packageName + ": " + message(t));
+                return null;
+            }
         }
     }
 
-    private static Context wrap(Context context) {
-        return context == null ? null : new BydPermissionContext(context);
+    private static Context wrap(Context context, String packageName) {
+        return context == null ? null : new BydPermissionContext(context, packageName);
     }
 
     private static Context createSystemContext() throws Exception {
         if (Looper.myLooper() == null) Looper.prepare();
-        Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-        Object thread = null;
-        try {
-            Constructor<?> ctor = activityThreadClass.getDeclaredConstructor();
-            ctor.setAccessible(true);
-            thread = ctor.newInstance();
-        } catch (Throwable ignored) {}
-        if (thread == null) {
-            Method current = activityThreadClass.getDeclaredMethod("currentActivityThread");
-            current.setAccessible(true);
-            thread = current.invoke(null);
-        }
-        if (thread == null) {
-            Method systemMain = activityThreadClass.getDeclaredMethod("systemMain");
-            systemMain.setAccessible(true);
-            thread = systemMain.invoke(null);
-        }
-        Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext");
-        getSystemContext.setAccessible(true);
-        return (Context) getSystemContext.invoke(thread);
+        ActivityThread thread = ActivityThread.systemMain();
+        return thread.getSystemContext();
     }
 
     private static final class BydPermissionContext extends ContextWrapper {
-        BydPermissionContext(Context base) { super(base); }
+        private final String opPackage;
+        BydPermissionContext(Context base, String opPackage) {
+            super(base);
+            this.opPackage = opPackage == null || opPackage.isEmpty() ? base.getPackageName() : opPackage;
+        }
         @Override public int checkCallingOrSelfPermission(String permission) {
             return PackageManager.PERMISSION_GRANTED;
         }
@@ -233,24 +228,35 @@ public final class BydTelemetryDaemonMain {
         @Override public int checkSelfPermission(String permission) {
             return PackageManager.PERMISSION_GRANTED;
         }
+        @Override public void enforcePermission(String permission, int pid, int uid, String message) {}
+        @Override public void enforceCallingPermission(String permission, String message) {}
+        @Override public void enforceCallingOrSelfPermission(String permission, String message) {}
+        @Override public String getOpPackageName() { return opPackage; }
     }
 
     private static final class LaunchArgs {
         final String packageName;
-        private LaunchArgs(String packageName) { this.packageName = packageName; }
+        final int userId;
+        private LaunchArgs(String packageName, int userId) {
+            this.packageName = packageName;
+            this.userId = userId;
+        }
 
         static LaunchArgs parse(String[] args) {
             String packageName = null;
+            int userId = 0;
             if (args != null) {
                 for (String arg : args) {
                     if (arg != null && arg.startsWith("--package=")) {
                         packageName = arg.substring("--package=".length()).trim();
-                        break;
+                    } else if (arg != null && arg.startsWith("--requested-user-id=")) {
+                        try { userId = Integer.parseInt(arg.substring("--requested-user-id=".length()).trim()); }
+                        catch (Throwable ignored) {}
                     }
                 }
             }
             if (packageName == null || packageName.isEmpty()) packageName = DEFAULT_PACKAGE;
-            return new LaunchArgs(packageName);
+            return new LaunchArgs(packageName, userId);
         }
     }
 
@@ -264,9 +270,7 @@ public final class BydTelemetryDaemonMain {
             this.contexts = contexts;
         }
 
-        boolean initialize() {
-            return ensure() != null;
-        }
+        boolean initialize() { return ensure() != null; }
 
         private Object ensure() {
             Object cached = device;
@@ -314,12 +318,8 @@ public final class BydTelemetryDaemonMain {
                     try {
                         method.setAccessible(true);
                         if (params.length == 0) return method.invoke(null);
-                        if (params.length == 1 && params[0].isAssignableFrom(context.getClass())) {
-                            return method.invoke(null, context);
-                        }
-                        if (params.length == 1 && params[0] == Context.class) {
-                            return method.invoke(null, context);
-                        }
+                        if (params.length == 1 && params[0].isAssignableFrom(context.getClass())) return method.invoke(null, context);
+                        if (params.length == 1 && params[0] == Context.class) return method.invoke(null, context);
                     } catch (Throwable t) {
                         System.err.println(className + "." + name + " failed: " + message(t));
                     }
@@ -365,24 +365,31 @@ public final class BydTelemetryDaemonMain {
         }
 
         private Method findNoArgMethod(Class<?> clazz, String name) {
-            for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
-                for (Method method : c.getDeclaredMethods()) {
-                    if (method.getName().equals(name) && method.getParameterTypes().length == 0) return method;
-                }
+            Class<?> current = clazz;
+            while (current != null) {
+                try {
+                    Method m = current.getDeclaredMethod(name);
+                    m.setAccessible(true);
+                    return m;
+                } catch (Throwable ignored) {}
+                current = current.getSuperclass();
             }
-            for (Method method : clazz.getMethods()) {
-                if (method.getName().equals(name) && method.getParameterTypes().length == 0) return method;
-            }
-            return null;
+            try { return clazz.getMethod(name); } catch (Throwable ignored) { return null; }
         }
     }
 
     private static String message(Throwable t) {
         Throwable current = t;
         while (current.getCause() != null && current.getCause() != current) current = current.getCause();
-        String message = current.getMessage();
-        return message == null || message.trim().isEmpty()
-                ? current.getClass().getSimpleName()
-                : current.getClass().getSimpleName() + ": " + message;
+        String m = current.getMessage();
+        return (m == null || m.isEmpty()) ? current.getClass().getName() : current.getClass().getName() + ": " + m;
+    }
+
+    private static final class HandlerThreadCompat {
+        private final android.os.HandlerThread delegate;
+        HandlerThreadCompat(String name) { delegate = new android.os.HandlerThread(name); }
+        void start() { delegate.start(); }
+        android.os.Looper getLooper() { return delegate.getLooper(); }
+        void quitSafely() { delegate.quitSafely(); }
     }
 }
