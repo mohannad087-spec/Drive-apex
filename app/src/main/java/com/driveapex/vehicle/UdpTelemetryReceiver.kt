@@ -122,11 +122,12 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             // shell-UID daemon as a fallback and let its callback publish frames.
             if (!daemonStarted && directFailures >= 5 && byd != null) {
                 daemonStarted = true
+                val bridge = byd
                 val started = runCatching {
-                    if (!byd.isAvailable()) false
+                    if (!bridge.isAvailable()) false
                     else {
                         useByd = true
-                        byd.start { publish(it) }
+                        bridge.start { publish(it) }
                         true
                     }
                 }.getOrDefault(false)
