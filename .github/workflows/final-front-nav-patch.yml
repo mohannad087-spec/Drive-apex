@@ -1,0 +1,63 @@
+name: Final front motor and navigation patch
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[front-nav-patched]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch verified targets
+        shell: python
+        run: |
+          from pathlib import Path
+
+          main = Path('app/src/main/java/com/driveapex/MainActivity.kt')
+          s = main.read_text()
+          replacements = {
+              'motorSpeedBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, motorSpeedBar.max)':
+                  'motorSpeedBar.progress = data.rpm.roundToInt().coerceIn(0, motorSpeedBar.max)',
+              'rpmValue.text = formatRpm(data.rpm)':
+                  'rpmValue.text = formatMotorSpeed(data.rpm)',
+              'label("MOTOR SPEED / RPM", 11f, MUTED, true)':
+                  'label("FRONT MOTOR SPEED • RPM", 11f, MUTED, true)',
+              'vehicle.setRpm((700 + motorSpeedBar.progress).toFloat())':
+                  'vehicle.setRpm(motorSpeedBar.progress.toFloat())',
+              'motorSpeedBar.progress = (rpm - 700).coerceIn(0, motorSpeedBar.max)':
+                  'motorSpeedBar.progress = rpm.coerceIn(0, motorSpeedBar.max)',
+              'private fun formatRpm(rpm: Float) = String.format(Locale.US, "%,.0f RPM", rpm)':
+                  'private fun formatMotorSpeed(motorSpeed: Float) = String.format(Locale.US, "%,.0f MOTOR SPEED", motorSpeed)'
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'MainActivity target not found: {old}')
+              s = s.replace(old, new, 1)
+          main.write_text(s)
+
+          # Keep the publisher dormant until this complete patch is committed,
+          # then restore push publishing for the final Release 0.2.85.
+          publish = Path('.github/workflows/publish-latest.yml')
+          p = publish.read_text()
+          if 'push:\n    branches: [ "main" ]' not in p:
+              p = p.replace('on:\n  workflow_dispatch:', 'on:\n  push:\n    branches: [ "main" ]\n  workflow_dispatch:', 1)
+          for old, new in [('DRIVEAPEX_VERSION_CODE: 84', 'DRIVEAPEX_VERSION_CODE: 85'),
+                           ('DRIVEAPEX_VERSION_NAME: 0.2.84', 'DRIVEAPEX_VERSION_NAME: 0.2.85')]:
+              if old in p:
+                  p = p.replace(old, new, 1)
+          publish.write_text(p)
+
+          Path('.github/workflows/final-front-nav-patch.yml').unlink()
+      - name: Commit final source patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/com/driveapex/MainActivity.kt .github/workflows/publish-latest.yml .github/workflows/final-front-nav-patch.yml
+          git commit -m "fix: front motor speed UI and OEM nav audio route [front-nav-patched]"
+          git push
