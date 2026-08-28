@@ -12,7 +12,7 @@ class EngineSoundController(private val engine: LayeredSoundEngine) {
 
     fun apply(data: VehicleData): AudioScene {
         val conditioned = smoother.filter(data)
-        val rpm = conditioned.rpm.coerceIn(700f, 7000f)
+        val rpm = conditioned.rpm.coerceIn(0f, 25000f)
         val throttle = conditioned.normalizedThrottle()
         val speedFactor = 0.82f + ln(1f + conditioned.normalizedSpeed()) / 7f
         val load = (0.16f + throttle * 0.82f +

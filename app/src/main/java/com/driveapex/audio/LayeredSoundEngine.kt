@@ -28,7 +28,7 @@ class LayeredSoundEngine(
     @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
 
     fun setLayers(value: List<SoundLayer>) { layers = value }
-    fun setRpm(value: Float) { rpm = value.coerceIn(700f, 7_000f) }
+    fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setSpeed(value: Float) { speedKph = value.coerceAtLeast(0f) }
     fun setScene(value: AudioScene) { scene = value }

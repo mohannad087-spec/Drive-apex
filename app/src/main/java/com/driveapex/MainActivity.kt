@@ -65,7 +65,13 @@ class MainActivity : Activity() {
         override fun run() {
             if (!liveMode) return
             updateLiveStatus()
-            telemetryReceiver.latest()?.let(::applyTelemetry) ?: showNoVehicleData()
+            telemetryReceiver.latest()?.let { live ->
+      applyTelemetry(live)
+      controller.apply(live.data)
+      val motorSpeed = live.data.rpm.coerceIn(0f, 25000f).roundToInt()
+      rpmValue.text = "${motorSpeed} MOTOR SPEED"
+      motorSpeedBar.progress = motorSpeed
+  } ?: showNoVehicleData()
             handler.postDelayed(this, 100L)
         }
     }
