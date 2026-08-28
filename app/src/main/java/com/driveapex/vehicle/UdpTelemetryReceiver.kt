@@ -8,86 +8,63 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 
 /**
- * Live telemetry receiver.
- * On a BYD head unit it prefers the shell-UID BYD daemon, then direct HAL access,
- * and finally the UDP development receiver.
+ * Live telemetry receiver for BYD DiLink 3.
+ *
+ * Runtime priority is intentionally different from the old diagnostic-only path:
+ * 1) direct BYD HAL polling (the same reader used by diagnostics),
+ * 2) shell-UID BYD daemon stream,
+ * 3) UDP development fallback.
+ *
+ * This keeps the dashboard fed continuously instead of making it depend on opening
+ * the diagnostics dialog first.
  */
 class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
     private val staleAfterMs = 1500L
     private val validator = VehicleTelemetryValidator(staleAfterMs)
     private val direct = context?.let { DirectBydTelemetryReader(it) }
     private val byd = context?.let { BydHalTelemetryBridge(it) }
+
+    @Volatile private var running = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
-    @Volatile private var running = false
-    private var socket: DatagramSocket? = null
-    private var thread: Thread? = null
     @Volatile private var latest: LiveTelemetry? = null
     @Volatile private var lastPacketAtMs = 0L
     @Volatile private var packetCount = 0L
     @Volatile private var invalidPacketCount = 0L
     @Volatile private var lastSource = "NONE"
 
+    private var socket: DatagramSocket? = null
+    private var thread: Thread? = null
+
     fun start() {
         if (running) return
         running = true
-        lastPacketAtMs = 0L
         latest = null
+        lastPacketAtMs = 0L
         packetCount = 0L
         invalidPacketCount = 0L
         lastSource = "NONE"
 
-        // The target BYD vehicle requires the shell-UID path so the daemon can
-        // use the same permission/context model as DiPlus/Overdrive.
-        useByd = byd?.isAvailable() == true
-        if (useByd) {
-            byd?.start { frame ->
-                publish(frame)
-            }
-            return
+        if (direct != null) {
+            thread = Thread(::liveLoop, "DriveApex-LiveTelemetry").also { it.start() }
+        } else {
+            thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
         }
-
-        // Direct in-process HAL is retained only as a fallback. The app UID may
-        // not be accepted by vendor Binder permission checks on this firmware.
-        useDirect = direct?.isAvailable() == true
-        if (useDirect) {
-            thread = Thread(::directLoop, "DriveApex-BYDHAL").also { it.start() }
-            return
-        }
-
-        thread = Thread(::receiveLoop, "DriveApex-TelemetryUDP").also { it.start() }
     }
 
     fun stop() {
         running = false
+        useDirect = false
+        useByd = false
         byd?.stop()
         runCatching { socket?.close() }
         socket = null
         thread = null
         latest = null
         lastPacketAtMs = 0L
-        useDirect = false
-        useByd = false
     }
 
     fun latest(): LiveTelemetry? {
-        if (useByd) {
-            val frame = byd?.latest() ?: return null
-            val frameAge = System.currentTimeMillis() - frame.timestampMs
-            if (frameAge > staleAfterMs) return null
-            return LiveTelemetry(
-                VehicleData(
-                    rpm = frame.rpm,
-                    speedKph = frame.speedKph,
-                    throttle = frame.throttle,
-                    isDriving = frame.speedKph > 1f,
-                    brake = frame.brake,
-                    regen = frame.regen
-                ),
-                TelemetrySource.LIVE_BRIDGE,
-                frame.timestampMs
-            )
-        }
         val snapshot = latest ?: return null
         return snapshot.takeIf { System.currentTimeMillis() - it.timestampMs <= staleAfterMs }
     }
@@ -106,14 +83,22 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
 
     fun sourceError(): String? = when {
         useByd -> byd?.error()
-        useDirect -> direct?.latest()?.let { null }
+        direct != null -> null
         else -> null
     }
 
-    private fun directLoop() {
-        while (running && useDirect) {
+    /** Continuous in-process BYD HAL reader; diagnostics and dashboard use the same data path. */
+    private fun liveLoop() {
+        var directFailures = 0
+        var daemonStarted = false
+
+        while (running) {
             val frame = runCatching { direct?.readOnce() }.getOrNull()
-            if (frame != null) {
+            if (frame != null && isUsable(frame)) {
+                useDirect = true
+                useByd = false
+                directFailures = 0
+                daemonStarted = false
                 publish(
                     TelemetryFrame(
                         timestampMs = frame.timestampMs,
@@ -125,35 +110,61 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                         source = frame.source
                     )
                 )
-            } else {
-                invalidPacketCount += 1L
+                sleep50()
+                continue
             }
-            Thread.sleep(50L)
+
+            directFailures++
+            invalidPacketCount++
+
+            // Do not keep restarting the daemon on every failed direct sample.
+            // Once direct HAL misses several consecutive samples, start the
+            // shell-UID daemon as a fallback and let its callback publish frames.
+            if (!daemonStarted && directFailures >= 5 && byd != null) {
+                daemonStarted = true
+                val started = runCatching {
+                    if (!byd.isAvailable()) false
+                    else {
+                        useByd = true
+                        byd.start { publish(it) }
+                        true
+                    }
+                }.getOrDefault(false)
+                if (!started) {
+                    useByd = false
+                    daemonStarted = false
+                }
+            }
+
+            sleep50()
         }
     }
+
+    private fun isUsable(frame: DirectBydTelemetryReader.Frame): Boolean =
+        frame.speedKph.isFinite() && frame.throttle.isFinite() && frame.brake.isFinite() && frame.rpm.isFinite() &&
+            frame.speedKph in 0f..400f && frame.throttle in 0f..1f && frame.brake in 0f..1f && frame.rpm in 0f..25000f
 
     private fun publish(frame: TelemetryFrame) {
         val now = System.currentTimeMillis()
         when (validator.validate(frame, now)) {
             is VehicleTelemetryValidator.Result.Valid -> {
-                val data = VehicleData(
-                    rpm = frame.rpm.coerceIn(0f, 25000f),
-                    speedKph = frame.speedKph.coerceIn(0f, 300f),
-                    throttle = frame.throttle.coerceIn(0f, 1f),
-                    isDriving = frame.speedKph > 1f,
-                    brake = frame.brake.coerceIn(0f, 1f),
-                    regen = frame.regen.coerceIn(0f, 1f)
-                )
                 latest = LiveTelemetry(
-                    data,
+                    VehicleData(
+                        rpm = frame.rpm.coerceIn(0f, 25000f),
+                        speedKph = frame.speedKph.coerceIn(0f, 300f),
+                        throttle = frame.throttle.coerceIn(0f, 1f),
+                        isDriving = frame.speedKph > 1f,
+                        brake = frame.brake.coerceIn(0f, 1f),
+                        regen = frame.regen.coerceIn(0f, 1f)
+                    ),
                     if (useDirect || useByd) TelemetrySource.LIVE_BRIDGE else TelemetrySource.LIVE_UDP,
                     frame.timestampMs
                 )
-                packetCount += 1L
+                packetCount++
                 lastPacketAtMs = SystemClock.elapsedRealtime()
                 lastSource = frame.source
             }
-            else -> invalidPacketCount += 1L
+            else -> invalidPacketCount++
         }
     }
 
@@ -170,12 +181,10 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 val text = String(packet.data, 0, packet.length, Charsets.UTF_8)
                 parse(text)?.let { value ->
                     latest = value
-                    packetCount += 1L
+                    packetCount++
                     lastPacketAtMs = SystemClock.elapsedRealtime()
                     lastSource = "UDP"
-                } ?: run {
-                    invalidPacketCount += 1L
-                }
+                } ?: run { invalidPacketCount++ }
             }
         }
         runCatching { local.close() }
@@ -197,16 +206,23 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             is VehicleTelemetryValidator.Result.Valid -> Unit
             else -> return null
         }
-        val data = VehicleData(
-            rpm = frame.rpm.coerceIn(0f, 25000f),
-            speedKph = frame.speedKph.coerceIn(0f, 300f),
-            throttle = frame.throttle.coerceIn(0f, 1f),
-            isDriving = frame.speedKph > 1f,
-            brake = frame.brake.coerceIn(0f, 1f),
-            regen = frame.regen.coerceIn(0f, 1f)
+        LiveTelemetry(
+            VehicleData(
+                rpm = frame.rpm.coerceIn(0f, 25000f),
+                speedKph = frame.speedKph.coerceIn(0f, 300f),
+                throttle = frame.throttle.coerceIn(0f, 1f),
+                isDriving = frame.speedKph > 1f,
+                brake = frame.brake.coerceIn(0f, 1f),
+                regen = frame.regen.coerceIn(0f, 1f)
+            ),
+            TelemetrySource.LIVE_UDP,
+            frame.timestampMs
         )
-        LiveTelemetry(data, TelemetrySource.LIVE_UDP, frame.timestampMs)
     }.getOrNull()
+
+    private fun sleep50() {
+        try { Thread.sleep(50L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+    }
 }
 
 data class TelemetryDiagnostics(
