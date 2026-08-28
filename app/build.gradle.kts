@@ -11,8 +11,8 @@ android {
         applicationId = "com.driveapex"
         minSdk = 26
         targetSdk = 35
-        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 82
-        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.82"
+        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 83
+        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.83"
     }
 
     buildFeatures { buildConfig = true }
