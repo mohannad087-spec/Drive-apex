@@ -7,7 +7,7 @@ import com.driveapex.BuildConfig
 import com.driveapex.update.VehicleAdbConnection
 import java.util.Locale
 
-/** Truthful BYD telemetry capability probe. Direct HAL is tested before daemon transport. */
+/** Truthful BYD telemetry capability probe. Proven collector is tested before guessed HAL paths. */
 object BydTelemetryDiagnostics {
     data class Report(
         val adbStatus: String,
@@ -71,8 +71,20 @@ object BydTelemetryDiagnostics {
             notes += "GET/signature BYD permissions are not runtime-grantable on this PackageManager."
         }
 
+        // First test the same collector that is already proven to work on this vehicle.
+        val overdrive = OverdriveTelemetryReader(activity)
+        val overdriveFrame = runCatching { overdrive.readOnce() }.getOrNull()
+        if (overdriveFrame != null) {
+            notes += "Telemetry source: installed Overdrive BydDataCollector (proven BYD HAL path)."
+            notes += "Overdrive collector is preferred because it already resolves the correct firmware-specific BYD device APIs."
+        } else if (overdrive.isInstalled()) {
+            overdrive.error()?.let { notes += "Overdrive collector error: $it" }
+        } else {
+            notes += "Overdrive package is not installed; independent HAL/daemon paths are required."
+        }
+
         val direct = DirectBydTelemetryReader(activity)
-        val directSourceFrame = runCatching { direct.readOnce() }.getOrNull()
+        val directSourceFrame = if (overdriveFrame == null) runCatching { direct.readOnce() }.getOrNull() else null
         val directRead = directSourceFrame != null
         val directFrame = directSourceFrame?.let { source ->
             TelemetryFrame(
@@ -85,14 +97,12 @@ object BydTelemetryDiagnostics {
                 source = source.source
             )
         }
-        if (directRead) {
-            notes += "Telemetry source: direct BYD HAL via Overdrive-compatible permission context."
-        }
+        if (directRead) notes += "Telemetry source: direct BYD HAL via permission context."
 
         var daemonReadable = false
         var daemonFrame: TelemetryFrame? = null
         var daemonError: String? = null
-        if (!directRead) {
+        if (overdriveFrame == null && !directRead) {
             val bridge = BydHalTelemetryBridge(activity)
             val daemonReady = runCatching { bridge.isAvailable() }.getOrDefault(false)
             if (daemonReady) {
@@ -113,7 +123,9 @@ object BydTelemetryDiagnostics {
             else if (!daemonError.isNullOrBlank()) notes += "Daemon read error: $daemonError"
         }
 
-        val frame = directFrame ?: daemonFrame
+        val frame = overdriveFrame?.let {
+            TelemetryFrame(it.timestampMs, it.rpm, it.speedKph, it.throttle, it.brake, 0f, it.source)
+        } ?: directFrame ?: daemonFrame
         val readable = frame != null
         val engineRpm = frame?.rpm?.takeIf { it.isFinite() && it >= 0f }?.toInt()
         val speedKph = frame?.speedKph?.takeIf { it.isFinite() && it >= 0f }?.toDouble()
@@ -132,15 +144,15 @@ object BydTelemetryDiagnostics {
         }.getOrDefault(false)
 
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
-        notes += "RPM source: BYDAutoMotorDevice.getMotorSpeed(); BYDAutoEngineDevice.getEngineSpeed() is fallback only."
-        notes += "Read path order: Direct BYD HAL → shell-UID daemon → UDP development fallback."
+        notes += "RPM priority: Overdrive front/rear motor snapshot, then DriveApex direct motor, then engine fallback."
+        notes += "Read path order: Overdrive collector → direct BYD HAL → shell-UID daemon → UDP development fallback."
         notes += "BYD GET/signature permissions are declared but are not forced through pm grant."
 
         return Report(
             adbStatus = adbStatus,
             adbError = VehicleAdbConnection.lastError(),
             engineApiPresent = engineApiPresent,
-            engineMethodsPresent = directRead || daemonReadable,
+            engineMethodsPresent = overdriveFrame != null || directRead || daemonReadable,
             engineReadable = readable,
             engineRpm = engineRpm,
             speedApiPresent = speedApiPresent,
@@ -149,7 +161,7 @@ object BydTelemetryDiagnostics {
             acceleratorPercent = accelerator,
             brakePercent = brake,
             directRead = directRead,
-            directError = if (directRead) null else "Direct BYD HAL returned no readable frame",
+            directError = if (overdriveFrame != null || directRead) null else "No readable drivetrain frame from collector/direct HAL/daemon",
             declaredPermissions = declared,
             grantedPermissions = grantedPermissions,
             failedPermissionGrants = failedPermissionGrants,
@@ -164,7 +176,7 @@ object BydTelemetryDiagnostics {
         report.adbError?.let { appendLine("ADB error: $it") }
         appendLine()
         appendLine("BYD HAL API: ${if (report.engineApiPresent || report.speedApiPresent) "FOUND" else "NOT FOUND"}")
-        appendLine("HAL read path: ${if (report.directRead) "DIRECT BYD HAL" else if (report.engineReadable) "DAEMON" else "NOT READY"}")
+        appendLine("HAL read path: ${if (report.directRead) "DIRECT BYD HAL" else if (report.engineReadable) "LIVE COLLECTOR/DAEMON" else "NOT READY"}")
         appendLine("Live telemetry read: ${if (report.engineReadable || report.speedReadable) "OK" else "FAILED"}")
         report.engineRpm?.let { appendLine("MOTOR RPM: $it RPM") }
         report.currentSpeedKph?.let { appendLine(String.format(Locale.US, "Speed: %.1f km/h", it)) }
