@@ -19,12 +19,30 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 83
-      DRIVEAPEX_VERSION_NAME: 0.2.83
+      DRIVEAPEX_VERSION_CODE: 84
+      DRIVEAPEX_VERSION_NAME: 0.2.84
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Normalize Motor Speed source references
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="app/src/main/java/com/driveapex/MainActivity.kt"
+          test -f "$FILE"
+          if grep -q '\brpmBar\b' "$FILE"; then
+            sed -i 's/\brpmBar\b/motorSpeedBar/g' "$FILE"
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add "$FILE"
+            git commit -m "fix: normalize motor speed bar references"
+            git push
+            echo "Normalized stale rpmBar references and pushed a clean source commit."
+          else
+            echo "MainActivity.kt already uses motorSpeedBar."
+          fi
 
       - name: Check signing configuration
         shell: bash
