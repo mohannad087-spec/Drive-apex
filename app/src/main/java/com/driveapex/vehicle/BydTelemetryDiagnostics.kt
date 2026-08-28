@@ -72,14 +72,15 @@ object BydTelemetryDiagnostics {
             notes += "Some BYD GET/signature permissions are not runtime-grantable; common permissions are checked separately."
         }
 
-        var daemonFrame: TelemetryFrame? = null
+        var daemonFrame: BydHalTelemetryBridge.TelemetryFrame? = null
         var daemonError: String? = null
         if (adbConnection != null) {
             val bridge = BydHalTelemetryBridge(activity)
             try {
-                bridge.start { }
+                bridge.start { frame ->
+                    daemonFrame = frame
+                }
                 repeat(30) {
-                    if (daemonFrame == null) daemonFrame = bridge.latest()
                     if (daemonFrame != null) return@repeat
                     Thread.sleep(100L)
                 }
@@ -106,12 +107,22 @@ object BydTelemetryDiagnostics {
             if (directFrame != null) notes += "Telemetry source: direct BYD HAL fallback."
         }
 
-        val frame = daemonFrame ?: directFrame
-        val readable = frame != null
-        val rpm = frame?.rpm?.takeIf { it.isFinite() && it >= 0f }?.toInt()
-        val speed = frame?.speedKph?.takeIf { it.isFinite() && it >= 0f }?.toDouble()
-        val accelerator = frame?.throttle?.takeIf { it.isFinite() }?.times(100f)?.toInt()
-        val brake = frame?.brake?.takeIf { it.isFinite() }?.times(100f)?.toInt()
+        val readable = daemonFrame != null || directFrame != null
+        val rpm: Int?
+        val speed: Double?
+        val accelerator: Int?
+        val brake: Int?
+        if (daemonFrame != null) {
+            rpm = daemonFrame!!.rpm.takeIf { it.isFinite() && it >= 0f }?.toInt()
+            speed = daemonFrame!!.speedKph.takeIf { it.isFinite() && it >= 0f }?.toDouble()
+            accelerator = (daemonFrame!!.throttle.takeIf { it.isFinite() }?.times(100f))?.toInt()
+            brake = (daemonFrame!!.brake.takeIf { it.isFinite() }?.times(100f))?.toInt()
+        } else {
+            rpm = directFrame?.rpm?.takeIf { it.isFinite() && it >= 0f }?.toInt()
+            speed = directFrame?.speedKph?.takeIf { it.isFinite() && it >= 0f }?.toDouble()
+            accelerator = (directFrame?.throttle?.takeIf { it.isFinite() }?.times(100f))?.toInt()
+            brake = (directFrame?.brake?.takeIf { it.isFinite() }?.times(100f))?.toInt()
+        }
 
         val engineApiPresent = runCatching {
             Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice"); true
