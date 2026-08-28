@@ -10,18 +10,17 @@ import java.net.InetSocketAddress
 /**
  * Live telemetry receiver for BYD DiLink 3.
  *
- * Runtime priority is intentionally different from the old diagnostic-only path:
- * 1) direct BYD HAL polling (the same reader used by diagnostics),
- * 2) shell-UID BYD daemon stream,
- * 3) UDP development fallback.
- *
- * This keeps the dashboard fed continuously instead of making it depend on opening
- * the diagnostics dialog first.
+ * Runtime priority:
+ * 1) direct BYD HAL polling,
+ * 2) the installed Overdrive collector as a drivetrain-RPM fallback,
+ * 3) shell-UID BYD daemon stream,
+ * 4) UDP development fallback.
  */
 class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
     private val staleAfterMs = 1500L
     private val validator = VehicleTelemetryValidator(staleAfterMs)
     private val direct = context?.let { DirectBydTelemetryReader(it) }
+    private val overdrive = context?.let { OverdriveTelemetryReader(it) }
     private val byd = context?.let { BydHalTelemetryBridge(it) }
 
     @Volatile private var running = false
@@ -87,7 +86,6 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         else -> null
     }
 
-    /** Continuous in-process BYD HAL reader; diagnostics and dashboard use the same data path. */
     private fun liveLoop() {
         var directFailures = 0
         var daemonStarted = false
@@ -99,15 +97,26 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 useByd = false
                 directFailures = 0
                 daemonStarted = false
+
+                // The direct reader supplies the normal speed/throttle/brake path.
+                // If its motor-speed feature returns a zero while the car is moving,
+                // use the proven Overdrive collector only for RPM. Other telemetry
+                // fields remain untouched.
+                val rpmFrame = if (frame.speedKph > 1f && frame.rpm <= 0.5f) {
+                    runCatching { overdrive?.readOnce() }.getOrNull()?.takeIf { it.rpm > 0.5f }
+                } else null
+                val rpm = rpmFrame?.rpm ?: frame.rpm
+                val source = rpmFrame?.source ?: frame.source
+
                 publish(
                     TelemetryFrame(
                         timestampMs = frame.timestampMs,
-                        rpm = frame.rpm,
+                        rpm = rpm,
                         speedKph = frame.speedKph,
                         throttle = frame.throttle,
                         brake = frame.brake,
                         regen = 0f,
-                        source = frame.source
+                        source = source
                     )
                 )
                 sleep50()
@@ -117,9 +126,6 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             directFailures++
             invalidPacketCount++
 
-            // Do not keep restarting the daemon on every failed direct sample.
-            // Once direct HAL misses several consecutive samples, start the
-            // shell-UID daemon as a fallback and let its callback publish frames.
             if (!daemonStarted && directFailures >= 5 && byd != null) {
                 daemonStarted = true
                 val bridge = byd
