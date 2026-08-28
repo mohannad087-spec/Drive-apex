@@ -49,9 +49,13 @@ class DirectBydTelemetryReader(context: Context) {
 
         val frontRaw = readFeatureInt(engineDevice, ENGINE_FRONT_MOTOR_SPEED)
         val rearRaw = readFeatureInt(engineDevice, ENGINE_REAR_MOTOR_SPEED)
+        val directMotorSpeed = sanitizeRpm(callGetter(motorDevice, "getMotorSpeed").asDouble())
+        val directEngineSpeed = sanitizeRpm(callGetter(engineDevice, "getEngineSpeed").asDouble())
         val rpm = selectFeatureMotorRpm(frontRaw, rearRaw, speedKph)
-            ?: sanitizeRpm(callGetter(motorDevice, "getMotorSpeed").asDouble())
-            ?: sanitizeRpm(callGetter(engineDevice, "getEngineSpeed").asDouble())
+            ?: directMotorSpeed
+            ?: directEngineSpeed
+
+        Log.d(TAG, "RPM_DIAG speed=$speedKph frontRaw=$frontRaw rearRaw=$rearRaw motorSpeed=$directMotorSpeed engineSpeed=$directEngineSpeed selected=$rpm")
 
         if (speedKph == null && throttlePct == null && brakePct == null && rpm == null) return null
 
@@ -168,14 +172,18 @@ class DirectBydTelemetryReader(context: Context) {
         return null
     }
 
-    /** Zero is a valid motor speed only when the vehicle is stationary. */
+    /** Prefer the actual front-motor feature while moving; never replace a moving motor value with zero. */
     private fun selectFeatureMotorRpm(front: Int?, rear: Int?, speedKph: Double?): Double? {
         val moving = (speedKph ?: 0.0) > 1.0
-        val values = listOfNotNull(front, rear)
-            .filter(::isPlausibleMotorRpm)
-            .map { kotlin.math.abs(it.toDouble()) }
-            .filter { !moving || it > 0.0 }
-        return values.firstOrNull { it <= MAX_RPM }
+        val candidates = listOf("front" to front, "rear" to rear)
+            .mapNotNull { (name, value) -> value?.takeIf(::isPlausibleMotorRpm)?.let { name to kotlin.math.abs(it.toDouble()) } }
+        val usable = candidates.filter { !moving || it.second > 0.0 }
+        if (usable.isNotEmpty()) {
+            val selected = usable.first { it.second <= MAX_RPM }
+            Log.d(TAG, "RPM_FEATURE_SELECTED ${selected.first}=${selected.second} speed=$speedKph candidates=$candidates")
+            return selected.second
+        }
+        return null
     }
 
     private fun sanitizeRpm(value: Double?): Double? {
