@@ -1,0 +1,29 @@
+name: Fix motor speed build
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[motor-speed-build-fixed]') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Replace stale rpmBar references
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/driveapex/MainActivity.kt')
+          s = p.read_text()
+          if 'rpmBar' not in s:
+              raise SystemExit('No stale rpmBar references found')
+          p.write_text(s.replace('rpmBar', 'motorSpeedBar'))
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/com/driveapex/MainActivity.kt
+          git commit -m "fix: resolve motor speed build references [motor-speed-build-fixed]"
+          git push
