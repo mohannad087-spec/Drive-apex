@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.HorizontalScrollView
@@ -38,7 +39,7 @@ class MainActivity : Activity() {
     private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
     private lateinit var updateManager: UpdateManager
-    private lateinit var udpReceiver: UdpTelemetryReceiver
+    private lateinit var telemetryReceiver: UdpTelemetryReceiver
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
 
@@ -46,7 +47,7 @@ class MainActivity : Activity() {
     private lateinit var telemetry: TextView
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
-    private lateinit var liveDiagnosticsValue: TextView
+    private lateinit var liveStatus: TextView
     private lateinit var speedValue: TextView
     private lateinit var throttleValue: TextView
     private lateinit var brakeValue: TextView
@@ -63,8 +64,8 @@ class MainActivity : Activity() {
     private val livePoller = object : Runnable {
         override fun run() {
             if (!liveMode) return
-            updateLiveDiagnostics()
-            udpReceiver.latest()?.let { applyTelemetry(it) } ?: showNoVehicleData()
+            updateLiveStatus()
+            telemetryReceiver.latest()?.let(::applyTelemetry) ?: showNoVehicleData()
             handler.postDelayed(this, 100L)
         }
     }
@@ -73,9 +74,12 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         genomeSession = SonicGenomeSession(this)
         updateManager = UpdateManager(this)
-        udpReceiver = UdpTelemetryReceiver(context = this)
+        telemetryReceiver = UdpTelemetryReceiver(context = this)
 
-        val scroll = ScrollView(this).apply { setBackgroundColor(BG); isFillViewport = true }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(BG)
+            isFillViewport = true
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(18), dp(18), dp(28))
@@ -83,17 +87,17 @@ class MainActivity : Activity() {
         }
         scroll.addView(root)
 
-        root.addView(header(), margin(18))
-        root.addView(heroCard(), margin(12))
-        root.addView(liveCard(), margin(18))
-        root.addView(section("DRIVE CONTROLS", "Live values remain linked to the existing vehicle/audio pipeline."), margin(8))
+        root.addView(header(), margin(16))
+        root.addView(heroCard(), margin(10))
+        root.addView(liveDashboardCard(), margin(18))
+        root.addView(section("DRIVE CONTROLS", "Manual controls are disabled automatically in LIVE mode."), margin(8))
 
         rpmBar = seek(6300, 200)
         throttleBar = seek(100, 10)
         speedBar = seek(240, 0)
-        root.addView(controlCard("RPM", rpmBar), margin(9))
-        root.addView(controlCard("THROTTLE", throttleBar), margin(9))
-        root.addView(controlCard("SPEED  /  km/h", speedBar), margin(18))
+        root.addView(controlCard("RPM", rpmBar), margin(8))
+        root.addView(controlCard("THROTTLE", throttleBar), margin(8))
+        root.addView(controlCard("SPEED / km/h", speedBar), margin(16))
 
         root.addView(section("QUICK SCENES", "Instant driving states for acoustic tuning."), margin(8))
         root.addView(chips(
@@ -102,10 +106,10 @@ class MainActivity : Activity() {
             "BOOST" to { setControls(5200, 95, 120, 0, 0) },
             "COAST" to { setControls(2200, 0, 80, 0, 0) },
             "REGEN" to { setControls(1600, 0, 40, 15, 100) }
-        ), margin(18))
+        ), margin(16))
 
         root.addView(section("SOUND DNA", "Choose the acoustic character."), margin(8))
-        root.addView(profiles(), margin(18))
+        root.addView(profiles(), margin(16))
 
         startButton = primary("START DRIVE SOUND")
         startButton.setOnClickListener {
@@ -113,7 +117,7 @@ class MainActivity : Activity() {
             if (!liveMode) syncSimulator()
             startButton.text = "DRIVE SOUND RUNNING"
         }
-        root.addView(startButton, margin(10))
+        root.addView(startButton, margin(8))
 
         val stop = secondary("STOP / SAFE")
         stop.setOnClickListener {
@@ -123,21 +127,21 @@ class MainActivity : Activity() {
             sceneValue.text = "SAFE / STOPPED"
             eventValue.text = "EVENTS L:0 A:0 O:0 R:0 B:0 S:0"
         }
-        root.addView(stop, margin(18))
+        root.addView(stop, margin(16))
 
         root.addView(section("SERVICE", "Diagnostics and maintenance."), margin(8))
         val service = card(12)
-        service.addView(serviceButton("BYD ADB SETUP / AUTHORIZE") { runAdbSetup(true) }, margin(7))
-        service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") { showBydDiagnostics() }, margin(7))
+        service.addView(serviceButton("BYD ADB SETUP / AUTHORIZE") { runAdbSetup(true) }, margin(6))
+        service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") { showBydDiagnostics() }, margin(6))
         service.addView(serviceButton("RESET SONIC GENOME") {
             genomeSession.reset()
             if (!liveMode) syncSimulator()
-        }, margin(7))
+        }, margin(6))
         service.addView(serviceButton("CHECK FOR UPDATE") { updateManager.checkManually() })
         root.addView(service)
 
         eventValue = label("EVENTS", 1f, Color.TRANSPARENT, false)
-        eventValue.visibility = android.view.View.GONE
+        eventValue.visibility = View.GONE
 
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -150,8 +154,8 @@ class MainActivity : Activity() {
         throttleBar.setOnSeekBarChangeListener(listener)
         speedBar.setOnSeekBarChangeListener(listener)
 
-        syncSimulator()
         setContentView(scroll)
+        syncSimulator()
         handler.postDelayed({ BydAdbSetup.prepare(this, false) }, 500L)
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
         handler.postDelayed({
@@ -169,7 +173,9 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         brand.addView(label("DRIVE APEX", 25f, Color.WHITE, true))
-        brand.addView(label("BYD Yuan Plus 2023  •  Sonic Control", 12f, MUTED, false).apply { setPadding(0, dp(2), 0, 0) })
+        brand.addView(label("BYD Yuan Plus 2023  •  Sonic Control", 12f, MUTED, false).apply {
+            setPadding(0, dp(2), 0, 0)
+        })
         row.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         modeButton = action("TEST", 0xFF102E26.toInt(), GREEN)
         modeButton.setOnClickListener { toggleTelemetryMode() }
@@ -186,25 +192,37 @@ class MainActivity : Activity() {
         top.addView(sourceValue)
         box.addView(top)
         box.addView(label("DRIVE SOUND", 11f, MUTED, true).apply { setPadding(0, dp(16), 0, 0) })
-        rpmValue = label("700 RPM", 58f, Color.WHITE, true).apply { gravity = Gravity.CENTER; setIncludeFontPadding(false) }
+        rpmValue = label("700 RPM", 58f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER
+            setIncludeFontPadding(false)
+        }
         box.addView(rpmValue, LinearLayout.LayoutParams.MATCH_PARENT, dp(78))
         box.addView(label("RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        telemetry = label("0 km/h   •   Throttle 0%   •   Regen 0%", 13f, SOFT, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) }
+        telemetry = label("0 km/h   •   Throttle 0%   •   Brake 0%   •   Regen 0%", 13f, SOFT, false).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        }
         box.addView(telemetry)
-        signatureValue = label("BALANCED   •   AGG 0%   •   SMOOTH 0%", 11f, PURPLE, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(9), 0, 0) }
+        signatureValue = label("BALANCED   •   AGG 0%   •   SMOOTH 0%", 11f, PURPLE, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(9), 0, 0)
+        }
         box.addView(signatureValue)
-        genomeValue = label("GENOME: NEW  •  OBS 0", 10f, MUTED, false).apply { gravity = Gravity.CENTER; setPadding(0, dp(7), 0, 0) }
+        genomeValue = label("GENOME: NEW  •   OBS 0", 10f, MUTED, false).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(7), 0, 0)
+        }
         box.addView(genomeValue)
         return box
     }
 
-    private fun liveCard(): LinearLayout {
+    /** Always-visible vehicle dashboard. Diagnostics is not required to see these values. */
+    private fun liveDashboardCard(): LinearLayout {
         val box = card(13)
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        val liveDot = label("●", 15f, GREEN, true)
-        header.addView(liveDot, LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT))
-        liveDiagnosticsValue = label("LIVE WAITING  •  VEHICLE TELEMETRY", 12f, SOFT, true)
-        header.addView(liveDiagnosticsValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(label("●", 15f, GREEN, true), LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT))
+        liveStatus = label("LIVE WAITING  •  VEHICLE TELEMETRY", 12f, SOFT, true)
+        header.addView(liveStatus, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         box.addView(header)
 
         val metrics = LinearLayout(this).apply {
@@ -216,17 +234,22 @@ class MainActivity : Activity() {
         metrics.addView(liveMetric("BRAKE", "--", "%") { brakeValue = it }, metricParams())
         metrics.addView(liveMetric("REGEN", "--", "%") { regenValue = it }, metricParams())
         box.addView(metrics)
-        box.addView(label("Dashboard values update automatically; diagnostics is for verification only.", 10f, MUTED, false).apply { setPadding(0, dp(10), 0, 0) })
+        box.addView(label("Live values update automatically from the verified BYD telemetry path.", 10f, MUTED, false).apply {
+            setPadding(0, dp(10), 0, 0)
+        })
         return box
     }
 
     private fun liveMetric(title: String, initial: String, unit: String, bind: (TextView) -> Unit): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
-        setPadding(dp(6), dp(7), dp(6), dp(7))
+        setPadding(dp(5), dp(7), dp(5), dp(7))
         background = rounded(PANEL_2, dp(11), STROKE)
         addView(label(title, 9f, MUTED, true))
-        val value = label(initial, 21f, Color.WHITE, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(5), 0, 0) }
+        val value = label(initial, 21f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(5), 0, 0)
+        }
         addView(value)
         addView(label(unit, 9f, MUTED, false).apply { gravity = Gravity.CENTER })
         bind(value)
@@ -234,26 +257,26 @@ class MainActivity : Activity() {
 
     private fun metricParams() = LinearLayout.LayoutParams(0, dp(78), 1f).apply { marginEnd = dp(7) }
 
-    private fun section(title: String, subtitle: String): LinearLayout {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        box.addView(label(title, 13f, Color.WHITE, true))
-        box.addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
-        return box
+    private fun section(title: String, subtitle: String): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(label(title, 13f, Color.WHITE, true))
+        addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
     }
 
-    private fun controlCard(title: String, bar: SeekBar): LinearLayout {
-        val box = card(11)
-        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+    private fun controlCard(title: String, bar: SeekBar): LinearLayout = card(11).apply {
+        val row = LinearLayout(this@MainActivity).apply { gravity = Gravity.CENTER_VERTICAL }
         row.addView(label(title, 11f, MUTED, true), LinearLayout.LayoutParams(dp(112), ViewGroup.LayoutParams.WRAP_CONTENT))
         row.addView(bar, LinearLayout.LayoutParams(0, dp(44), 1f))
-        box.addView(row)
-        return box
+        addView(row)
     }
 
     private fun chips(vararg items: Pair<String, () -> Unit>): HorizontalScrollView {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        items.forEach { (text, click) -> row.addView(action(text, PANEL, SOFT).apply { setOnClickListener { click() } }, LinearLayout.LayoutParams(dp(94), dp(52)).apply { marginEnd = dp(8) }) }
+        items.forEach { (text, click) ->
+            row.addView(action(text, PANEL, SOFT).apply { setOnClickListener { click() } },
+                LinearLayout.LayoutParams(dp(94), dp(52)).apply { marginEnd = dp(8) })
+        }
         scroll.addView(row)
         return scroll
     }
@@ -261,8 +284,12 @@ class MainActivity : Activity() {
     private fun profiles(): HorizontalScrollView {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(profile("EV GT", "Electric GT", BLUE) { engine.setLayers(ETronInspiredSoundProfile.layers) }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("APEX", "Performance", PURPLE) { engine.setLayers(ApexSoundProfile.layers) }, LinearLayout.LayoutParams(dp(156), dp(92)))
+        row.addView(profile("EV GT", "Electric GT", BLUE) {
+            engine.setLayers(ETronInspiredSoundProfile.layers)
+        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("APEX", "Performance", PURPLE) {
+            engine.setLayers(ApexSoundProfile.layers)
+        }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         return scroll
     }
@@ -285,7 +312,7 @@ class MainActivity : Activity() {
             BydAdbSetup.Result.SETTINGS_OPENED -> "BYD ADB settings opened. Enable wireless ADB."
             BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD ADB settings activity was not found."
         }
-        liveDiagnosticsValue.text = "ADB: ${result.name}"
+        liveStatus.text = "ADB: ${result.name}"
         AlertDialog.Builder(this).setTitle("BYD ADB setup").setMessage(message).setPositiveButton("OK", null).show()
     }
 
@@ -293,30 +320,34 @@ class MainActivity : Activity() {
         Thread {
             val report = BydTelemetryDiagnostics.probe(this)
             val message = BydTelemetryDiagnostics.format(report)
-            handler.post { if (!isFinishing && !isDestroyed) AlertDialog.Builder(this).setTitle("BYD telemetry probe").setMessage(message).setPositiveButton("OK", null).show() }
+            handler.post {
+                if (!isFinishing && !isDestroyed) {
+                    AlertDialog.Builder(this).setTitle("BYD telemetry probe").setMessage(message).setPositiveButton("OK", null).show()
+                }
+            }
         }.start()
     }
 
     private fun toggleTelemetryMode() {
         liveMode = !liveMode
         if (liveMode) {
-            udpReceiver.start()
+            telemetryReceiver.start()
             modeButton.text = "LIVE"
             sourceValue.text = "LIVE VEHICLE"
             sourceValue.setTextColor(GREEN)
             rpmBar.isEnabled = false
             throttleBar.isEnabled = false
             speedBar.isEnabled = false
-            updateLiveDiagnostics()
+            updateLiveStatus()
             handler.post(livePoller)
         } else {
-            udpReceiver.stop()
+            telemetryReceiver.stop()
             handler.removeCallbacks(livePoller)
             modeButton.text = "TEST"
             sourceValue.text = "SIMULATOR"
             sourceValue.setTextColor(MUTED)
-            liveDiagnosticsValue.text = "LIVE READY  •  VEHICLE DATA STANDBY"
-            liveDiagnosticsValue.setTextColor(SOFT)
+            liveStatus.text = "LIVE READY  •  VEHICLE DATA STANDBY"
+            liveStatus.setTextColor(SOFT)
             speedValue.text = "--"
             throttleValue.text = "--"
             brakeValue.text = "--"
@@ -328,12 +359,13 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun updateLiveDiagnostics() {
-        val d = udpReceiver.diagnostics()
+    private fun updateLiveStatus() {
+        val d = telemetryReceiver.diagnostics()
         val age = if (d.ageMs == Long.MAX_VALUE) "--" else "${d.ageMs}ms"
         val valid = d.packetCount > 0 && d.ageMs <= 1500L
-        liveDiagnosticsValue.text = String.format(Locale.US, "LIVE %s  •  PKT %d  •  AGE %s", if (valid) "CONNECTED" else "WAITING", d.packetCount, age)
-        liveDiagnosticsValue.setTextColor(if (valid) GREEN else AMBER)
+        liveStatus.text = String.format(Locale.US, "LIVE %s  •  PKT %d  •  AGE %s",
+            if (valid) "CONNECTED" else "WAITING", d.packetCount, age)
+        liveStatus.setTextColor(if (valid) GREEN else AMBER)
     }
 
     private fun showNoVehicleData() {
@@ -352,23 +384,32 @@ class MainActivity : Activity() {
         val genome = genomeSession.update(data)
         val signature = genome.toSignature()
         val events = controller.events()
+
         if (liveMode) {
             rpmBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, rpmBar.max)
             throttleBar.progress = (data.throttle * 100f).roundToInt().coerceIn(0, throttleBar.max)
             speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
         }
+
         rpmValue.text = formatRpm(data.rpm)
-        telemetry.text = String.format(Locale.US, "%.0f km/h   •   Throttle %d%%   •   Brake %d%%   •   Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.brake * 100).toInt(), (data.regen * 100).toInt())
+        telemetry.text = String.format(Locale.US,
+            "%.0f km/h   •   Throttle %d%%   •   Brake %d%%   •   Regen %d%%",
+            data.speedKph, (data.throttle * 100).roundToInt(), (data.brake * 100).roundToInt(), (data.regen * 100).roundToInt())
         speedValue.text = String.format(Locale.US, "%.0f", data.speedKph)
         throttleValue.text = String.format(Locale.US, "%d", (data.throttle * 100).roundToInt())
         brakeValue.text = String.format(Locale.US, "%d", (data.brake * 100).roundToInt())
         regenValue.text = String.format(Locale.US, "%d", (data.regen * 100).roundToInt())
         sceneValue.text = scene.name.replace('_', ' ')
-        sourceValue.text = liveMode && packet.source != TelemetrySource.SIMULATOR ? "LIVE VEHICLE" : "SIMULATOR"
+        sourceValue.text = if (liveMode && packet.source != TelemetrySource.SIMULATOR) "LIVE VEHICLE" else "SIMULATOR"
         sourceValue.setTextColor(if (liveMode) GREEN else MUTED)
-        signatureValue.text = String.format(Locale.US, "%s   •   AGG %d%%   •   SMOOTH %d%%", signature.label(), (signature.aggression * 100).toInt(), (signature.smoothness * 100).toInt())
-        genomeValue.text = String.format(Locale.US, "GENOME: %s  •  OBS %d", signature.label(), genome.observations.coerceAtMost(999_999L))
-        eventValue.text = String.format(Locale.US, "EVENTS L:%d A:%d O:%d R:%d B:%d S:%d", (events.launch * 100).toInt(), (events.accelerationHit * 100).toInt(), (events.liftOff * 100).toInt(), (events.regenerationHit * 100).toInt(), (events.brakeHit * 100).toInt(), (events.speedRush * 100).toInt())
+        signatureValue.text = String.format(Locale.US, "%s   •   AGG %d%%   •   SMOOTH %d%%",
+            signature.label(), (signature.aggression * 100).roundToInt(), (signature.smoothness * 100).roundToInt())
+        genomeValue.text = String.format(Locale.US, "GENOME: %s  •   OBS %d",
+            signature.label(), genome.observations.coerceAtMost(999_999L))
+        eventValue.text = String.format(Locale.US, "EVENTS L:%d A:%d O:%d R:%d B:%d S:%d",
+            (events.launch * 100).roundToInt(), (events.accelerationHit * 100).roundToInt(),
+            (events.liftOff * 100).roundToInt(), (events.regenerationHit * 100).roundToInt(),
+            (events.brakeHit * 100).roundToInt(), (events.speedRush * 100).roundToInt())
     }
 
     private fun syncSimulator() {
@@ -386,9 +427,7 @@ class MainActivity : Activity() {
         speedBar.progress = speed.coerceIn(0, speedBar.max)
         vehicle.setBrake((brake / 100f).coerceIn(0f, 1f))
         vehicle.setRegen((regen / 100f).coerceIn(0f, 1f))
-        if (!liveMode) {
-            applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
-        }
+        if (!liveMode) applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
     }
 
     private fun label(text: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
@@ -410,7 +449,10 @@ class MainActivity : Activity() {
 
     private fun primary(text: String) = action(text, BLUE, Color.WHITE).apply { textSize = 14f; minHeight = dp(56) }
     private fun secondary(text: String) = action(text, PANEL, SOFT).apply { textSize = 12f; minHeight = dp(50) }
-    private fun serviceButton(text: String, click: () -> Unit) = action(text, PANEL_2, MUTED).apply { setOnClickListener { click() }; minHeight = dp(46) }
+    private fun serviceButton(text: String, click: () -> Unit) = action(text, PANEL_2, MUTED).apply {
+        setOnClickListener { click() }
+        minHeight = dp(46)
+    }
 
     private fun card(padding: Int) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -433,7 +475,10 @@ class MainActivity : Activity() {
         setStroke(dp(1), stroke)
     }
 
-    private fun margin(bottom: Int) = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(bottom) }
+    private fun margin(bottom: Int) = LinearLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+    ).apply { bottomMargin = dp(bottom) }
+
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
     private fun formatRpm(rpm: Float) = String.format(Locale.US, "%,.0f RPM", rpm)
 
@@ -445,7 +490,7 @@ class MainActivity : Activity() {
     override fun onStop() {
         handler.removeCallbacks(livePoller)
         genomeSession.finishDrive()
-        udpReceiver.stop()
+        telemetryReceiver.stop()
         engine.stop()
         super.onStop()
     }
