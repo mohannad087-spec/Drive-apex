@@ -47,15 +47,21 @@ class DirectBydTelemetryReader(context: Context) {
         val throttlePct = callGetter(speedDevice, "getAccelerateDeepness").asDouble()
         val brakePct = callGetter(speedDevice, "getBrakeDeepness").asDouble()
 
+        // Match the known-good Overdrive implementation exactly: Front Motor Speed
+        // is a feature on BYDAutoEngineDevice and is read through the generic
+        // get(int[], Class) HAL API using the primitive Integer.TYPE. Overdrive then
+        // negates the raw front value to match the cluster's forward-positive RPM.
         val frontRaw = readFeatureInt(engineDevice, ENGINE_FRONT_MOTOR_SPEED)
         val rearRaw = readFeatureInt(engineDevice, ENGINE_REAR_MOTOR_SPEED)
+        val frontRpm = frontRaw?.let { -it }
+        val rearRpm = rearRaw?.let { -it }
         val directMotorSpeed = sanitizeRpm(callGetter(motorDevice, "getMotorSpeed").asDouble())
         val directEngineSpeed = sanitizeRpm(callGetter(engineDevice, "getEngineSpeed").asDouble())
-        val rpm = selectFeatureMotorRpm(frontRaw, rearRaw, speedKph)
+        val rpm = selectFeatureMotorRpm(frontRpm, rearRpm, speedKph)
             ?: directMotorSpeed
             ?: directEngineSpeed
 
-        Log.d(TAG, "RPM_DIAG speed=$speedKph frontRaw=$frontRaw rearRaw=$rearRaw motorSpeed=$directMotorSpeed engineSpeed=$directEngineSpeed selected=$rpm")
+        Log.d(TAG, "RPM_DIAG speed=$speedKph frontRaw=$frontRaw frontRpm=$frontRpm rearRaw=$rearRaw rearRpm=$rearRpm motorSpeed=$directMotorSpeed engineSpeed=$directEngineSpeed selected=$rpm")
 
         if (speedKph == null && throttlePct == null && brakePct == null && rpm == null) return null
 
@@ -124,26 +130,34 @@ class DirectBydTelemetryReader(context: Context) {
         }
     }
 
+    /** Exact Overdrive-compatible feature read: get(int[], Class), with Integer.TYPE. */
     private fun readFeatureInt(device: Any?, featureId: Int): Int? {
         if (device == null) return null
         return runCatching {
-            val method = findFeatureGetMethod(device.javaClass) ?: return@runCatching null
-            val result = when {
-                method.parameterTypes.size == 2 && method.parameterTypes[0] == IntArray::class.java -> method.invoke(device, intArrayOf(featureId), Int::class.javaPrimitiveType)
-                method.parameterTypes.size == 2 && method.parameterTypes[0] == Int::class.javaPrimitiveType -> method.invoke(device, featureId, 0)
-                else -> null
-            }
+            val method = findFeatureGetArrayClassMethod(device.javaClass) ?: return@runCatching null
+            method.isAccessible = true
+            val result = method.invoke(device, intArrayOf(featureId), Int::class.javaPrimitiveType)
             extractInt(result)
         }.getOrNull()?.takeUnless(::isInvalidFeatureInt)
     }
 
-    private fun findFeatureGetMethod(clazz: Class<*>): Method? {
+    private fun findFeatureGetArrayClassMethod(clazz: Class<*>): Method? {
         var c: Class<*>? = clazz
         while (c != null) {
-            c.declaredMethods.firstOrNull { it.name == "get" && it.parameterTypes.size == 2 && (it.parameterTypes[0] == IntArray::class.java || it.parameterTypes[0] == Int::class.javaPrimitiveType) }?.let { return it }
+            c.declaredMethods.firstOrNull {
+                it.name == "get" &&
+                    it.parameterTypes.size == 2 &&
+                    it.parameterTypes[0] == IntArray::class.java &&
+                    it.parameterTypes[1] == Class::class.java
+            }?.let { return it }
             c = c.superclass
         }
-        return clazz.methods.firstOrNull { it.name == "get" && it.parameterTypes.size == 2 }
+        return clazz.methods.firstOrNull {
+            it.name == "get" &&
+                it.parameterTypes.size == 2 &&
+                it.parameterTypes[0] == IntArray::class.java &&
+                it.parameterTypes[1] == Class::class.java
+        }
     }
 
     private fun extractInt(value: Any?): Int? {
@@ -172,7 +186,6 @@ class DirectBydTelemetryReader(context: Context) {
         return null
     }
 
-    /** Prefer the actual front-motor feature while moving; never replace a moving motor value with zero. */
     private fun selectFeatureMotorRpm(front: Int?, rear: Int?, speedKph: Double?): Double? {
         val moving = (speedKph ?: 0.0) > 1.0
         val candidates = listOf("front" to front, "rear" to rear)
