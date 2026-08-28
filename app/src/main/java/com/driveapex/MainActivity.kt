@@ -203,7 +203,7 @@ class MainActivity : Activity() {
             setIncludeFontPadding(false)
         }
         box.addView(rpmValue, LinearLayout.LayoutParams.MATCH_PARENT, dp(78))
-        box.addView(label("MOTOR SPEED / RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        box.addView(label("FRONT MOTOR SPEED • RPM", 11f, MUTED, true).apply { gravity = Gravity.CENTER_HORIZONTAL })
         telemetry = label("0 km/h   •   Throttle 0%   •   Brake 0%   •   Regen 0%", 13f, SOFT, false).apply {
             gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, 0)
@@ -392,12 +392,12 @@ class MainActivity : Activity() {
         val events = controller.events()
 
         if (liveMode) {
-            motorSpeedBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, motorSpeedBar.max)
+            motorSpeedBar.progress = data.rpm.roundToInt().coerceIn(0, motorSpeedBar.max)
             throttleBar.progress = (data.throttle * 100f).roundToInt().coerceIn(0, throttleBar.max)
             speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
         }
 
-        rpmValue.text = formatRpm(data.rpm)
+        rpmValue.text = formatMotorSpeed(data.rpm)
         telemetry.text = String.format(Locale.US,
             "%.0f km/h   •   Throttle %d%%   •   Brake %d%%   •   Regen %d%%",
             data.speedKph, (data.throttle * 100).roundToInt(), (data.brake * 100).roundToInt(), (data.regen * 100).roundToInt())
@@ -419,7 +419,7 @@ class MainActivity : Activity() {
     }
 
     private fun syncSimulator() {
-        vehicle.setRpm((700 + motorSpeedBar.progress).toFloat())
+        vehicle.setRpm(motorSpeedBar.progress.toFloat())
         vehicle.setThrottle(throttleBar.progress / 100f)
         vehicle.setSpeed(speedBar.progress.toFloat())
         vehicle.setBrake(0f)
@@ -428,7 +428,7 @@ class MainActivity : Activity() {
     }
 
     private fun setControls(rpm: Int, throttle: Int, speed: Int, brake: Int, regen: Int) {
-        motorSpeedBar.progress = (rpm - 700).coerceIn(0, motorSpeedBar.max)
+        motorSpeedBar.progress = rpm.coerceIn(0, motorSpeedBar.max)
         throttleBar.progress = throttle.coerceIn(0, throttleBar.max)
         speedBar.progress = speed.coerceIn(0, speedBar.max)
         vehicle.setBrake((brake / 100f).coerceIn(0f, 1f))
@@ -486,7 +486,7 @@ class MainActivity : Activity() {
     ).apply { bottomMargin = dp(bottom) }
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).roundToInt()
-    private fun formatRpm(rpm: Float) = String.format(Locale.US, "%,.0f RPM", rpm)
+    private fun formatMotorSpeed(motorSpeed: Float) = String.format(Locale.US, "%,.0f MOTOR SPEED", motorSpeed)
 
     override fun onResume() {
         super.onResume()
