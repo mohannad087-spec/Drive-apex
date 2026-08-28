@@ -49,7 +49,7 @@ class DirectBydTelemetryReader(context: Context) {
 
         val frontRaw = readFeatureInt(engineDevice, ENGINE_FRONT_MOTOR_SPEED)
         val rearRaw = readFeatureInt(engineDevice, ENGINE_REAR_MOTOR_SPEED)
-        val rpm = selectFeatureMotorRpm(frontRaw, rearRaw)
+        val rpm = selectFeatureMotorRpm(frontRaw, rearRaw, speedKph)
             ?: sanitizeRpm(callGetter(motorDevice, "getMotorSpeed").asDouble())
             ?: sanitizeRpm(callGetter(engineDevice, "getEngineSpeed").asDouble())
 
@@ -168,8 +168,13 @@ class DirectBydTelemetryReader(context: Context) {
         return null
     }
 
-    private fun selectFeatureMotorRpm(front: Int?, rear: Int?): Double? {
-        val values = listOfNotNull(front, rear).filter(::isPlausibleMotorRpm).map { kotlin.math.abs(it.toDouble()) }
+    /** Zero is a valid motor speed only when the vehicle is stationary. */
+    private fun selectFeatureMotorRpm(front: Int?, rear: Int?, speedKph: Double?): Double? {
+        val moving = (speedKph ?: 0.0) > 1.0
+        val values = listOfNotNull(front, rear)
+            .filter(::isPlausibleMotorRpm)
+            .map { kotlin.math.abs(it.toDouble()) }
+            .filter { !moving || it > 0.0 }
         return values.firstOrNull { it <= MAX_RPM }
     }
 
