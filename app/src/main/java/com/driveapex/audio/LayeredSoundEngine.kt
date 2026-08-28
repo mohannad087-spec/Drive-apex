@@ -1,8 +1,9 @@
 package com.driveapex.audio
 
-import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.util.Log
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -10,12 +11,17 @@ import kotlin.math.tanh
 
 /**
  * Real-time layered EV sound renderer.
- * The output track is tagged as navigation guidance so the head unit can route it through
- * the navigation channel. Existing sound profiles remain active.
+ * The output is bound to the BYD OEM navigation stream (STREAM_NAVI, 14 on the
+ * verified Overdrive/DiPlus route), not STREAM_MUSIC.
  */
 class LayeredSoundEngine(
     private var layers: List<SoundLayer> = ETronInspiredSoundProfile.layers
 ) {
+    companion object {
+        private const val TAG = "DriveApexAudio"
+        private const val DEFAULT_NAV_STREAM = 14
+    }
+
     private val sampleRate = 44_100
     private val bufferSize = 1_536
     private var track: AudioTrack? = null
@@ -42,28 +48,35 @@ class LayeredSoundEngine(
             AudioFormat.ENCODING_PCM_16BIT
         ).let { if (it > 0) it else bufferSize * 4 }
 
-        track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                    .build()
-            )
-            .setBufferSizeInBytes(maxOf(bufferSize * 4, minBuffer))
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-            .also {
-                it.setVolume(1f)
-                it.play()
-            }
+        val navStream = runCatching {
+            AudioManager::class.java.getField("STREAM_NAVI").getInt(null)
+        }.getOrDefault(DEFAULT_NAV_STREAM)
 
+        val targetBuffer = maxOf(bufferSize * 4, minBuffer)
+        val created = runCatching {
+            @Suppress("DEPRECATION")
+            AudioTrack(
+                navStream,
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                targetBuffer,
+                AudioTrack.MODE_STREAM
+            )
+        }.onFailure {
+            Log.e(TAG, "Unable to create navigation AudioTrack stream=$navStream", it)
+        }.getOrNull() ?: return
+
+        track = created
+        runCatching { created.setVolume(1f) }
+        runCatching { created.play() }.onFailure {
+            Log.e(TAG, "Unable to start navigation AudioTrack stream=$navStream", it)
+            runCatching { created.release() }
+            track = null
+            return
+        }
+
+        Log.i(TAG, "AudioTrack started on OEM navigation stream=$navStream")
         running = true
         Thread(::renderLoop, "DriveApex-LayeredAudio").apply { isDaemon = true }.start()
     }
