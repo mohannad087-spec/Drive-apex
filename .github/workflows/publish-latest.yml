@@ -1,8 +1,6 @@
 name: Publish DriveApex Latest
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
@@ -19,31 +17,12 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 84
-      DRIVEAPEX_VERSION_NAME: 0.2.84
+      DRIVEAPEX_VERSION_CODE: 85
+      DRIVEAPEX_VERSION_NAME: 0.2.85
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Normalize Motor Speed source references
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="app/src/main/java/com/driveapex/MainActivity.kt"
-          test -f "$FILE"
-          if grep -q '\brpmBar\b' "$FILE"; then
-            sed -i 's/\brpmBar\b/motorSpeedBar/g' "$FILE"
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add "$FILE"
-            git commit -m "fix: normalize motor speed bar references"
-            git push
-            echo "Normalized stale rpmBar references and pushed a clean source commit."
-          else
-            echo "MainActivity.kt already uses motorSpeedBar."
-          fi
-
       - name: Check signing configuration
         shell: bash
         run: |
@@ -51,24 +30,20 @@ jobs:
           for v in DRIVEAPEX_KEYSTORE_HEX DRIVEAPEX_KEYSTORE_PASSWORD DRIVEAPEX_KEY_ALIAS DRIVEAPEX_KEY_PASSWORD; do
             [[ -n "${!v}" ]] || { echo "ERROR: $v is not configured."; exit 1; }
           done
-
       - name: Set up JDK 17
         uses: actions/setup-java@v5.6.0
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
         with:
           cmdline-tools-version: latest
           packages: platform-tools
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6.2.0
         with:
           gradle-version: '8.9'
-
       - name: Restore and validate signing keystore
         shell: bash
         env:
@@ -82,10 +57,8 @@ jobs:
           test -s "$DRIVEAPEX_KEYSTORE_PATH"
           keytool -list -keystore "$DRIVEAPEX_KEYSTORE_PATH" -storepass "$DRIVEAPEX_KEYSTORE_PASSWORD" -alias "$DRIVEAPEX_KEY_ALIAS" >/dev/null
           echo "DRIVEAPEX_KEYSTORE_PATH=$DRIVEAPEX_KEYSTORE_PATH" >> "$GITHUB_ENV"
-
       - name: Build signed release APK
         run: gradle assembleRelease --stacktrace
-
       - name: Verify release APK signing
         shell: bash
         run: |
@@ -93,7 +66,6 @@ jobs:
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           test -x "$APKSIGNER"
           "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
-
       - name: Prepare deterministic update assets
         shell: bash
         run: |
@@ -116,7 +88,6 @@ jobs:
           python3 -m json.tool DriveApex-update.json >/dev/null
           cp "$APK_SOURCE" DriveApex.apk
           test -s DriveApex.apk
-
       - name: Refuse duplicate release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -125,10 +96,9 @@ jobs:
           set -euo pipefail
           TAG="v${DRIVEAPEX_VERSION_NAME}"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "ERROR: Release tag $TAG already exists. Bump DRIVEAPEX_VERSION_CODE/DRIVEAPEX_VERSION_NAME before publishing another build."
+            echo "ERROR: Release tag $TAG already exists."
             exit 1
           fi
-
       - name: Publish versioned release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -136,16 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${DRIVEAPEX_VERSION_NAME}"
-          gh release create "$TAG" \
-            --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" \
-            --notes "DriveApex telemetry build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" \
-            --target "$GITHUB_SHA" \
-            --latest \
-            --repo "$GITHUB_REPOSITORY"
+          gh release create "$TAG" --title "DriveApex ${DRIVEAPEX_VERSION_NAME}" --notes "DriveApex telemetry build\nversionCode: ${DRIVEAPEX_VERSION_CODE}\nversionName: ${DRIVEAPEX_VERSION_NAME}\ncommit: ${GITHUB_SHA}" --target "$GITHUB_SHA" --latest --repo "$GITHUB_REPOSITORY"
           gh release upload "$TAG" DriveApex.apk --clobber --repo "$GITHUB_REPOSITORY"
           gh release upload "$TAG" DriveApex-update.json --clobber --repo "$GITHUB_REPOSITORY"
-          gh release edit "$TAG" --latest --repo "$GITHUB_REPOSITORY"
-
       - name: Verify production update channel
         shell: bash
         run: |
@@ -156,10 +119,8 @@ jobs:
           curl -fsSL --retry 8 --retry-delay 3 --connect-timeout 5 --max-time 30 "$MANIFEST_URL" -o /tmp/DriveApex-update.json
           python3 - "$DRIVEAPEX_VERSION_CODE" "$DRIVEAPEX_VERSION_NAME" <<'PY'
           import json, sys
-          expected_code = int(sys.argv[1])
-          expected_name = sys.argv[2]
-          with open('/tmp/DriveApex-update.json', encoding='utf-8') as f:
-              d=json.load(f)
+          expected_code = int(sys.argv[1]); expected_name = sys.argv[2]
+          with open('/tmp/DriveApex-update.json', encoding='utf-8') as f: d=json.load(f)
           assert d['versionCode'] == expected_code
           assert d['versionName'] == expected_name
           assert d['assetName'] == 'DriveApex.apk'
