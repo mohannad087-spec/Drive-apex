@@ -38,6 +38,12 @@ class LayeredSoundEngine(
 
     fun start() {
         if (running) return
+        val minBuffer = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).let { if (it > 0) it else bufferSize * 4 }
+
         track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -52,10 +58,13 @@ class LayeredSoundEngine(
                     .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                     .build()
             )
-            .setBufferSizeInBytes(bufferSize * 4)
+            .setBufferSizeInBytes(maxOf(bufferSize * 4, minBuffer))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
-            .also { it.play() }
+            .also {
+                it.setVolume(1f)
+                it.play()
+            }
         running = true
         Thread(::renderLoop, "DriveApex-LayeredAudio").start()
     }
