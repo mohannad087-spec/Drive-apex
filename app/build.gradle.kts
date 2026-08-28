@@ -11,8 +11,8 @@ android {
         applicationId = "com.driveapex"
         minSdk = 26
         targetSdk = 35
-        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 76
-        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.76"
+        versionCode = System.getenv("DRIVEAPEX_VERSION_CODE")?.toIntOrNull() ?: 77
+        versionName = System.getenv("DRIVEAPEX_VERSION_NAME") ?: "0.2.77"
     }
 
     buildFeatures { buildConfig = true }
@@ -21,7 +21,8 @@ android {
         resources {
             excludes += setOf(
                 "META-INF/LICENSE.md", "META-INF/LICENSE.txt", "META-INF/LICENSE",
-                "META-INF/NOTICE.md", "META-INF/NOTICE.txt", "META-INF/NOTICE", "META-INF/DEPENDENCIES"
+                "META-INF/NOTICE.md", "META-INF/NOTICE.txt", "META-INF/NOTICE",
+                "META-INF/DEPENDENCIES"
             )
         }
     }
