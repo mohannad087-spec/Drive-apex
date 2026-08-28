@@ -19,8 +19,8 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 75
-      DRIVEAPEX_VERSION_NAME: 0.2.75
+      DRIVEAPEX_VERSION_CODE: 76
+      DRIVEAPEX_VERSION_NAME: 0.2.76
 
     steps:
       - name: Checkout
@@ -42,6 +42,9 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          cmdline-tools-version: latest
+          packages: platform-tools
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6.2.0
