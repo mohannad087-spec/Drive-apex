@@ -4,41 +4,39 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.util.Log
-import java.lang.reflect.Field
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 
-/** Direct BYD HAL reader using the same context/permission pattern as Overdrive. */
+/** Direct BYD HAL reader. Motor Speed is ONLY the verified Front Motor Speed feature. */
 class DirectBydTelemetryReader(context: Context) {
     companion object {
         private const val TAG = "DirectBydTelemetry"
         private const val SPEED_DEVICE = "android.hardware.bydauto.speed.BYDAutoSpeedDevice"
-        private const val MOTOR_DEVICE = "android.hardware.bydauto.motor.BYDAutoMotorDevice"
         private const val ENGINE_DEVICE = "android.hardware.bydauto.engine.BYDAutoEngineDevice"
+
+        // Overdrive / DiPlus verified Front Motor Speed feature.
         private const val ENGINE_FRONT_MOTOR_SPEED = 1141899272
-        private const val ENGINE_REAR_MOTOR_SPEED = 621805576
-        private const val MAX_RPM = 25000.0
+        private const val MAX_MOTOR_SPEED = 25_000
     }
 
     data class Frame(
         val timestampMs: Long,
-        val rpm: Float,
+        val motorSpeed: Float,
         val speedKph: Float,
         val throttle: Float,
         val brake: Float,
-        val source: String = "BYD_HAL_DIRECT"
+        val source: String = "BYD_FRONT_MOTOR_SPEED"
     )
 
-    private val rawContext = context.applicationContext ?: context
-    private val bydContext: Context = BydPermissionContext(rawContext)
+    private val baseContext = context.applicationContext ?: context
+    private val bydContext: Context = BydPermissionContext(baseContext)
     private var speedDevice: Any? = null
-    private var motorDevice: Any? = null
     private var engineDevice: Any? = null
     @Volatile private var initialized = false
     @Volatile private var lastFrame: Frame? = null
 
-    fun isAvailable(): Boolean = readOnce()?.let(::isUsable) == true
     fun latest(): Frame? = lastFrame
+    fun isAvailable(): Boolean = readOnce()?.let(::isUsable) == true
     fun start(onFrame: (Frame) -> Unit) { readOnce()?.let(onFrame) }
 
     fun readOnce(): Frame? {
@@ -47,27 +45,19 @@ class DirectBydTelemetryReader(context: Context) {
         val throttlePct = callGetter(speedDevice, "getAccelerateDeepness").asDouble()
         val brakePct = callGetter(speedDevice, "getBrakeDeepness").asDouble()
 
-        // Match the known-good Overdrive implementation exactly: Front Motor Speed
-        // is a feature on BYDAutoEngineDevice and is read through the generic
-        // get(int[], Class) HAL API using the primitive Integer.TYPE. Overdrive then
-        // negates the raw front value to match the cluster's forward-positive RPM.
-        val frontRaw = readFeatureInt(engineDevice, ENGINE_FRONT_MOTOR_SPEED)
-        val rearRaw = readFeatureInt(engineDevice, ENGINE_REAR_MOTOR_SPEED)
-        val frontRpm = frontRaw?.let { -it }
-        val rearRpm = rearRaw?.let { -it }
-        val directMotorSpeed = sanitizeRpm(callGetter(motorDevice, "getMotorSpeed").asDouble())
-        val directEngineSpeed = sanitizeRpm(callGetter(engineDevice, "getEngineSpeed").asDouble())
-        val rpm = selectFeatureMotorRpm(frontRpm, rearRpm, speedKph)
-            ?: directMotorSpeed
-            ?: directEngineSpeed
+        // Exact Overdrive path:
+        // BYDAutoEngineDevice.get(int[], Integer.TYPE) using ENGINE_FRONT_MOTOR_SPEED,
+        // then negate the returned raw integer. Do not substitute another motor/engine signal.
+        val frontRaw = readFrontMotorSpeed()
+        val motorSpeed = frontRaw?.let { (-it).toFloat() }
 
-        Log.d(TAG, "RPM_DIAG speed=$speedKph frontRaw=$frontRaw frontRpm=$frontRpm rearRaw=$rearRaw rearRpm=$rearRpm motorSpeed=$directMotorSpeed engineSpeed=$directEngineSpeed selected=$rpm")
+        Log.d(TAG, "FRONT_MOTOR_SPEED raw=$frontRaw value=$motorSpeed speed=$speedKph throttle=$throttlePct brake=$brakePct")
 
-        if (speedKph == null && throttlePct == null && brakePct == null && rpm == null) return null
+        if (speedKph == null && throttlePct == null && brakePct == null && motorSpeed == null) return null
 
         val frame = Frame(
             timestampMs = System.currentTimeMillis(),
-            rpm = (rpm ?: 0.0).toFloat().coerceIn(0f, MAX_RPM.toFloat()),
+            motorSpeed = (motorSpeed ?: 0f).coerceIn(0f, MAX_MOTOR_SPEED.toFloat()),
             speedKph = (speedKph ?: 0.0).toFloat().coerceIn(0f, 400f),
             throttle = ((throttlePct ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f),
             brake = ((brakePct ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
@@ -76,72 +66,19 @@ class DirectBydTelemetryReader(context: Context) {
         return frame
     }
 
-    private fun isUsable(frame: Frame): Boolean =
-        frame.speedKph.isFinite() && frame.throttle.isFinite() && frame.brake.isFinite() && frame.rpm.isFinite() && frame.rpm in 0f..MAX_RPM.toFloat()
-
-    private fun ensureInitialized() {
-        if (initialized) return
-        synchronized(this) {
-            if (initialized) return
-            speedDevice = getDevice(SPEED_DEVICE)
-            motorDevice = getDevice(MOTOR_DEVICE)
-            engineDevice = getDevice(ENGINE_DEVICE)
-            initialized = true
-        }
-    }
-
-    private fun getDevice(className: String): Any? = try {
-        val clazz = Class.forName(className)
-        val getInstance = clazz.getMethod("getInstance", Context::class.java)
-        val device = getInstance.invoke(null, bydContext)
-        if (device != null) ensureDeviceContext(device)
-        device
-    } catch (_: InvocationTargetException) { null }
-      catch (_: Throwable) { null }
-
-    private fun ensureDeviceContext(device: Any) {
-        try {
-            var clazz: Class<*>? = device.javaClass
-            while (clazz != null) {
-                val field = runCatching { clazz.getDeclaredField("mContext") }.getOrNull()
-                if (field != null) {
-                    field.isAccessible = true
-                    if (field.get(device) == null) field.set(device, bydContext)
-                    return
-                }
-                clazz = clazz.superclass
-            }
-        } catch (_: Throwable) { }
-    }
-
-    private fun callGetter(device: Any?, name: String): Any? {
-        if (device == null) return null
-        return try {
-            val method = try { device.javaClass.getMethod(name) } catch (_: NoSuchMethodException) { findDeclaredNoArgMethod(device.javaClass, name) }
-                ?: return null
-            method.isAccessible = true
-            method.invoke(device)
-        } catch (e: InvocationTargetException) {
-            Log.v(TAG, "BYD getter $name threw", e.cause)
-            null
-        } catch (t: Throwable) {
-            Log.v(TAG, "BYD getter $name failed", t)
-            null
-        }
-    }
-
-    /** Exact Overdrive-compatible feature read: get(int[], Class), with Integer.TYPE. */
-    private fun readFeatureInt(device: Any?, featureId: Int): Int? {
-        if (device == null) return null
+    private fun readFrontMotorSpeed(): Int? {
+        val device = engineDevice ?: return null
         return runCatching {
-            val method = findFeatureGetArrayClassMethod(device.javaClass) ?: return@runCatching null
+            val method = findGetArrayClassMethod(device.javaClass) ?: return@runCatching null
             method.isAccessible = true
-            val result = method.invoke(device, intArrayOf(featureId), Int::class.javaPrimitiveType)
+            val result = method.invoke(device, intArrayOf(ENGINE_FRONT_MOTOR_SPEED), Int::class.javaPrimitiveType)
             extractInt(result)
-        }.getOrNull()?.takeUnless(::isInvalidFeatureInt)
+        }.onFailure {
+            Log.w(TAG, "Front Motor Speed HAL read failed: ${rootMessage(it)}")
+        }.getOrNull()?.takeIf { isPlausibleRaw(it) }
     }
 
-    private fun findFeatureGetArrayClassMethod(clazz: Class<*>): Method? {
+    private fun findGetArrayClassMethod(clazz: Class<*>): Method? {
         var c: Class<*>? = clazz
         while (c != null) {
             c.declaredMethods.firstOrNull {
@@ -160,55 +97,52 @@ class DirectBydTelemetryReader(context: Context) {
         }
     }
 
-    private fun extractInt(value: Any?): Int? {
-        if (value is Number) return value.toInt()
-        if (value is IntArray && value.isNotEmpty()) return value[0]
-        if (value == null) return null
-        for (fieldName in arrayOf("intValue", "value")) {
-            val field = findField(value.javaClass, fieldName) ?: continue
-            val fieldValue = runCatching { field.get(value) }.getOrNull() ?: continue
-            if (fieldValue is Number) return fieldValue.toInt()
+    private fun ensureInitialized() {
+        if (initialized) return
+        synchronized(this) {
+            if (initialized) return
+            speedDevice = getDevice(SPEED_DEVICE)
+            engineDevice = getDevice(ENGINE_DEVICE)
+            Log.d(TAG, "devices speed=${speedDevice != null} engine=${engineDevice != null}")
+            initialized = true
         }
-        for (methodName in arrayOf("getIntValue", "getValue")) {
-            val method = findDeclaredNoArgMethod(value.javaClass, methodName) ?: continue
-            val v = runCatching { method.invoke(value) }.getOrNull()
-            if (v is Number) return v.toInt()
-        }
-        return null
     }
 
-    private fun findField(clazz: Class<*>, name: String): Field? {
-        var c: Class<*>? = clazz
-        while (c != null) {
-            runCatching { c.getDeclaredField(name) }.getOrNull()?.let { it.isAccessible = true; return it }
-            c = c.superclass
-        }
-        return null
+    private fun getDevice(className: String): Any? = try {
+        val clazz = Class.forName(className)
+        val getInstance = clazz.getMethod("getInstance", Context::class.java)
+        getInstance.invoke(null, bydContext)
+    } catch (e: InvocationTargetException) {
+        Log.w(TAG, "device $className failed: ${rootMessage(e)}")
+        null
+    } catch (t: Throwable) {
+        Log.w(TAG, "device $className failed: ${rootMessage(t)}")
+        null
     }
 
-    private fun selectFeatureMotorRpm(front: Int?, rear: Int?, speedKph: Double?): Double? {
-        val moving = (speedKph ?: 0.0) > 1.0
-        val candidates = listOf("front" to front, "rear" to rear)
-            .mapNotNull { (name, value) -> value?.takeIf(::isPlausibleMotorRpm)?.let { name to kotlin.math.abs(it.toDouble()) } }
-        val usable = candidates.filter { !moving || it.second > 0.0 }
-        if (usable.isNotEmpty()) {
-            val selected = usable.first { it.second <= MAX_RPM }
-            Log.d(TAG, "RPM_FEATURE_SELECTED ${selected.first}=${selected.second} speed=$speedKph candidates=$candidates")
-            return selected.second
-        }
-        return null
+    private fun callGetter(device: Any?, name: String): Any? {
+        if (device == null) return null
+        return runCatching {
+            val method = try {
+                device.javaClass.getMethod(name)
+            } catch (_: NoSuchMethodException) {
+                findDeclaredNoArgMethod(device.javaClass, name)
+            } ?: return@runCatching null
+            method.isAccessible = true
+            method.invoke(device)
+        }.getOrNull()
     }
 
-    private fun sanitizeRpm(value: Double?): Double? {
-        if (value == null || !value.isFinite()) return null
-        if (value == 8191.0 || value == -8191.0 || value == 32767.0 || value == -32768.0 || value == 65535.0) return null
-        return value.takeIf { it in 0.0..MAX_RPM }
+    private fun extractInt(value: Any?): Int? = when (value) {
+        is Number -> value.toInt()
+        is IntArray -> value.firstOrNull()
+        else -> null
     }
 
-    private fun isPlausibleMotorRpm(value: Int): Boolean =
-        !isInvalidFeatureInt(value) && value != 8191 && value != -8191 && value != 32767 && value != -32768 && value != 65535 && kotlin.math.abs(value.toDouble()) <= MAX_RPM
-
-    private fun isInvalidFeatureInt(value: Int): Boolean = value == Int.MIN_VALUE || value == -10011 || value == -2147482645
+    private fun isPlausibleRaw(value: Int): Boolean =
+        value != Int.MIN_VALUE && value != -10011 && value != -2147482645 &&
+            value != 8191 && value != -8191 && value != 32767 && value != -32768 &&
+            value != 65535 && kotlin.math.abs(value) <= MAX_MOTOR_SPEED
 
     private fun findDeclaredNoArgMethod(clazz: Class<*>, name: String): Method? {
         var current: Class<*>? = clazz
@@ -219,10 +153,21 @@ class DirectBydTelemetryReader(context: Context) {
         return null
     }
 
+    private fun isUsable(frame: Frame): Boolean =
+        frame.speedKph.isFinite() && frame.throttle.isFinite() && frame.brake.isFinite() &&
+            frame.motorSpeed.isFinite() && frame.speedKph in 0f..400f &&
+            frame.throttle in 0f..1f && frame.brake in 0f..1f && frame.motorSpeed in 0f..MAX_MOTOR_SPEED.toFloat()
+
     private fun Any?.asDouble(): Double? = when (this) {
         is Number -> toDouble().takeIf { it.isFinite() }
         is String -> toDoubleOrNull()?.takeIf { it.isFinite() }
         else -> null
+    }
+
+    private fun rootMessage(t: Throwable): String {
+        var current = t
+        while (current.cause != null && current.cause !== current) current = current.cause!!
+        return current.message?.takeIf { it.isNotBlank() } ?: current.javaClass.simpleName
     }
 
     private class BydPermissionContext(base: Context) : ContextWrapper(base) {
