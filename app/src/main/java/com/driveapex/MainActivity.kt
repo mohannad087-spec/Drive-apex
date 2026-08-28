@@ -47,6 +47,10 @@ class MainActivity : Activity() {
     private lateinit var sceneValue: TextView
     private lateinit var sourceValue: TextView
     private lateinit var liveDiagnosticsValue: TextView
+    private lateinit var speedValue: TextView
+    private lateinit var throttleValue: TextView
+    private lateinit var brakeValue: TextView
+    private lateinit var regenValue: TextView
     private lateinit var signatureValue: TextView
     private lateinit var genomeValue: TextView
     private lateinit var eventValue: TextView
@@ -196,13 +200,39 @@ class MainActivity : Activity() {
 
     private fun liveCard(): LinearLayout {
         val box = card(13)
-        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        row.addView(label("●", 13f, GREEN, true), LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT))
-        liveDiagnosticsValue = label("LIVE READY  •  VEHICLE DATA STANDBY", 11f, SOFT, true)
-        row.addView(liveDiagnosticsValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        box.addView(row)
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val liveDot = label("●", 15f, GREEN, true)
+        header.addView(liveDot, LinearLayout.LayoutParams(dp(22), ViewGroup.LayoutParams.WRAP_CONTENT))
+        liveDiagnosticsValue = label("LIVE WAITING  •  VEHICLE TELEMETRY", 12f, SOFT, true)
+        header.addView(liveDiagnosticsValue, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        box.addView(header)
+
+        val metrics = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        metrics.addView(liveMetric("SPEED", "--", "km/h") { speedValue = it }, metricParams())
+        metrics.addView(liveMetric("THROTTLE", "--", "%") { throttleValue = it }, metricParams())
+        metrics.addView(liveMetric("BRAKE", "--", "%") { brakeValue = it }, metricParams())
+        metrics.addView(liveMetric("REGEN", "--", "%") { regenValue = it }, metricParams())
+        box.addView(metrics)
+        box.addView(label("Dashboard values update automatically; diagnostics is for verification only.", 10f, MUTED, false).apply { setPadding(0, dp(10), 0, 0) })
         return box
     }
+
+    private fun liveMetric(title: String, initial: String, unit: String, bind: (TextView) -> Unit): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(dp(6), dp(7), dp(6), dp(7))
+        background = rounded(PANEL_2, dp(11), STROKE)
+        addView(label(title, 9f, MUTED, true))
+        val value = label(initial, 21f, Color.WHITE, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(5), 0, 0) }
+        addView(value)
+        addView(label(unit, 9f, MUTED, false).apply { gravity = Gravity.CENTER })
+        bind(value)
+    }
+
+    private fun metricParams() = LinearLayout.LayoutParams(0, dp(78), 1f).apply { marginEnd = dp(7) }
 
     private fun section(title: String, subtitle: String): LinearLayout {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -287,6 +317,10 @@ class MainActivity : Activity() {
             sourceValue.setTextColor(MUTED)
             liveDiagnosticsValue.text = "LIVE READY  •  VEHICLE DATA STANDBY"
             liveDiagnosticsValue.setTextColor(SOFT)
+            speedValue.text = "--"
+            throttleValue.text = "--"
+            brakeValue.text = "--"
+            regenValue.text = "--"
             rpmBar.isEnabled = true
             throttleBar.isEnabled = true
             speedBar.isEnabled = true
@@ -298,15 +332,18 @@ class MainActivity : Activity() {
         val d = udpReceiver.diagnostics()
         val age = if (d.ageMs == Long.MAX_VALUE) "--" else "${d.ageMs}ms"
         val valid = d.packetCount > 0 && d.ageMs <= 1500L
-        liveDiagnosticsValue.text = String.format(Locale.US, "LIVE %s  •  PKT %d  •  INVALID %d  •  AGE %s", if (valid) "CONNECTED" else "WAITING", d.packetCount, d.invalidPacketCount, age)
+        liveDiagnosticsValue.text = String.format(Locale.US, "LIVE %s  •  PKT %d  •  AGE %s", if (valid) "CONNECTED" else "WAITING", d.packetCount, age)
         liveDiagnosticsValue.setTextColor(if (valid) GREEN else AMBER)
     }
 
     private fun showNoVehicleData() {
-        if (rpmValue.text.toString() == "—") {
-            telemetry.text = "Waiting for verified vehicle telemetry"
-            sceneValue.text = "LIVE WAIT"
-        }
+        if (!liveMode) return
+        telemetry.text = "Waiting for verified vehicle telemetry"
+        sceneValue.text = "LIVE WAIT"
+        speedValue.text = "--"
+        throttleValue.text = "--"
+        brakeValue.text = "--"
+        regenValue.text = "--"
     }
 
     private fun applyTelemetry(packet: LiveTelemetry) {
@@ -321,8 +358,14 @@ class MainActivity : Activity() {
             speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
         }
         rpmValue.text = formatRpm(data.rpm)
-        telemetry.text = String.format(Locale.US, "%.0f km/h   •   Throttle %d%%   •   Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.regen * 100).toInt())
+        telemetry.text = String.format(Locale.US, "%.0f km/h   •   Throttle %d%%   •   Brake %d%%   •   Regen %d%%", data.speedKph, (data.throttle * 100).toInt(), (data.brake * 100).toInt(), (data.regen * 100).toInt())
+        speedValue.text = String.format(Locale.US, "%.0f", data.speedKph)
+        throttleValue.text = String.format(Locale.US, "%d", (data.throttle * 100).roundToInt())
+        brakeValue.text = String.format(Locale.US, "%d", (data.brake * 100).roundToInt())
+        regenValue.text = String.format(Locale.US, "%d", (data.regen * 100).roundToInt())
         sceneValue.text = scene.name.replace('_', ' ')
+        sourceValue.text = liveMode && packet.source != TelemetrySource.SIMULATOR ? "LIVE VEHICLE" : "SIMULATOR"
+        sourceValue.setTextColor(if (liveMode) GREEN else MUTED)
         signatureValue.text = String.format(Locale.US, "%s   •   AGG %d%%   •   SMOOTH %d%%", signature.label(), (signature.aggression * 100).toInt(), (signature.smoothness * 100).toInt())
         genomeValue.text = String.format(Locale.US, "GENOME: %s  •  OBS %d", signature.label(), genome.observations.coerceAtMost(999_999L))
         eventValue.text = String.format(Locale.US, "EVENTS L:%d A:%d O:%d R:%d B:%d S:%d", (events.launch * 100).toInt(), (events.accelerationHit * 100).toInt(), (events.liftOff * 100).toInt(), (events.regenerationHit * 100).toInt(), (events.brakeHit * 100).toInt(), (events.speedRush * 100).toInt())
@@ -343,7 +386,9 @@ class MainActivity : Activity() {
         speedBar.progress = speed.coerceIn(0, speedBar.max)
         vehicle.setBrake((brake / 100f).coerceIn(0f, 1f))
         vehicle.setRegen((regen / 100f).coerceIn(0f, 1f))
-        if (!liveMode) applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
+        if (!liveMode) {
+            applyTelemetry(LiveTelemetry(vehicle.current(), TelemetrySource.SIMULATOR))
+        }
     }
 
     private fun label(text: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
