@@ -9,11 +9,9 @@ import kotlin.math.sin
 import kotlin.math.tanh
 
 /**
- * Real-time layered EV sound renderer.
- * Procedural synthesis remains the fallback while the sample-bank renderer is being integrated.
- *
- * The procedural fallback prioritizes a smooth, premium EV-GT body over an obviously synthetic
- * high-frequency whistle. High-frequency inverter content is kept as a subtle garnish.
+ * Real-time EV drivetrain sound renderer.
+ * The track is explicitly tagged as navigation guidance so BYD head units route it through
+ * the navigation channel rather than the media/music channel.
  */
 class LayeredSoundEngine(
     private var layers: List<SoundLayer> = ETronInspiredSoundProfile.layers
@@ -23,8 +21,8 @@ class LayeredSoundEngine(
     private var track: AudioTrack? = null
 
     @Volatile private var running = false
-    @Volatile private var rpm = 900f
-    @Volatile private var load = 0.25f
+    @Volatile private var rpm = 700f
+    @Volatile private var load = 0.10f
     @Volatile private var speedKph = 0f
     @Volatile private var scene = AudioScene.IDLE
     @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
@@ -38,6 +36,7 @@ class LayeredSoundEngine(
 
     fun start() {
         if (running) return
+
         val minBuffer = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_STEREO,
@@ -47,8 +46,8 @@ class LayeredSoundEngine(
         track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build()
             )
             .setAudioFormat(
@@ -65,8 +64,9 @@ class LayeredSoundEngine(
                 it.setVolume(1f)
                 it.play()
             }
+
         running = true
-        Thread(::renderLoop, "DriveApex-LayeredAudio").start()
+        Thread(::renderLoop, "DriveApex-LayeredAudio").apply { isDaemon = true }.start()
     }
 
     fun stop() {
@@ -75,19 +75,21 @@ class LayeredSoundEngine(
             runCatching { it.pause() }
             runCatching { it.flush() }
             runCatching { it.stop() }
-            it.release()
+            runCatching { it.release() }
         }
         track = null
     }
 
     private fun renderLoop() {
         val pcm = ShortArray(bufferSize * 2)
-        val phases = DoubleArray(layers.size)
+        val phases = DoubleArray(3)
+        var envelope = 0f
         var bodyPhase = 0.0
-        var eventPhase = 0.0
+        var inverterPhase = 0.0
         var textureState = 0.0
+        var previousLoad = 0f
+        var previousRpm = 700f
         var noiseState = 0x4D595DF4L
-        var bodyEnvelope = 0f
 
         while (running) {
             val currentRpm = rpm
@@ -95,100 +97,92 @@ class LayeredSoundEngine(
             val currentSpeed = speedKph
             val currentScene = scene
             val currentEvents = events
-            val snapshot = layers
-            val baseCyclesPerSecond = currentRpm / 60.0
-            val baseAngular = baseCyclesPerSecond * 2.0 * PI
-            val targetBody = bodyTarget(currentScene)
-            val bodyGain = (0.18 + currentLoad * 0.22).coerceIn(0.16, 0.48)
-            val textureAmount = (0.0025 + currentLoad * 0.007 + currentSpeed / 110000.0).coerceAtMost(0.016)
+            val targetEnvelope = when (currentScene) {
+                AudioScene.IDLE -> 0.68f
+                AudioScene.COAST -> 0.52f
+                AudioScene.ACCELERATION -> 0.90f
+                AudioScene.HARD_ACCELERATION -> 1.00f
+                AudioScene.REGENERATION -> 0.70f
+                AudioScene.LAUNCH -> 1.08f
+                AudioScene.HIGH_SPEED -> 0.88f
+            }
+
+            val rpmRate = abs(currentRpm - previousRpm) / 600f
+            val loadRate = abs(currentLoad - previousLoad) * 2.0f
+            previousRpm += (currentRpm - previousRpm) * 0.10f
+            previousLoad += (currentLoad - previousLoad) * 0.08f
 
             for (i in 0 until bufferSize) {
-                bodyEnvelope += (targetBody - bodyEnvelope) * 0.0028f
-                var left = 0.0
-                var right = 0.0
-                var tonalEnergy = 0.0
-                var highFrequencyEnergy = 0.0
+                envelope += (targetEnvelope - envelope) * if (targetEnvelope > envelope) 0.0038f else 0.0025f
 
-                snapshot.forEachIndexed { index, layer ->
-                    val rpmFactor = smoothBand(currentRpm, layer.minRpm, layer.maxRpm)
-                    val loadFactor = smoothBand(currentLoad, layer.minLoad, layer.maxLoad)
-                    val speedFactor = smoothBand(currentSpeed, layer.minSpeedKph, layer.maxSpeedKph)
-                    val sceneFactor = layer.sceneBias[currentScene] ?: 1f
-                    val activity = rpmFactor * loadFactor * speedFactor * sceneFactor
-                    if (activity <= 0.001f) return@forEachIndexed
-
-                    val loadWarp = 1.0 + currentLoad * 0.010
-                    val frequency = if (layer.baseFrequencyMultiplier > 0f) {
-                        baseAngular * layer.baseFrequencyMultiplier * loadWarp
-                    } else {
-                        2.0 * PI * (24.0 + currentSpeed * 0.95)
-                    }
-                    val step = frequency / sampleRate
-                    phases[index] += step
-                    if (phases[index] >= 1.0) phases[index] -= 1.0
-
-                    val waveform = when {
-                        layer.harmonic <= 1 -> sin(phases[index] * 2.0 * PI)
-                        else -> sin(phases[index] * 2.0 * PI * layer.harmonic)
-                    }
-
-                    val layerGain = layer.gain * activity
-                    val stereo = layer.stereoPosition.toDouble().coerceIn(-1.0, 1.0)
-                    val leftGain = 0.5 * (1.0 - stereo)
-                    val rightGain = 0.5 * (1.0 + stereo)
-                    left += waveform * layerGain * (0.52 + leftGain)
-                    right += waveform * layerGain * (0.52 + rightGain)
-
-                    val absWave = abs(waveform)
-                    tonalEnergy += absWave * layerGain
-                    if (layer.baseFrequencyMultiplier >= 4f) highFrequencyEnergy += absWave * layerGain
+                val rpmHz = (currentRpm / 60.0).coerceAtLeast(11.666)
+                val loadWarp = 1.0 + currentLoad * 0.018
+                val fundamentalStep = (2.0 * PI * rpmHz / sampleRate) * loadWarp
+                val harmonicStep = fundamentalStep * 2.0
+                val rotorStep = fundamentalStep * 0.5
+                phases[0] += fundamentalStep
+                phases[1] += harmonicStep
+                phases[2] += rotorStep
+                for (p in phases.indices) {
+                    if (phases[p] >= 2.0 * PI) phases[p] -= 2.0 * PI
                 }
 
-                bodyPhase += (baseCyclesPerSecond * 0.50 + currentLoad * 2.0) / sampleRate
+                val motorFundamental = sin(phases[0])
+                val motorHarmonic = sin(phases[1] + 0.18) * (0.20 + currentLoad * 0.11)
+                val rotorTexture = sin(phases[2] + 1.07) * 0.11
+
+                val loadPulse = 1.0 + currentLoad * 0.35 + loadRate * 0.08
+                val bodyPhaseStep = (rpmHz * 0.42 + currentLoad * 2.8) / sampleRate
+                bodyPhase += bodyPhaseStep
                 if (bodyPhase >= 1.0) bodyPhase -= 1.0
-                val fundamental = sin(bodyPhase * 2.0 * PI)
-                val bodyHarmonic = sin(bodyPhase * 4.0 * PI + 0.22) * 0.34
-                val bodySub = sin(bodyPhase * PI + 0.08) * 0.20
-                val mechanicalBody = (fundamental + bodyHarmonic + bodySub) * bodyGain * bodyEnvelope
+                val body = (
+                    sin(bodyPhase * 2.0 * PI) * 0.31 +
+                        sin(bodyPhase * 4.0 * PI + 0.31) * 0.10 +
+                        sin(bodyPhase * PI + 0.08) * 0.07
+                    ) * envelope * loadPulse
 
                 noiseState = noiseStep(noiseState)
                 val white = ((noiseState and 0xFFFFL) / 32767.5 - 1.0).coerceIn(-1.0, 1.0)
-                textureState += (white - textureState) * 0.018
-                val materialTexture = textureState * textureAmount * (0.30 + currentSpeed / 400.0)
+                textureState += (white - textureState) * 0.020
+                val roadTexture = textureState * (0.004 + currentSpeed / 24000.0 + currentLoad * 0.006)
 
-                // Inverter remains deliberately low in the mix and only becomes obvious under load.
-                val inverterSheen = highFrequencyEnergy * 0.025 * (0.35 + currentLoad * 0.55)
-                val blendedSheen = inverterSheen * sin(eventPhase * 2.0 * PI * 0.65)
+                val inverterHz = (currentRpm * 2.65 + 520.0 + currentLoad * 700.0).coerceIn(850.0, 16_000.0)
+                inverterPhase += (2.0 * PI * inverterHz / sampleRate)
+                if (inverterPhase >= 2.0 * PI) inverterPhase -= 2.0 * PI
+                val inverter = sin(inverterPhase) * (0.012 + currentLoad * 0.030)
+                    * (0.30 + currentSpeed / 220.0).coerceAtMost(1.0)
 
-                eventPhase += (0.85 + currentRpm / 2200.0) / sampleRate
-                if (eventPhase >= 1.0) eventPhase -= 1.0
-                val accentEnvelope = 0.58 + 0.42 * sin(eventPhase * 2.0 * PI)
-                val eventMix = (
-                    currentEvents.launch * 0.16 * sin(eventPhase * 2.0 * PI * 1.45) +
-                        currentEvents.accelerationHit * 0.08 * sin(eventPhase * 2.0 * PI * 2.05) +
-                        currentEvents.liftOff * 0.06 * sin(eventPhase * 2.0 * PI * 2.7) +
-                        currentEvents.regenerationHit * 0.08 * sin(eventPhase * 2.0 * PI * 1.85) +
-                        currentEvents.brakeHit * 0.06 * sin(eventPhase * 2.0 * PI * 3.4)
-                    ) * accentEnvelope
+                val dynamicPulse = (
+                    currentEvents.accelerationHit * sin(phases[0] * 1.5) * 0.030 +
+                        currentEvents.liftOff * sin(phases[0] * 0.75) * 0.024 +
+                        currentEvents.regenerationHit * sin(phases[0] * 1.15) * 0.040 +
+                        currentEvents.brakeHit * sin(phases[0] * 1.85) * 0.028 +
+                        currentEvents.launch * sin(phases[0] * 1.25) * 0.050
+                    )
 
-                val sceneBody = when (currentScene) {
-                    AudioScene.IDLE -> 0.88
-                    AudioScene.COAST -> 0.92
-                    AudioScene.ACCELERATION -> 1.00
-                    AudioScene.HARD_ACCELERATION -> 1.08
-                    AudioScene.REGENERATION -> 0.98
-                    AudioScene.LAUNCH -> 1.16
-                    AudioScene.HIGH_SPEED -> 1.06
+                val sceneGain = when (currentScene) {
+                    AudioScene.IDLE -> 0.58
+                    AudioScene.COAST -> 0.62
+                    AudioScene.ACCELERATION -> 0.86
+                    AudioScene.HARD_ACCELERATION -> 1.00
+                    AudioScene.REGENERATION -> 0.72
+                    AudioScene.LAUNCH -> 1.08
+                    AudioScene.HIGH_SPEED -> 0.90
                 }
 
-                val master = (0.44 + currentLoad * 0.16).coerceIn(0.44, 0.64)
-                val l = (left * 0.90 + mechanicalBody * 0.82 + materialTexture * 0.18 + blendedSheen * 0.22 + eventMix * 0.62) * master * sceneBody
-                val r = (right * 0.90 + mechanicalBody * 1.02 + materialTexture * 0.22 + blendedSheen * 0.28 + eventMix * 0.78) * master * sceneBody
+                // Keep a physical low/body core and use nonlinear saturation only at the end.
+                val core = (
+                    motorFundamental * (0.42 + currentLoad * 0.28) +
+                        motorHarmonic + rotorTexture + body + inverter + roadTexture + dynamicPulse
+                    ) * sceneGain
 
-                pcm[i * 2] = (tanh(l) * Short.MAX_VALUE)
+                val pan = (currentSpeed / 180.0).coerceIn(0.0, 1.0)
+                val left = core * (0.98 - pan * 0.06)
+                val right = core * (1.02 + pan * 0.06)
+                pcm[i * 2] = (tanh(left * 0.74) * Short.MAX_VALUE)
                     .coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble())
                     .toInt().toShort()
-                pcm[i * 2 + 1] = (tanh(r) * Short.MAX_VALUE)
+                pcm[i * 2 + 1] = (tanh(right * 0.74) * Short.MAX_VALUE)
                     .coerceIn(Short.MIN_VALUE.toDouble(), Short.MAX_VALUE.toDouble())
                     .toInt().toShort()
             }
@@ -203,22 +197,5 @@ class LayeredSoundEngine(
         x = x xor (x shr 17)
         x = x xor ((x shl 5) and 0xFFFFFFFFL)
         return x and 0xFFFFFFFFL
-    }
-
-    private fun bodyTarget(value: AudioScene): Float = when (value) {
-        AudioScene.IDLE -> 0.72f
-        AudioScene.COAST -> 0.68f
-        AudioScene.ACCELERATION -> 0.88f
-        AudioScene.HARD_ACCELERATION -> 1.02f
-        AudioScene.REGENERATION -> 0.78f
-        AudioScene.LAUNCH -> 1.08f
-        AudioScene.HIGH_SPEED -> 0.98f
-    }
-
-    private fun smoothBand(value: Float, min: Float, max: Float): Float {
-        if (max <= min) return if (value >= min) 1f else 0f
-        if (value < min || value > max) return 0f
-        val normalized = ((value - min) / (max - min)).coerceIn(0f, 1f)
-        return normalized * normalized * (3f - 2f * normalized)
     }
 }
