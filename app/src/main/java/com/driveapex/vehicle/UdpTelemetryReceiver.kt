@@ -9,14 +9,16 @@ import java.net.InetSocketAddress
 
 /**
  * Live telemetry receiver.
- * On a BYD head unit it prefers the shell-UID BYD daemon, then direct HAL
- * access, and finally the UDP development receiver.
+ * On a BYD head unit it prefers the installed Overdrive collector when available,
+ * then the shell-UID BYD daemon, then direct HAL access, and finally UDP development.
  */
 class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = null) {
     private val staleAfterMs = 1500L
     private val validator = VehicleTelemetryValidator(staleAfterMs)
+    private val overdrive = context?.let { OverdriveTelemetryReader(it) }
     private val direct = context?.let { DirectBydTelemetryReader(it) }
     private val byd = context?.let { BydHalTelemetryBridge(it) }
+    @Volatile private var useOverdrive = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
     @Volatile private var running = false
@@ -37,9 +39,16 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         invalidPacketCount = 0L
         lastSource = "NONE"
 
-        // The shell-UID daemon is the verified path on the target BYD firmware.
-        // Direct in-process HAL access is only a fallback because the app UID
-        // may not be allowed to cross the vendor Binder permission boundary.
+        // Overdrive already has a proven live BYD collector on the target vehicle.
+        // Reuse its current snapshot first; this avoids guessing vendor Binder
+        // permissions/getter semantics when the working collector is installed.
+        useOverdrive = overdrive?.isAvailable() == true
+        if (useOverdrive) {
+            thread = Thread(::overdriveLoop, "DriveApex-OverdriveBYD").also { it.start() }
+            return
+        }
+
+        // The shell-UID daemon is the independent fallback on the target BYD firmware.
         useByd = byd?.isAvailable() == true
         if (useByd) {
             byd?.start { frame ->
@@ -75,11 +84,28 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         thread = null
         latest = null
         lastPacketAtMs = 0L
+        useOverdrive = false
         useDirect = false
         useByd = false
     }
 
     fun latest(): LiveTelemetry? {
+        if (useOverdrive) {
+            val frame = overdrive?.latest() ?: return null
+            if (System.currentTimeMillis() - frame.timestampMs > staleAfterMs) return null
+            return LiveTelemetry(
+                VehicleData(
+                    rpm = frame.rpm,
+                    speedKph = frame.speedKph,
+                    throttle = frame.throttle,
+                    isDriving = frame.speedKph > 1f,
+                    brake = frame.brake,
+                    regen = 0f
+                ),
+                TelemetrySource.LIVE_BRIDGE,
+                frame.timestampMs
+            )
+        }
         if (useByd) {
             val frame = byd?.latest() ?: return null
             val frameAge = System.currentTimeMillis() - frame.timestampMs
@@ -97,12 +123,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 frame.timestampMs
             )
         }
-        if (useDirect) {
-            val snapshot = latest ?: return null
-            return snapshot.takeIf { System.currentTimeMillis() - it.timestampMs <= staleAfterMs }
-        }
         val snapshot = latest ?: return null
-        return snapshot.takeIf { diagnostics().ageMs <= staleAfterMs }
+        return snapshot.takeIf { System.currentTimeMillis() - it.timestampMs <= staleAfterMs }
     }
 
     fun diagnostics(): TelemetryDiagnostics {
@@ -113,8 +135,36 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             invalidPacketCount = invalidPacketCount,
             ageMs = age,
             source = lastSource,
-            port = if (useDirect || useByd) 0 else port
+            port = if (useOverdrive || useDirect || useByd) 0 else port
         )
+    }
+
+    fun sourceError(): String? = when {
+        useOverdrive -> overdrive?.error()
+        useByd -> byd?.error()
+        else -> null
+    }
+
+    private fun overdriveLoop() {
+        while (running && useOverdrive) {
+            val frame = runCatching { overdrive?.readOnce() }.getOrNull()
+            if (frame != null) {
+                publish(
+                    TelemetryFrame(
+                        timestampMs = frame.timestampMs,
+                        rpm = frame.rpm,
+                        speedKph = frame.speedKph,
+                        throttle = frame.throttle,
+                        brake = frame.brake,
+                        regen = 0f,
+                        source = frame.source
+                    )
+                )
+            } else {
+                invalidPacketCount += 1L
+            }
+            Thread.sleep(100L)
+        }
     }
 
     private fun directLoop() {
@@ -153,7 +203,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 )
                 latest = LiveTelemetry(
                     data,
-                    if (useDirect || useByd) TelemetrySource.LIVE_BRIDGE else TelemetrySource.LIVE_UDP,
+                    if (useOverdrive || useDirect || useByd) TelemetrySource.LIVE_BRIDGE else TelemetrySource.LIVE_UDP,
                     frame.timestampMs
                 )
                 packetCount += 1L
