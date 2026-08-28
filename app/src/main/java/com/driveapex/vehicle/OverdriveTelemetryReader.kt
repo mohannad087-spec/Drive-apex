@@ -55,9 +55,15 @@ class OverdriveTelemetryReader(context: Context) {
             val front = number(data, "frontMotorSpeed")
             val rear = number(data, "rearMotorSpeed")
             val engine = number(data, "engineSpeedRpm")
-            val rpm = listOfNotNull(front, rear, engine)
-                .map { abs(it) }
-                .firstOrNull { it.isFinite() && it in 0.0..25000.0 }
+
+            // Front motor speed is the primary RPM reference for DriveApex EV sound.
+            // Rear motor speed and engine RPM remain fallback sources only when the
+            // front-motor signal is unavailable; this keeps the existing sound/control
+            // contract unchanged while making the intended source explicit.
+            val frontRpm = front?.let { abs(it).takeIf { value -> value.isFinite() && value in 0.0..25000.0 } }
+            val rearRpm = rear?.let { abs(it).takeIf { value -> value.isFinite() && value in 0.0..25000.0 } }
+            val engineRpm = engine?.let { abs(it).takeIf { value -> value.isFinite() && value in 0.0..25000.0 } }
+            val rpm = frontRpm ?: rearRpm ?: engineRpm
 
             if (speed == null && throttle == null && brake == null && rpm == null) {
                 lastError = "Overdrive collector returned no drivetrain values"
