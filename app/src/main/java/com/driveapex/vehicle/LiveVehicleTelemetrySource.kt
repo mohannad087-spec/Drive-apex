@@ -11,9 +11,6 @@ class LiveVehicleTelemetrySource(context: Context) {
     private val overdrive = OverdriveTelemetryReader(context)
     private val byd = BydHalTelemetryBridge(context)
     private val udp = UdpTelemetryReceiver()
-    private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
-        Thread(r, "driveapex-live-telemetry").apply { isDaemon = true }
-    }
 
     @Volatile private var mode = Mode.NONE
     @Volatile private var running = false
@@ -22,6 +19,7 @@ class LiveVehicleTelemetrySource(context: Context) {
     @Volatile private var invalidCount = 0L
     @Volatile private var lastFrameAt = 0L
     @Volatile private var lastSource = "NONE"
+    @Volatile private var executor: ScheduledExecutorService? = null
 
     private enum class Mode { NONE, OVERDRIVE, BYD_DAEMON, UDP }
 
@@ -42,7 +40,11 @@ class LiveVehicleTelemetrySource(context: Context) {
 
         when (mode) {
             Mode.OVERDRIVE, Mode.BYD_DAEMON -> {
-                executor.scheduleAtFixedRate({ sampleLive() }, 0L, 50L, TimeUnit.MILLISECONDS)
+                val worker = Executors.newSingleThreadScheduledExecutor { r ->
+                    Thread(r, "driveapex-live-telemetry").apply { isDaemon = true }
+                }
+                executor = worker
+                worker.scheduleAtFixedRate({ sampleLive() }, 0L, 50L, TimeUnit.MILLISECONDS)
             }
             Mode.UDP -> udp.start()
             Mode.NONE -> Unit
@@ -56,13 +58,10 @@ class LiveVehicleTelemetrySource(context: Context) {
                 val frame = overdrive.readOnce()
                 if (frame == null) {
                     invalidCount++
-                    if (byd.isAvailable()) {
-                        mode = Mode.BYD_DAEMON
-                        byd.start { publish(it) }
-                    }
+                    switchToBydDaemonIfAvailable()
                     return
                 }
-                val data = VehicleData(
+                latestData = VehicleData(
                     rpm = frame.rpm,
                     speedKph = frame.speedKph,
                     throttle = frame.throttle,
@@ -70,13 +69,20 @@ class LiveVehicleTelemetrySource(context: Context) {
                     brake = frame.brake,
                     regen = 0f
                 )
-                latestData = data
                 packetCount++
                 lastFrameAt = SystemClock.elapsedRealtime()
                 lastSource = frame.source
             }
-            Mode.BYD_DAEMON, Mode.UDP, Mode.NONE -> Unit
+            Mode.BYD_DAEMON -> Unit
+            Mode.UDP, Mode.NONE -> Unit
         }
+    }
+
+    private fun switchToBydDaemonIfAvailable() {
+        if (!running || mode != Mode.OVERDRIVE) return
+        if (!byd.isAvailable()) return
+        mode = Mode.BYD_DAEMON
+        byd.start { frame -> publish(frame) }
     }
 
     private fun publish(frame: TelemetryFrame) {
@@ -95,7 +101,8 @@ class LiveVehicleTelemetrySource(context: Context) {
 
     fun stop() {
         running = false
-        executor.shutdownNow()
+        executor?.shutdownNow()
+        executor = null
         byd.stop()
         udp.stop()
         latestData = null
