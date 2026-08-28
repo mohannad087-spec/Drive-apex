@@ -358,7 +358,7 @@ class MainActivity : Activity() {
             throttleValue.text = "--"
             brakeValue.text = "--"
             regenValue.text = "--"
-            rpmBar.isEnabled = true
+            motorSpeedBar.isEnabled = true
             throttleBar.isEnabled = true
             speedBar.isEnabled = true
             syncSimulator()
@@ -392,7 +392,7 @@ class MainActivity : Activity() {
         val events = controller.events()
 
         if (liveMode) {
-            rpmBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, rpmBar.max)
+            motorSpeedBar.progress = (data.rpm - 700f).roundToInt().coerceIn(0, motorSpeedBar.max)
             throttleBar.progress = (data.throttle * 100f).roundToInt().coerceIn(0, throttleBar.max)
             speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
         }
@@ -419,7 +419,7 @@ class MainActivity : Activity() {
     }
 
     private fun syncSimulator() {
-        vehicle.setRpm((700 + rpmBar.progress).toFloat())
+        vehicle.setRpm((700 + motorSpeedBar.progress).toFloat())
         vehicle.setThrottle(throttleBar.progress / 100f)
         vehicle.setSpeed(speedBar.progress.toFloat())
         vehicle.setBrake(0f)
@@ -428,7 +428,7 @@ class MainActivity : Activity() {
     }
 
     private fun setControls(rpm: Int, throttle: Int, speed: Int, brake: Int, regen: Int) {
-        rpmBar.progress = (rpm - 700).coerceIn(0, rpmBar.max)
+        motorSpeedBar.progress = (rpm - 700).coerceIn(0, motorSpeedBar.max)
         throttleBar.progress = throttle.coerceIn(0, throttleBar.max)
         speedBar.progress = speed.coerceIn(0, speedBar.max)
         vehicle.setBrake((brake / 100f).coerceIn(0f, 1f))
