@@ -72,20 +72,38 @@ object BydTelemetryDiagnostics {
             notes += "Some BYD GET/signature permissions are not runtime-grantable; common permissions are checked separately."
         }
 
-        var daemonFrame: BydHalTelemetryBridge.TelemetryFrame? = null
+        var daemonAvailable = false
+        var daemonRpm: Int? = null
+        var daemonSpeed: Double? = null
+        var daemonAccelerator: Int? = null
+        var daemonBrake: Int? = null
         var daemonError: String? = null
+
         if (adbConnection != null) {
             val bridge = BydHalTelemetryBridge(activity)
             try {
                 bridge.start { frame ->
-                    daemonFrame = frame
+                    daemonAvailable = true
+                    daemonRpm = frame.rpm.takeIf { it.isFinite() && it >= 0f }?.toInt()
+                    daemonSpeed = frame.speedKph.takeIf { it.isFinite() && it >= 0f }?.toDouble()
+                    daemonAccelerator = (frame.throttle.takeIf { it.isFinite() }?.times(100f))?.toInt()
+                    daemonBrake = (frame.brake.takeIf { it.isFinite() }?.times(100f))?.toInt()
                 }
                 repeat(30) {
-                    if (daemonFrame != null) return@repeat
+                    if (daemonAvailable) return@repeat
                     Thread.sleep(100L)
                 }
-                daemonFrame = bridge.latest()
                 daemonError = bridge.error()
+                if (!daemonAvailable) {
+                    val last = bridge.latest()
+                    if (last != null) {
+                        daemonAvailable = true
+                        daemonRpm = last.rpm.takeIf { it.isFinite() && it >= 0f }?.toInt()
+                        daemonSpeed = last.speedKph.takeIf { it.isFinite() && it >= 0f }?.toDouble()
+                        daemonAccelerator = (last.throttle.takeIf { it.isFinite() }?.times(100f))?.toInt()
+                        daemonBrake = (last.brake.takeIf { it.isFinite() }?.times(100f))?.toInt()
+                    }
+                }
             } catch (t: Throwable) {
                 daemonError = t.message ?: t.javaClass.simpleName
             } finally {
@@ -95,28 +113,28 @@ object BydTelemetryDiagnostics {
             daemonError = VehicleAdbConnection.lastError()
         }
 
-        if (daemonFrame != null) {
+        if (daemonAvailable) {
             notes += "Telemetry source: shell-UID BYD daemon."
         } else if (!daemonError.isNullOrBlank()) {
             notes += "Telemetry daemon error: $daemonError"
         }
 
         var directFrame: DirectBydTelemetryReader.Frame? = null
-        if (daemonFrame == null) {
+        if (!daemonAvailable) {
             directFrame = runCatching { DirectBydTelemetryReader(activity).readOnce() }.getOrNull()
             if (directFrame != null) notes += "Telemetry source: direct BYD HAL fallback."
         }
 
-        val readable = daemonFrame != null || directFrame != null
+        val readable = daemonAvailable || directFrame != null
         val rpm: Int?
         val speed: Double?
         val accelerator: Int?
         val brake: Int?
-        if (daemonFrame != null) {
-            rpm = daemonFrame!!.rpm.takeIf { it.isFinite() && it >= 0f }?.toInt()
-            speed = daemonFrame!!.speedKph.takeIf { it.isFinite() && it >= 0f }?.toDouble()
-            accelerator = (daemonFrame!!.throttle.takeIf { it.isFinite() }?.times(100f))?.toInt()
-            brake = (daemonFrame!!.brake.takeIf { it.isFinite() }?.times(100f))?.toInt()
+        if (daemonAvailable) {
+            rpm = daemonRpm
+            speed = daemonSpeed
+            accelerator = daemonAccelerator
+            brake = daemonBrake
         } else {
             rpm = directFrame?.rpm?.takeIf { it.isFinite() && it >= 0f }?.toInt()
             speed = directFrame?.speedKph?.takeIf { it.isFinite() && it >= 0f }?.toDouble()
