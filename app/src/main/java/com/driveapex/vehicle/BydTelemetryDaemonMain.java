@@ -25,6 +25,7 @@ public final class BydTelemetryDaemonMain {
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 18765;
     private static final long POLL_MS = 50L;
+    private static final double MAX_RPM = 25000.0;
 
     private BydTelemetryDaemonMain() {}
 
@@ -92,19 +93,38 @@ public final class BydTelemetryDaemonMain {
     }
 
     private static void sample(ReflectDevice speed, ReflectDevice motor, ReflectDevice engine, TelemetrySnapshot snapshot) {
-        Double speedKph = speed.readNumber("getCurrentSpeed");
-        Double throttlePct = speed.readNumber("getAccelerateDeepness");
-        Double brakePct = speed.readNumber("getBrakeDeepness");
-        Double motorRpm = motor.readNumber("getMotorSpeed");
-        Double engineRpm = engine.readNumber("getEngineSpeed");
+        Double speedKph = sanitizeSpeed(speed.readNumber("getCurrentSpeed"));
+        Double throttlePct = sanitizePedal(speed.readNumber("getAccelerateDeepness"));
+        Double brakePct = sanitizePedal(speed.readNumber("getBrakeDeepness"));
+        Double motorRpm = sanitizeRpm(motor.readNumber("getMotorSpeed"));
+        Double engineRpm = sanitizeRpm(engine.readNumber("getEngineSpeed"));
         boolean valid = speedKph != null || throttlePct != null || brakePct != null || motorRpm != null || engineRpm != null;
         if (!valid) { snapshot.valid = false; return; }
         snapshot.speedKph = valueOrZero(speedKph);
         snapshot.throttlePct = valueOrZero(throttlePct);
         snapshot.brakePct = valueOrZero(brakePct);
-        snapshot.rpm = firstNonNegativeFinite(motorRpm, engineRpm, 0.0);
+        snapshot.rpm = firstValid(motorRpm, engineRpm, 0.0);
         snapshot.timestamp = System.currentTimeMillis();
         snapshot.valid = true;
+    }
+
+    private static Double sanitizeRpm(Double value) {
+        if (value == null || !Double.isFinite(value)) return null;
+        if (value == 8191.0 || value == -8191.0 || value == 32767.0 || value == -32768.0
+                || value == 65535.0 || value == -65535.0) return null;
+        return value >= 0.0 && value <= MAX_RPM ? value : null;
+    }
+
+    private static Double sanitizeSpeed(Double value) {
+        if (value == null || !Double.isFinite(value)) return null;
+        if (value == 8191.0 || value == 32767.0 || value == 65535.0 || value < 0.0 || value > 400.0) return null;
+        return value;
+    }
+
+    private static Double sanitizePedal(Double value) {
+        if (value == null || !Double.isFinite(value)) return null;
+        if (value == -10011.0 || value == 8191.0 || value == 32767.0 || value == 65535.0) return null;
+        return value >= 0.0 && value <= 100.0 ? value : null;
     }
 
     private static void serveClient(Socket socket, TelemetrySnapshot snapshot) {
@@ -124,9 +144,9 @@ public final class BydTelemetryDaemonMain {
     }
 
     private static double valueOrZero(Double value) { return value != null && Double.isFinite(value) ? value : 0.0; }
-    private static double firstNonNegativeFinite(Double first, Double second, double fallback) {
-        if (first != null && Double.isFinite(first) && first >= 0.0) return first;
-        if (second != null && Double.isFinite(second) && second >= 0.0) return second;
+    private static double firstValid(Double first, Double second, double fallback) {
+        if (first != null && Double.isFinite(first) && first >= 0.0 && first <= MAX_RPM) return first;
+        if (second != null && Double.isFinite(second) && second >= 0.0 && second <= MAX_RPM) return second;
         return fallback;
     }
 
@@ -187,8 +207,9 @@ public final class BydTelemetryDaemonMain {
         private final String opPackage;
         BydPermissionContext(Context base, String opPackage) {
             super(base);
-            this.opPackage = opPackage == null || opPackage.isEmpty() ? base.getPackageName() : opPackage;
+            this.opPackage = opPackage == null || opPackage.isEmpty() ? safePackageName(base) : opPackage;
         }
+        @Override public Context getApplicationContext() { return this; }
         @Override public int checkCallingOrSelfPermission(String permission) { return PackageManager.PERMISSION_GRANTED; }
         @Override public int checkPermission(String permission, int pid, int uid) { return PackageManager.PERMISSION_GRANTED; }
         @Override public int checkSelfPermission(String permission) { return PackageManager.PERMISSION_GRANTED; }
@@ -196,6 +217,10 @@ public final class BydTelemetryDaemonMain {
         @Override public void enforceCallingPermission(String permission, String message) {}
         @Override public void enforceCallingOrSelfPermission(String permission, String message) {}
         @Override public String getOpPackageName() { return opPackage; }
+        private static String safePackageName(Context base) {
+            try { return base == null ? DEFAULT_PACKAGE : base.getPackageName(); }
+            catch (Throwable ignored) { return DEFAULT_PACKAGE; }
+        }
     }
 
     private static final class LaunchArgs {
