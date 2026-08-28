@@ -56,7 +56,7 @@ class ModernCockpitActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        receiver = UdpTelemetryReceiver(this)
+        receiver = UdpTelemetryReceiver(context = this)
         buildShell()
         selectPage(PAGE_ENGINE)
     }
