@@ -17,6 +17,9 @@ object BydTelemetryDaemon {
     private const val SCAN_PORT = 18766
     private const val POLL_MS = 50L
 
+    private data class ScanType(val clazz: Class<*>, val name: String)
+    private data class ScanDevice(val name: String, val device: ReflectDevice)
+
     @JvmStatic
     fun main(args: Array<String>) {
         val context = createPackageContext()
@@ -67,20 +70,27 @@ object BydTelemetryDaemon {
         socket.use {
             val writer = BufferedWriter(OutputStreamWriter(it.getOutputStream(), Charsets.UTF_8))
             writer.write("SCAN_READY\n"); writer.flush()
-            val candidates = (4080..4120)
-            val types = listOf(
-                Integer.TYPE to "int", Float.TYPE to "float", Double.TYPE to "double",
-                Long.TYPE to "long", Short.TYPE to "short"
+            val candidates = 4080..4120
+            val types: List<ScanType> = listOf(
+                ScanType(Int::class.javaPrimitiveType!!, "int"),
+                ScanType(Float::class.javaPrimitiveType!!, "float"),
+                ScanType(Double::class.javaPrimitiveType!!, "double"),
+                ScanType(Long::class.javaPrimitiveType!!, "long"),
+                ScanType(Short::class.javaPrimitiveType!!, "short")
             )
-            val devices = listOf("MOTOR" to motor, "ENGINE" to engine)
-            for (deviceEntry in devices) {
-                val name = deviceEntry.first
-                val device = deviceEntry.second
-                for (typeEntry in types) {
-                    val type = typeEntry.first
-                    val typeName = typeEntry.second
+            val devices: List<ScanDevice> = listOf(
+                ScanDevice("MOTOR", motor),
+                ScanDevice("ENGINE", engine)
+            )
+            for (deviceEntry: ScanDevice in devices) {
+                val name = deviceEntry.name
+                val device = deviceEntry.device
+                for (typeEntry: ScanType in types) {
+                    val type = typeEntry.clazz
+                    val typeName = typeEntry.name
                     for (id in candidates) {
-                        device.genericGet(id, type)?.let { result ->
+                        val result: Pair<Any, String>? = device.genericGet(id, type)
+                        if (result != null) {
                             writer.write("HIT,$name,$id,$typeName,${result.second}\n")
                             writer.flush()
                         }
