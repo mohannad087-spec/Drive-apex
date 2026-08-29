@@ -16,6 +16,7 @@ import java.lang.reflect.Proxy;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -25,8 +26,11 @@ public final class BydLiveTelemetryDaemonMain {
     private static final String FALLBACK_PACKAGE = "com.byd.avc";
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 18765;
+    private static final int SCAN_PORT = 18766;
     private static final long WATCHDOG_MS = 500L;
     private static final double MAX_RPM = 25000.0;
+    private static final int SCAN_START_ID = 4080;
+    private static final int SCAN_END_ID = 4120;
 
     private BydLiveTelemetryDaemonMain() {}
 
@@ -44,6 +48,7 @@ public final class BydLiveTelemetryDaemonMain {
 
     public static void main(String[] args) {
         HandlerThreadCompat halThread = null;
+        ServerSocket scanServer = null;
         try {
             LaunchArgs launchArgs = LaunchArgs.parse(args);
             Context[] contexts = createContexts(launchArgs.packageName, launchArgs.userId);
@@ -77,8 +82,27 @@ public final class BydLiveTelemetryDaemonMain {
             });
             initialized.await(3, TimeUnit.SECONDS);
 
+            scanServer = new ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST));
+            ServerSocket finalScanServer = scanServer;
+            Thread scanThread = new Thread(() -> {
+                while (!finalScanServer.isClosed()) {
+                    try {
+                        Socket client = finalScanServer.accept();
+                        Thread worker = new Thread(() -> serveScan(client, motor, engine), "driveapex-byd-scan");
+                        worker.setDaemon(true);
+                        worker.start();
+                    } catch (Throwable t) {
+                        if (!finalScanServer.isClosed()) {
+                            System.err.println("sensor scan server failed: " + message(t));
+                        }
+                    }
+                }
+            }, "driveapex-byd-scan-server");
+            scanThread.setDaemon(true);
+            scanThread.start();
+
             try (ServerSocket server = new ServerSocket(PORT, 4, InetAddress.getByName(HOST))) {
-                System.out.println("DriveApex BYD live daemon ready on " + HOST + ":" + PORT);
+                System.out.println("DriveApex BYD live daemon ready on " + HOST + ":" + PORT + " scan=" + SCAN_PORT);
                 while (!server.isClosed()) {
                     Socket client = server.accept();
                     Thread worker = new Thread(() -> serveClient(client, snapshot), "driveapex-byd-client");
@@ -90,6 +114,7 @@ public final class BydLiveTelemetryDaemonMain {
             System.err.println("DriveApex BYD live daemon failed: " + message(t));
             t.printStackTrace(System.err);
         } finally {
+            if (scanServer != null) try { scanServer.close(); } catch (Throwable ignored) {}
             if (halThread != null) halThread.quitSafely();
         }
     }
@@ -146,6 +171,38 @@ public final class BydLiveTelemetryDaemonMain {
             }
         } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
         catch (Throwable t) { System.err.println("client failed: " + message(t)); }
+    }
+
+    private static void serveScan(Socket socket, ReflectDevice motor, ReflectDevice engine) {
+        try (Socket ignored = socket; BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"))) {
+            writer.write("SCAN_READY\n"); writer.flush();
+            Class<?>[] types = {Integer.TYPE, Float.TYPE, Double.TYPE, Long.TYPE, Short.TYPE};
+            String[] typeNames = {"int", "float", "double", "long", "short"};
+            ReflectDevice[] devices = {motor, engine};
+            String[] deviceNames = {"MOTOR", "ENGINE"};
+            int hits = 0;
+            for (int d = 0; d < devices.length; d++) {
+                for (int t = 0; t < types.length; t++) {
+                    for (int id = SCAN_START_ID; id <= SCAN_END_ID; id++) {
+                        Object value = devices[d].genericGet(id, types[t]);
+                        if (value instanceof Number) {
+                            double n = ((Number) value).doubleValue();
+                            if (Double.isFinite(n)) {
+                                writer.write(String.format(Locale.US, "HIT,%s,%d,%s,%.6f\n", deviceNames[d], id, typeNames[t], n));
+                                writer.flush();
+                                hits++;
+                            }
+                        }
+                    }
+                }
+            }
+            writer.write("SCAN_DONE," + hits + "\n"); writer.flush();
+        } catch (Throwable t) {
+            try {
+                BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"));
+                writer.write("SCAN_ERROR," + message(t) + "\n"); writer.flush();
+            } catch (Throwable ignored) {}
+        }
     }
 
     private static Context[] createContexts(String requestedPackage, int userId) throws Exception {
@@ -270,6 +327,36 @@ public final class BydLiveTelemetryDaemonMain {
                 if (result instanceof Number) return ((Number) result).doubleValue();
                 if (result instanceof String) return Double.parseDouble((String) result);
             } catch (Throwable t) { System.err.println(className + "." + methodName + " failed: " + message(t)); }
+            return null;
+        }
+        Object genericGet(int featureId, Class<?> type) {
+            Object d = ensure(); if (d == null) return null;
+            try {
+                Method get = findGenericGet(d.getClass()); if (get == null) return null;
+                get.setAccessible(true);
+                Object result = get.invoke(d, new int[]{featureId}, type);
+                if (result == null) return null;
+                if (result.getClass().isArray()) {
+                    int n = java.lang.reflect.Array.getLength(result);
+                    if (n == 0) return null;
+                    result = java.lang.reflect.Array.get(result, 0);
+                }
+                return result;
+            } catch (Throwable ignored) { return null; }
+        }
+        private Method findGenericGet(Class<?> clazz) {
+            Class<?> current = clazz;
+            while (current != null) {
+                for (Method m : current.getDeclaredMethods()) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if ("get".equals(m.getName()) && p.length == 2 && p[0] == int[].class && p[1] == Class.class) return m;
+                }
+                current = current.getSuperclass();
+            }
+            for (Method m : clazz.getMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if ("get".equals(m.getName()) && p.length == 2 && p[0] == int[].class && p[1] == Class.class) return m;
+            }
             return null;
         }
         private Method findNoArgMethod(Class<?> clazz, String name) {
