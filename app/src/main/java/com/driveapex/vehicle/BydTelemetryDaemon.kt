@@ -72,10 +72,18 @@ object BydTelemetryDaemon {
                 Integer.TYPE to "int", Float.TYPE to "float", Double.TYPE to "double",
                 Long.TYPE to "long", Short.TYPE to "short"
             )
-            for ((name, device) in listOf("MOTOR" to motor, "ENGINE" to engine)) {
-                for (id in candidates) for ((type, typeName) in types) {
-                    device.genericGet(id, type)?.let { result ->
-                        writer.write("HIT,$name,$id,$typeName,${result.second}\n"); writer.flush()
+            val devices = listOf("MOTOR" to motor, "ENGINE" to engine)
+            for (deviceEntry in devices) {
+                val name = deviceEntry.first
+                val device = deviceEntry.second
+                for (typeEntry in types) {
+                    val type = typeEntry.first
+                    val typeName = typeEntry.second
+                    for (id in candidates) {
+                        device.genericGet(id, type)?.let { result ->
+                            writer.write("HIT,$name,$id,$typeName,${result.second}\n")
+                            writer.flush()
+                        }
                     }
                 }
             }
