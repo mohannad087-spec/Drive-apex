@@ -19,8 +19,6 @@ jobs:
       DRIVEAPEX_KEYSTORE_PASSWORD: ${{ secrets.DRIVEAPEX_KEYSTORE_PASSWORD }}
       DRIVEAPEX_KEY_ALIAS: ${{ secrets.DRIVEAPEX_KEY_ALIAS }}
       DRIVEAPEX_KEY_PASSWORD: ${{ secrets.DRIVEAPEX_KEY_PASSWORD }}
-      DRIVEAPEX_VERSION_CODE: 86
-      DRIVEAPEX_VERSION_NAME: 0.2.86
 
     steps:
       - name: Checkout
@@ -32,6 +30,29 @@ jobs:
           for v in DRIVEAPEX_KEYSTORE_HEX DRIVEAPEX_KEYSTORE_PASSWORD DRIVEAPEX_KEY_ALIAS DRIVEAPEX_KEY_PASSWORD; do
             [[ -n "${!v}" ]] || { echo "ERROR: $v is not configured."; exit 1; }
           done
+      - name: Determine next release version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName // empty')
+          if [[ -z "$latest" ]]; then
+            major=0; minor=2; patch=83
+          else
+            version="${latest#v}"
+            if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "ERROR: latest release tag '$latest' is not semver X.Y.Z."
+              exit 1
+            fi
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            patch="${BASH_REMATCH[3]}"
+          fi
+          next_patch=$((10#$patch + 1))
+          echo "DRIVEAPEX_VERSION_CODE=$next_patch" >> "$GITHUB_ENV"
+          echo "DRIVEAPEX_VERSION_NAME=$major.$minor.$next_patch" >> "$GITHUB_ENV"
+          echo "Next release: $major.$minor.$next_patch (versionCode $next_patch)"
       - name: Set up JDK 17
         uses: actions/setup-java@v5.6.0
         with:
