@@ -109,8 +109,14 @@ object BydTelemetryDiagnostics {
         notes += "RPM invalid sentinels are rejected instead of being displayed as real RPM."
 
         val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
-        if (scan.isEmpty()) notes += "Sensor scan returned no readable features in the 4080..4120 candidate range."
-        else notes += "Sensor scan found ${scan.size} readable feature/type combinations."
+        val scanError = scan.firstOrNull { it.startsWith("SENSOR SCAN ERROR:") }
+        if (scanError != null) {
+            notes += scanError
+        } else if (scan.isEmpty()) {
+            notes += "Sensor scan returned no readable features in the 4080..4120 candidate range."
+        } else {
+            notes += "Sensor scan returned ${scan.size} readable feature/type combinations."
+        }
 
         return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
     }
@@ -123,11 +129,12 @@ object BydTelemetryDiagnostics {
             while (true) {
                 val line = reader.readLine() ?: break
                 when {
-                    line == "SCAN_DONE" -> break
+                    line == "SCAN_DONE" || line.startsWith("SCAN_DONE,") -> break
                     line.startsWith("HIT,") -> {
                         val p = line.split(',', limit = 5)
                         if (p.size == 5) hits += "${p[1]}  Feature ${p[2]}  ${p[3]}  = ${p[4]}"
                     }
+                    line.startsWith("SCAN_ERROR,") -> return@use listOf("SENSOR SCAN ERROR: ${line.removePrefix("SCAN_ERROR,")}")
                 }
             }
             hits
