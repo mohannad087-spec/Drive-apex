@@ -5,9 +5,12 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.driveapex.BuildConfig
 import com.driveapex.update.VehicleAdbConnection
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.Socket
 import java.util.Locale
 
-/** Truthful BYD telemetry capability probe; shell-UID daemon is the primary live path. */
+/** Truthful BYD telemetry capability probe and read-only HAL sensor scanner. */
 object BydTelemetryDiagnostics {
     data class Report(
         val adbStatus: String, val adbError: String?, val engineApiPresent: Boolean,
@@ -16,8 +19,9 @@ object BydTelemetryDiagnostics {
         val acceleratorPercent: Int?, val brakePercent: Int?, val directRead: Boolean,
         val directError: String?, val declaredPermissions: List<String>,
         val grantedPermissions: List<String>, val failedPermissionGrants: List<String>,
-        val notes: List<String>
+        val notes: List<String>, val sensorScan: List<String> = emptyList()
     )
+
     private val REQUIRED_PERMISSIONS = listOf(
         "android.permission.BYDAUTO_SPEED_COMMON", "android.permission.BYDAUTO_SPEED_GET",
         "android.permission.BYDAUTO_ENGINE_COMMON", "android.permission.BYDAUTO_ENGINE_GET",
@@ -25,6 +29,7 @@ object BydTelemetryDiagnostics {
         "android.permission.BYDAUTO_ENERGY_GET", "android.permission.BYDAUTO_GEARBOX_COMMON",
         "android.permission.BYDAUTO_GEARBOX_GET", "android.permission.BYDAUTO_VEHICLE_DATA_GET"
     )
+
     fun probe(activity: Activity): Report {
         val notes = mutableListOf<String>()
         val adbConnection = VehicleAdbConnection(activity).connect()
@@ -36,6 +41,7 @@ object BydTelemetryDiagnostics {
         }
         notes += "ADB bootstrap: $adbStatus"
         VehicleAdbConnection.lastError()?.let { notes += "ADB: $it" }
+
         val permissionResults = VehicleAdbConnection.permissionResults()
         val grantedPermissions = permissionResults.filter { it.granted }.map { it.permission }
         val failedPermissionGrants = permissionResults.filterNot { it.granted }.map { "${it.permission}: ${it.detail}" }
@@ -43,6 +49,7 @@ object BydTelemetryDiagnostics {
         val declared = REQUIRED_PERMISSIONS.filter { permission -> packageInfo?.requestedPermissions?.contains(permission) == true }
         if (declared.size < REQUIRED_PERMISSIONS.size) notes += "Undeclared BYD permissions: ${(REQUIRED_PERMISSIONS - declared.toSet()).joinToString()}"
         if (failedPermissionGrants.isNotEmpty()) notes += "Some BYD GET/signature permissions are not runtime-grantable; common permissions are checked separately."
+
         var daemonAvailable = false
         var daemonRpm: Int? = null
         var daemonSpeed: Double? = null
@@ -73,6 +80,7 @@ object BydTelemetryDiagnostics {
                 }
             } catch (t: Throwable) { daemonError = t.message ?: t.javaClass.simpleName } finally { bridge.stop() }
         } else daemonError = VehicleAdbConnection.lastError()
+
         if (daemonAvailable) notes += "Telemetry source: shell-UID BYD daemon." else if (!daemonError.isNullOrBlank()) notes += "Telemetry daemon error: $daemonError"
         var directFrame: DirectBydTelemetryReader.Frame? = null
         if (!daemonAvailable) {
@@ -92,14 +100,40 @@ object BydTelemetryDiagnostics {
             accelerator = (directFrame?.throttle?.takeIf { it.isFinite() }?.times(100f))?.toInt()
             brake = (directFrame?.brake?.takeIf { it.isFinite() }?.times(100f))?.toInt()
         }
+
         val engineApiPresent = runCatching { Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice"); true }.getOrDefault(false) || runCatching { Class.forName("android.hardware.bydauto.motor.BYDAutoMotorDevice"); true }.getOrDefault(false)
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
         notes += "Live path: shell-UID daemon first, direct HAL second, UDP only for development."
         notes += "Daemon polls the BYD speed/engine devices continuously at 50 ms cadence."
         notes += "RPM invalid sentinels are rejected instead of being displayed as real RPM."
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes)
+
+        val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
+        if (scan.isEmpty()) notes += "Sensor scan returned no readable features in the 4080..4120 candidate range."
+        else notes += "Sensor scan found ${scan.size} readable feature/type combinations."
+
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
     }
+
+    private fun runSensorScan(): List<String> = runCatching {
+        Socket("127.0.0.1", 18766).use { socket ->
+            socket.soTimeout = 8_000
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+            val hits = mutableListOf<String>()
+            while (true) {
+                val line = reader.readLine() ?: break
+                when {
+                    line == "SCAN_DONE" -> break
+                    line.startsWith("HIT,") -> {
+                        val p = line.split(',', limit = 5)
+                        if (p.size == 5) hits += "${p[1]}  Feature ${p[2]}  ${p[3]}  = ${p[4]}"
+                    }
+                }
+            }
+            hits
+        }
+    }.getOrElse { listOf("SENSOR SCAN ERROR: ${it.message ?: it.javaClass.simpleName}") }
+
     fun format(report: Report): String = buildString {
         appendLine("BYD TELEMETRY DIAGNOSTICS ${BuildConfig.VERSION_NAME}"); appendLine()
         appendLine("ADB: ${report.adbStatus}"); report.adbError?.let { appendLine("ADB error: $it") }; appendLine()
@@ -108,6 +142,9 @@ object BydTelemetryDiagnostics {
         appendLine("Live telemetry read: ${if (report.engineReadable || report.speedReadable) "OK" else "FAILED"}")
         report.engineRpm?.let { appendLine("MOTOR RPM: $it RPM") }; report.currentSpeedKph?.let { appendLine(String.format(Locale.US, "Speed: %.1f km/h", it)) }
         report.acceleratorPercent?.let { appendLine("Accelerator: $it%") }; report.brakePercent?.let { appendLine("Brake: $it%") }; appendLine()
+        appendLine("READ-ONLY SENSOR SCAN (4080..4120)")
+        if (report.sensorScan.isEmpty()) appendLine("No readable feature/type combinations.") else report.sensorScan.forEach { appendLine(it) }
+        appendLine()
         appendLine("BYD permissions declared: ${report.declaredPermissions.size}/${REQUIRED_PERMISSIONS.size}")
         appendLine("BYD permissions reported granted: ${report.grantedPermissions.size}/${REQUIRED_PERMISSIONS.size}")
         report.grantedPermissions.forEach { appendLine("✓ $it") }; report.failedPermissionGrants.forEach { appendLine("✗ $it") }; appendLine()
