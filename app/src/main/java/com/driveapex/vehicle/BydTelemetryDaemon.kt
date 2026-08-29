@@ -9,21 +9,12 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 
-/**
- * BYD telemetry daemon launched through ADB/app_process (UID 2000).
- *
- * The normal app process is intentionally not used to access BYD HAL. The daemon
- * runs with shell UID, creates the app package context from the system context,
- * wraps it with the same permission-bypass pattern used by OverDrive, and keeps
- * the HAL device handles alive in one polling loop.
- *
- * Protocol: one CSV line per sample
- *   timestampMs,rpm,speedKph,throttlePercent,brakePercent,source
- */
+/** BYD telemetry daemon launched through ADB/app_process (UID 2000). */
 object BydTelemetryDaemon {
     private const val PACKAGE_NAME = "com.driveapex"
     private const val HOST = "127.0.0.1"
     private const val PORT = 18765
+    private const val SCAN_PORT = 18766
     private const val POLL_MS = 50L
 
     @JvmStatic
@@ -32,25 +23,25 @@ object BydTelemetryDaemon {
         val speed = ReflectDevice("android.hardware.bydauto.speed.BYDAutoSpeedDevice", context)
         val motor = ReflectDevice("android.hardware.bydauto.motor.BYDAutoMotorDevice", context)
         val engine = ReflectDevice("android.hardware.bydauto.engine.BYDAutoEngineDevice", context)
-
         val server = ServerSocket(PORT, 4, InetAddress.getByName(HOST))
-        Runtime.getRuntime().addShutdownHook(Thread { runCatching { server.close() } })
-
+        val scanServer = ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST))
+        Runtime.getRuntime().addShutdownHook(Thread {
+            runCatching { server.close() }
+            runCatching { scanServer.close() }
+        })
+        Thread {
+            while (!scanServer.isClosed) {
+                val client = runCatching { scanServer.accept() }.getOrNull() ?: continue
+                Thread { serveScan(client, motor, engine) }.apply { isDaemon = true; start() }
+            }
+        }.apply { isDaemon = true; start() }
         while (!server.isClosed) {
             val client = runCatching { server.accept() }.getOrNull() ?: continue
-            Thread { serveClient(client, speed, motor, engine) }.apply {
-                isDaemon = true
-                start()
-            }
+            Thread { serveClient(client, speed, motor, engine) }.apply { isDaemon = true; start() }
         }
     }
 
-    private fun serveClient(
-        socket: Socket,
-        speed: ReflectDevice,
-        motor: ReflectDevice,
-        engine: ReflectDevice,
-    ) {
+    private fun serveClient(socket: Socket, speed: ReflectDevice, motor: ReflectDevice, engine: ReflectDevice) {
         socket.use {
             val writer = BufferedWriter(OutputStreamWriter(it.getOutputStream(), Charsets.UTF_8))
             while (!it.isClosed) {
@@ -58,8 +49,6 @@ object BydTelemetryDaemon {
                 val speedKph = speed.readNumber("getCurrentSpeed")
                 val throttlePct = speed.readNumber("getAccelerateDeepness")
                 val brakePct = speed.readNumber("getBrakeDeepness")
-
-                // Front/motor speed is the primary RPM source when available.
                 val motorRpm = motor.readNumber("getMotorSpeed")
                 val engineRpm = engine.readNumber("getEngineSpeed")
                 val rpm = when {
@@ -67,34 +56,41 @@ object BydTelemetryDaemon {
                     engineRpm != null && engineRpm.isFinite() && engineRpm >= 0.0 -> engineRpm
                     else -> 0.0
                 }
-
-                writer.write(
-                    "$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},BYD_DAEMON"
-                )
-                writer.newLine()
-                writer.flush()
-                Thread.sleep(POLL_MS)
+                writer.write("$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},BYD_DAEMON")
+                writer.newLine(); writer.flush(); Thread.sleep(POLL_MS)
             }
         }
     }
 
-    private fun createPackageContext(): Context {
-        val activityThreadClass = Class.forName("android.app.ActivityThread")
-        val currentMethod = activityThreadClass.getDeclaredMethod("currentActivityThread")
-        currentMethod.isAccessible = true
-        var thread = runCatching { currentMethod.invoke(null) }.getOrNull()
-        if (thread == null) {
-            val systemMain = activityThreadClass.getDeclaredMethod("systemMain")
-            systemMain.isAccessible = true
-            thread = systemMain.invoke(null)
+    /** Read-only generic HAL scanner based on OverDrive's get(int[], Class) pattern. */
+    private fun serveScan(socket: Socket, motor: ReflectDevice, engine: ReflectDevice) {
+        socket.use {
+            val writer = BufferedWriter(OutputStreamWriter(it.getOutputStream(), Charsets.UTF_8))
+            writer.write("SCAN_READY\n"); writer.flush()
+            val candidates = (4080..4120)
+            val types = listOf(
+                Integer.TYPE to "int", Float.TYPE to "float", Double.TYPE to "double",
+                Long.TYPE to "long", Short.TYPE to "short"
+            )
+            for ((name, device) in listOf("MOTOR" to motor, "ENGINE" to engine)) {
+                for (id in candidates) for ((type, typeName) in types) {
+                    device.genericGet(id, type)?.let { result ->
+                        writer.write("HIT,$name,$id,$typeName,${result.second}\n"); writer.flush()
+                    }
+                }
+            }
+            writer.write("SCAN_DONE\n"); writer.flush()
         }
-        val systemContextMethod = activityThreadClass.getDeclaredMethod("getSystemContext")
-        systemContextMethod.isAccessible = true
-        val systemContext = systemContextMethod.invoke(thread) as Context
-        val packageContext = systemContext.createPackageContext(
-            PACKAGE_NAME,
-            Context.CONTEXT_INCLUDE_CODE or Context.CONTEXT_IGNORE_SECURITY
-        )
+    }
+
+    private fun createPackageContext(): Context {
+        val c = Class.forName("android.app.ActivityThread")
+        val current = c.getDeclaredMethod("currentActivityThread").apply { isAccessible = true }
+        var thread = runCatching { current.invoke(null) }.getOrNull()
+        if (thread == null) thread = c.getDeclaredMethod("systemMain").apply { isAccessible = true }.invoke(null)
+        val scm = c.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
+        val systemContext = scm.invoke(thread) as Context
+        val packageContext = systemContext.createPackageContext(PACKAGE_NAME, Context.CONTEXT_INCLUDE_CODE or Context.CONTEXT_IGNORE_SECURITY)
         return BydPermissionContext(packageContext)
     }
 
@@ -104,27 +100,37 @@ object BydTelemetryDaemon {
         override fun checkSelfPermission(permission: String): Int = PackageManager.PERMISSION_GRANTED
     }
 
-    private class ReflectDevice(
-        private val className: String,
-        private val context: Context,
-    ) {
+    private class ReflectDevice(private val className: String, private val context: Context) {
         @Volatile private var device: Any? = null
-
         private fun ensure(): Any? {
             device?.let { return it }
             return runCatching {
                 val clazz = Class.forName(className)
-                val getInstance = clazz.getMethod("getInstance", Context::class.java)
-                val created = getInstance.invoke(null, context)
-                device = created
-                created
+                val created = clazz.getMethod("getInstance", Context::class.java).invoke(null, context)
+                device = created; created
             }.getOrNull()
         }
-
         fun readNumber(methodName: String): Double? = runCatching {
             val d = ensure() ?: return null
-            val method = d.javaClass.getMethod(methodName)
-            (method.invoke(d) as Number).toDouble()
+            (d.javaClass.getMethod(methodName).invoke(d) as Number).toDouble()
+        }.getOrNull()
+        fun genericGet(featureId: Int, type: Class<*>): Pair<Any, String>? = runCatching {
+            val d = ensure() ?: return null
+            val method = d.javaClass.methods.firstOrNull { m ->
+                m.name == "get" && m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == IntArray::class.java && m.parameterTypes[1] == Class::class.java
+            } ?: return null
+            val value = method.invoke(d, intArrayOf(featureId), type) ?: return null
+            val scalar: Any = when (value) {
+                is Number -> value
+                is IntArray -> value.firstOrNull() ?: return null
+                is LongArray -> value.firstOrNull() ?: return null
+                is FloatArray -> value.firstOrNull() ?: return null
+                is DoubleArray -> value.firstOrNull() ?: return null
+                is ShortArray -> value.firstOrNull() ?: return null
+                else -> return null
+            }
+            scalar to scalar.toString()
         }.getOrNull()
     }
 }
