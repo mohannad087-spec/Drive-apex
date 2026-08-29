@@ -1,93 +1,41 @@
-name: Apply sensor scanner and front motor source
+name: Verify BYD sensor scanner
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  patch:
-    if: ${{ !contains(github.event.head_commit.message, '[sensor-scanner-patched]') }}
+  verify:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
+          fetch-depth: 1
       - name: Set up JDK 17
         uses: actions/setup-java@v5.6.0
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4.0.1
         with:
           cmdline-tools-version: latest
           packages: platform-tools
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6.2.0
         with:
           gradle-version: '8.9'
-
-      - name: Patch verified sources
-        shell: python
-        run: |
-          from pathlib import Path
-
-          daemon = Path('app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java')
-          s = daemon.read_text()
-          old = 'Double motorRpm = sanitizeRpm(motor.readNumber("getMotorSpeed"));'
-          new = 'Double motorRpm = sanitizeRpm(engine.readFeatureNumber(4098));'
-          if old in s:
-              s = s.replace(old, new, 1)
-              method = '''\n        Double readFeatureNumber(int featureId) {\n            Object d = ensure(); if (d == null) return null;\n            Class<?>[] types = {Integer.TYPE, Float.TYPE, Double.TYPE, Long.TYPE};\n            for (Class<?> type : types) {\n                try {\n                    Method get = null;\n                    Class<?> current = d.getClass();\n                    while (current != null && get == null) {\n                        for (Method candidate : current.getDeclaredMethods()) {\n                            if (!candidate.getName().equals("get")) continue;\n                            Class<?>[] p = candidate.getParameterTypes();\n                            if (p.length == 2 && p[0] == int[].class && p[1] == Class.class) { get = candidate; break; }\n                        }\n                        current = current.getSuperclass();\n                    }\n                    if (get == null) {\n                        for (Method candidate : d.getClass().getMethods()) {\n                            Class<?>[] p = candidate.getParameterTypes();\n                            if (candidate.getName().equals("get") && p.length == 2 && p[0] == int[].class && p[1] == Class.class) { get = candidate; break; }\n                        }\n                    }\n                    if (get == null) continue;\n                    get.setAccessible(true);\n                    Object result = get.invoke(d, new int[]{featureId}, type);\n                    if (result != null && result.getClass().isArray()) {\n                        int n = java.lang.reflect.Array.getLength(result);\n                        if (n == 0) continue;\n                        result = java.lang.reflect.Array.get(result, 0);\n                    }\n                    if (result instanceof Number) return ((Number) result).doubleValue();\n                } catch (Throwable ignored) {}\n            }\n            return null;\n        }\n'''
-              marker = '\n    }\n\n    private static String message(Throwable t)'
-              if 'Double readFeatureNumber(int featureId)' not in s:
-                  idx = s.rfind(marker)
-                  if idx < 0:
-                      raise SystemExit('ReflectDevice class boundary not found')
-                  s = s[:idx] + method + s[idx:]
-              daemon.write_text(s)
-
-          adb = Path('app/src/main/java/com/driveapex/update/VehicleAdbConnection.kt')
-          s = adb.read_text()
-          if 'fun runFeatureScanner()' not in s:
-              method = '''\n    /** Run the read-only BYD feature scanner under shell UID. */\n    fun runFeatureScanner(): String {\n        val dadb = connect() ?: return "ADB: ${lastError ?: "not authorized"}"\n        return runCatching {\n            val apkPath = dadb.shell(\n                "pm path ${BuildConfig.APPLICATION_ID} | sed -n 's/^package://p' | head -n 1"\n            ).output.trim()\n            if (!apkPath.startsWith("/")) return@runCatching "ERROR|Cannot resolve DriveApex APK path"\n            val preferredPath = dadb.shell(\n                "pm path $PREFERRED_BUNDLE | sed -n 's/^package://p' | head -n 1"\n            ).output.trim()\n            val targetPackage = if (preferredPath.startsWith("/")) PREFERRED_BUNDLE else BuildConfig.APPLICATION_ID\n            val userId = currentUserId(dadb)\n            val scanApk = "/data/local/tmp/driveapex-scan.apk"\n            dadb.shell("cp \\\"$apkPath\\\" $scanApk; chmod 644 $scanApk")\n            val command =\n                "rm -f /data/local/tmp/driveapex-scan.log; " +\n                    "nohup app_process -Djava.class.path=$BYD_FRAMEWORK_JAR:$scanApk " +\n                    "-Djava.library.path=$BYD_NATIVE_LIB_PATH /system/bin --nice-name=driveapex-scan " +\n                    "com.driveapex.vehicle.BydFeatureScannerMain --package=$targetPackage " +\n                    "--requested-user-id=$userId > /data/local/tmp/driveapex-scan.log 2>&1"\n            val r = dadb.shell(command)\n            if (r.exitCode != 0) return@runCatching "ERROR|${r.output} ${r.errorOutput}".trim()\n            var output = ""\n            repeat(20) {\n                Thread.sleep(250L)\n                output = dadb.shell("cat /data/local/tmp/driveapex-scan.log 2>/dev/null").output\n                if (output.contains("FEATURE|") || output.contains("ERROR|")) return@repeat\n            }\n            output.ifBlank { "ERROR|Scanner produced no output" }\n        }.getOrElse { "ERROR|Scanner: ${it.message ?: it.javaClass.simpleName}" }\n    }\n'''
-              marker = '\n    fun close() {'
-              if marker not in s:
-                  raise SystemExit('VehicleAdbConnection close() target not found')
-              s = s.replace(marker, method + marker, 1)
-              adb.write_text(s)
-
-          main = Path('app/src/main/java/com/driveapex/MainActivity.kt')
-          s = main.read_text()
-          import_marker = 'import com.driveapex.update.BydAdbSetup\n'
-          if 'import com.driveapex.update.VehicleAdbConnection' not in s:
-              if import_marker not in s:
-                  raise SystemExit('MainActivity import marker not found')
-              s = s.replace(import_marker, import_marker + 'import com.driveapex.update.VehicleAdbConnection\n', 1)
-          button_marker = 'service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") { showBydDiagnostics() }, margin(6))'
-          if 'BYD SENSOR SCANNER (READ ONLY)' not in s:
-              button = '''service.addView(serviceButton("BYD SENSOR SCANNER (READ ONLY)") {\n            Thread {\n                val report = VehicleAdbConnection(this).runFeatureScanner()\n                handler.post {\n                    if (!isFinishing && !isDestroyed) {\n                        AlertDialog.Builder(this).setTitle("BYD SENSOR SCANNER").setMessage(report).setPositiveButton("OK", null).show()\n                    }\n                }\n            }.start()\n        }, margin(6))\n'''
-              if button_marker not in s:
-                  raise SystemExit('MainActivity diagnostics button marker not found')
-              s = s.replace(button_marker, button_marker + '\n        ' + button, 1)
-              main.write_text(s)
-
-      - name: Compile patched app
+      - name: Compile scanner-enabled app
         run: gradle assembleDebug --stacktrace
-
-      - name: Commit source patch
+      - name: Verify scanner sources
+        shell: bash
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java app/src/main/java/com/driveapex/update/VehicleAdbConnection.kt app/src/main/java/com/driveapex/MainActivity.kt
-          if git diff --cached --quiet; then
-            echo "No source changes to commit"
-            exit 0
-          fi
-          git commit -m "feat: add read-only BYD sensor scanner and front motor feature source [sensor-scanner-patched]"
-          git push
+          set -euo pipefail
+          grep -q 'SCAN_PORT = 18766' app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java
+          grep -q 'serveScan' app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java
+          grep -q '127.0.0.1", 18766' app/src/main/java/com/driveapex/vehicle/BydTelemetryDiagnostics.kt
+          echo "Read-only BYD scanner is wired to the live daemon."
