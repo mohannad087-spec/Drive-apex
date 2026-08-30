@@ -31,3 +31,4 @@ jobs:
           git add app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java
           git commit -m 'fix: correct daemon listener invocation'
           git push
+# one-shot trigger
