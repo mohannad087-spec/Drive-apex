@@ -26,6 +26,8 @@ public final class BydTelemetryDaemonMain {
             Context context = createPackageContext();
             ReflectDevice speed = new ReflectDevice("android.hardware.bydauto.speed.BYDAutoSpeedDevice", context);
             ReflectDevice motor = new ReflectDevice("android.hardware.bydauto.motor.BYDAutoMotorDevice", context);
+            // DI Plus beta18 reads Motor Speed through the Engine device's direct API.
+            // Keep the Motor device getter as a fallback for firmware variants.
             ReflectDevice engine = new ReflectDevice("android.hardware.bydauto.engine.BYDAutoEngineDevice", context);
 
             try (ServerSocket server = new ServerSocket(PORT, 4, InetAddress.getByName(HOST))) {
@@ -55,9 +57,12 @@ public final class BydTelemetryDaemonMain {
                 double speedKph = valueOrZero(speed.readNumber("getCurrentSpeed"));
                 double throttlePct = valueOrZero(speed.readNumber("getAccelerateDeepness"));
                 double brakePct = valueOrZero(speed.readNumber("getBrakeDeepness"));
-                Double motorRpm = motor.readNumber("getMotorSpeed");
+
+                // Primary path matches DI Plus: BYDAutoEngineDevice.getEngineSpeed().
+                // If that returns 0/unavailable, fall back to BYDAutoMotorDevice.getMotorSpeed().
                 Double engineRpm = engine.readNumber("getEngineSpeed");
-                double rpm = firstNonNegativeFinite(motorRpm, engineRpm, 0.0);
+                Double motorRpm = motor.readNumber("getMotorSpeed");
+                double rpm = firstPositiveFinite(engineRpm, motorRpm, 0.0);
 
                 writer.write(Long.toString(System.currentTimeMillis()));
                 writer.write(',');
@@ -84,9 +89,10 @@ public final class BydTelemetryDaemonMain {
         return value != null && Double.isFinite(value) ? value : 0.0;
     }
 
-    private static double firstNonNegativeFinite(Double first, Double second, double fallback) {
-        if (first != null && Double.isFinite(first) && first >= 0.0) return first;
-        if (second != null && Double.isFinite(second) && second >= 0.0) return second;
+    private static double firstPositiveFinite(Double first, Double second, double fallback) {
+        if (first != null && Double.isFinite(first) && first > 0.0) return first;
+        if (second != null && Double.isFinite(second) && second > 0.0) return second;
+        // Preserve a genuine stationary zero only when both APIs return zero/unavailable.
         return fallback;
     }
 
