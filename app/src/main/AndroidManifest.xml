@@ -14,6 +14,7 @@
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_MOTOR_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_MOTOR_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENERGY_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_ENERGY_GET" />
