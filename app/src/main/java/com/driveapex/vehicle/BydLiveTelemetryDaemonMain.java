@@ -40,7 +40,6 @@ public final class BydLiveTelemetryDaemonMain {
     private static final long WATCHDOG_MS = 500L;
     private static final double MAX_RPM = 25000.0;
 
-    // DiPlus/TripStats confirmed feature fallback; runtime resolution wins when present.
     private static final int FRONT_RPM_FALLBACK = 1141899272;
     private static final int REAR_RPM_FALLBACK = 621805576;
 
@@ -84,7 +83,7 @@ public final class BydLiveTelemetryDaemonMain {
                 boolean speedReady = speed.initialize();
                 boolean motorReady = motor.initialize();
                 boolean engineReady = engine.initialize();
-                boolean listenerRegistered = engine.registerDiPlusEngineListener(snapshot);
+                boolean listenerRegistered = registerDiPlusEngineListener(engine, snapshot);
                 snapshot.frontListenerRegistered = listenerRegistered;
                 sampleBase(speed, motor, engine, snapshot);
 
@@ -154,7 +153,6 @@ public final class BydLiveTelemetryDaemonMain {
         if (brakePct != null) snapshot.brakePct = brakePct;
 
         long now = System.currentTimeMillis();
-        // Do not overwrite a recent DiPlus-style front RPM event with the stale getter value.
         if (snapshot.frontRpmAt > 0L && now - snapshot.frontRpmAt <= 1500L) {
             snapshot.rpm = snapshot.frontRpm;
         } else {
@@ -209,34 +207,12 @@ public final class BydLiveTelemetryDaemonMain {
         }
     }
 
-    /** Exact DiPlus engine event mechanism: IBYDAutoListener + feature-id array. */
     private static boolean registerDiPlusEngineListener(ReflectDevice engine, TelemetrySnapshot snapshot) {
         Object device = engine.ensureDevice();
         if (device == null) return false;
         try {
             Class<?> listenerType = Class.forName("android.hardware.IBYDAutoListener");
-            final String registerName = "registerListener";
-            Method target = null;
-            for (Class<?> c = device.getClass(); c != null && target == null; c = c.getSuperclass()) {
-                for (Method m : c.getDeclaredMethods()) {
-                    Class<?>[] p = m.getParameterTypes();
-                    if (!registerName.equals(m.getName()) || p.length != 2 || p[1] != int[].class) continue;
-                    if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) {
-                        target = m;
-                        break;
-                    }
-                }
-            }
-            if (target == null) {
-                for (Method m : device.getClass().getMethods()) {
-                    Class<?>[] p = m.getParameterTypes();
-                    if (!registerName.equals(m.getName()) || p.length != 2 || p[1] != int[].class) continue;
-                    if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) {
-                        target = m;
-                        break;
-                    }
-                }
-            }
+            Method target = findEngineListenerRegister(device.getClass(), listenerType);
             if (target == null) return false;
 
             final int frontId = snapshot.frontFeatureId;
@@ -249,10 +225,7 @@ public final class BydLiveTelemetryDaemonMain {
                     if (featureId != null && event != null) {
                         Integer intValue = readIntFieldOrGetter(event, "intValue");
                         Double doubleValue = readDoubleFieldOrGetter(event, "doubleValue");
-                        int rpm;
-                        if (intValue != null) rpm = intValue;
-                        else if (doubleValue != null) rpm = (int) Math.round(doubleValue);
-                        else rpm = Integer.MIN_VALUE;
+                        int rpm = intValue != null ? intValue : (doubleValue != null ? (int) Math.round(doubleValue) : Integer.MIN_VALUE);
                         if (rpm != Integer.MIN_VALUE) {
                             int magnitude = Math.abs(rpm);
                             boolean valid = magnitude <= 30000 && magnitude != 8191 && magnitude != 16383
@@ -280,8 +253,6 @@ public final class BydLiveTelemetryDaemonMain {
 
             Object proxy = Proxy.newProxyInstance(listenerType.getClassLoader(), new Class<?>[]{listenerType}, handler);
             target.setAccessible(true);
-            // DiPlus/TripStats behavior: empty array primes all engine events; explicit front/rear IDs
-            // are then registered so firmware variants that require IDs are also covered.
             boolean subscribedAll = false;
             try {
                 target.invoke(device, proxy, new int[0]);
@@ -301,34 +272,42 @@ public final class BydLiveTelemetryDaemonMain {
         }
     }
 
+    private static Method findEngineListenerRegister(Class<?> clazz, Class<?> listenerType) {
+        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (!(m.getName().equals("registerListener") || m.getName().equals("registerDataListener")) || p.length != 2 || p[1] != int[].class) continue;
+                if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) return m;
+            }
+        }
+        for (Method m : clazz.getMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (!(m.getName().equals("registerListener") || m.getName().equals("registerDataListener")) || p.length != 2 || p[1] != int[].class) continue;
+            if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) return m;
+        }
+        return null;
+    }
+
     private static Integer readIntFieldOrGetter(Object event, String name) {
         try {
-            Field field = event.getClass().getField(name);
-            field.setAccessible(true);
-            Object value = field.get(event);
-            return value instanceof Number ? ((Number) value).intValue() : null;
+            Field field = event.getClass().getField(name); field.setAccessible(true);
+            Object value = field.get(event); return value instanceof Number ? ((Number) value).intValue() : null;
         } catch (Throwable ignored) {}
         try {
-            Method method = event.getClass().getMethod(name);
-            method.setAccessible(true);
-            Object value = method.invoke(event);
-            return value instanceof Number ? ((Number) value).intValue() : null;
+            Method method = event.getClass().getMethod(name); method.setAccessible(true);
+            Object value = method.invoke(event); return value instanceof Number ? ((Number) value).intValue() : null;
         } catch (Throwable ignored) {}
         return null;
     }
 
     private static Double readDoubleFieldOrGetter(Object event, String name) {
         try {
-            Field field = event.getClass().getField(name);
-            field.setAccessible(true);
-            Object value = field.get(event);
-            return value instanceof Number ? ((Number) value).doubleValue() : null;
+            Field field = event.getClass().getField(name); field.setAccessible(true);
+            Object value = field.get(event); return value instanceof Number ? ((Number) value).doubleValue() : null;
         } catch (Throwable ignored) {}
         try {
-            Method method = event.getClass().getMethod(name);
-            method.setAccessible(true);
-            Object value = method.invoke(event);
-            return value instanceof Number ? ((Number) value).doubleValue() : null;
+            Method method = event.getClass().getMethod(name); method.setAccessible(true);
+            Object value = method.invoke(event); return value instanceof Number ? ((Number) value).doubleValue() : null;
         } catch (Throwable ignored) {}
         return null;
     }
@@ -355,69 +334,47 @@ public final class BydLiveTelemetryDaemonMain {
     private static int resolveFeatureId(String fieldName, int fallback) {
         try {
             Class<?> ids = Class.forName("android.hardware.bydauto.BYDAutoFeatureIds");
-            Field field = ids.getField(fieldName);
-            field.setAccessible(true);
+            Field field = ids.getField(fieldName); field.setAccessible(true);
             return field.getInt(null);
-        } catch (Throwable ignored) {
-            return fallback;
-        }
+        } catch (Throwable ignored) { return fallback; }
     }
 
     private static Context[] createContexts(String requestedPackage, int userId) throws Exception {
-        Context system = createSystemContext();
-        Context requested = tryPackageContext(system, requestedPackage, userId);
-        Context shell = wrap(system, SHELL_PACKAGE);
-        Context preferred = tryPackageContext(system, PREFERRED_PACKAGE, userId);
-        Context byd = tryPackageContext(system, FALLBACK_PACKAGE, userId);
-        Context app = tryPackageContext(system, DEFAULT_PACKAGE, userId);
-        return new Context[]{
-                shell,
-                wrap(requested, requestedPackage),
-                preferred == null ? null : wrap(preferred, PREFERRED_PACKAGE),
-                byd == null ? null : wrap(byd, FALLBACK_PACKAGE),
-                app == null ? null : wrap(app, DEFAULT_PACKAGE)
-        };
+        Context systemContext = createSystemContext();
+        Context requested = tryPackageContext(systemContext, requestedPackage, userId);
+        Context preferred = tryPackageContext(systemContext, PREFERRED_PACKAGE, userId);
+        Context byd = tryPackageContext(systemContext, FALLBACK_PACKAGE, userId);
+        Context app = tryPackageContext(systemContext, DEFAULT_PACKAGE, userId);
+        return new Context[]{wrap(requested, requestedPackage), wrap(preferred, PREFERRED_PACKAGE), wrap(byd, FALLBACK_PACKAGE), wrap(app, DEFAULT_PACKAGE), wrap(systemContext, SHELL_PACKAGE)};
     }
 
-    private static Context tryPackageContext(Context system, String packageName, int userId) {
+    private static Context tryPackageContext(Context systemContext, String packageName, int userId) {
         if (packageName == null || packageName.trim().isEmpty()) return null;
         try {
             Class<?> userHandleClass = Class.forName("android.os.UserHandle");
             Object userHandle = userHandleClass.getMethod("of", int.class).invoke(null, userId);
             Method m = Context.class.getMethod("createPackageContextAsUser", String.class, int.class, userHandleClass);
-            return (Context) m.invoke(system, packageName,
-                    Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY, userHandle);
+            return (Context)m.invoke(systemContext, packageName, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY, userHandle);
         } catch (Throwable ignored) {
-            try {
-                return system.createPackageContext(packageName,
-                        Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
-            } catch (Throwable ignoredAgain) {
-                return null;
-            }
+            try { return systemContext.createPackageContext(packageName, Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY); }
+            catch (Throwable ignored2) { return null; }
         }
     }
 
-    private static Context wrap(Context context, String packageName) {
-        return context == null ? null : new BydPermissionContext(context, packageName);
-    }
+    private static Context wrap(Context context, String packageName) { return context == null ? null : new BydPermissionContext(context, packageName); }
 
     private static Context createSystemContext() throws Exception {
         if (Looper.myLooper() == null) Looper.prepare();
-        Class<?> activityThread = Class.forName("android.app.ActivityThread");
-        Method systemMain = activityThread.getDeclaredMethod("systemMain");
-        systemMain.setAccessible(true);
+        Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+        Method systemMain = activityThreadClass.getDeclaredMethod("systemMain"); systemMain.setAccessible(true);
         Object thread = systemMain.invoke(null);
-        Method getSystemContext = activityThread.getDeclaredMethod("getSystemContext");
-        getSystemContext.setAccessible(true);
-        return (Context) getSystemContext.invoke(thread);
+        Method getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext"); getSystemContext.setAccessible(true);
+        return (Context)getSystemContext.invoke(thread);
     }
 
     private static final class BydPermissionContext extends ContextWrapper {
         private final String opPackage;
-        BydPermissionContext(Context base, String opPackage) {
-            super(base);
-            this.opPackage = opPackage == null || opPackage.isEmpty() ? DEFAULT_PACKAGE : opPackage;
-        }
+        BydPermissionContext(Context base, String opPackage) { super(base); this.opPackage = opPackage == null || opPackage.isEmpty() ? safePackageName(base) : opPackage; }
         @Override public Context getApplicationContext() { return this; }
         @Override public int checkCallingOrSelfPermission(String permission) { return PackageManager.PERMISSION_GRANTED; }
         @Override public int checkPermission(String permission, int pid, int uid) { return PackageManager.PERMISSION_GRANTED; }
@@ -426,19 +383,29 @@ public final class BydLiveTelemetryDaemonMain {
         @Override public void enforceCallingPermission(String permission, String message) {}
         @Override public void enforceCallingOrSelfPermission(String permission, String message) {}
         @Override public String getOpPackageName() { return opPackage; }
+        private static String safePackageName(Context base) { try { return base == null ? DEFAULT_PACKAGE : base.getPackageName(); } catch (Throwable ignored) { return DEFAULT_PACKAGE; } }
+    }
+
+    private static final class LaunchArgs {
+        final String packageName; final int userId;
+        private LaunchArgs(String packageName, int userId) { this.packageName = packageName; this.userId = userId; }
+        static LaunchArgs parse(String[] args) {
+            String packageName = null; int userId = 0;
+            if (args != null) for (String arg : args) {
+                if (arg != null && arg.startsWith("--package=")) packageName = arg.substring("--package=".length()).trim();
+                else if (arg != null && arg.startsWith("--requested-user-id=")) try { userId = Integer.parseInt(arg.substring("--requested-user-id=".length()).trim()); } catch (Throwable ignored) {}
+            }
+            if (packageName == null || packageName.isEmpty()) packageName = DEFAULT_PACKAGE;
+            return new LaunchArgs(packageName, userId);
+        }
     }
 
     private static final class ReflectDevice {
-        private final String className;
-        private final Context[] contexts;
-        private volatile Object device;
-        ReflectDevice(String className, Context[] contexts) {
-            this.className = className;
-            this.contexts = contexts;
-        }
+        private final String className; private final Context[] contexts; private volatile Object device;
+        ReflectDevice(String className, Context[] contexts) { this.className = className; this.contexts = contexts; }
+        boolean initialize() { return ensureDevice() != null; }
         Object ensureDevice() {
-            Object cached = device;
-            if (cached != null) return cached;
+            Object cached = device; if (cached != null) return cached;
             synchronized (this) {
                 if (device != null) return device;
                 try {
@@ -447,51 +414,30 @@ public final class BydLiveTelemetryDaemonMain {
                         if (context == null) continue;
                         Object created = invokeGetInstance(clazz, context);
                         if (created == null) created = invokeFactory(clazz, context);
-                        if (created != null && clazz.isInstance(created)) {
-                            device = created;
-                            System.out.println("BYD device " + className + " context=" + context.getPackageName());
-                            return created;
-                        }
+                        if (created != null && clazz.isInstance(created)) { device = created; return created; }
                     }
-                } catch (Throwable t) {
-                    System.err.println(className + " init failed: " + message(t));
-                }
+                } catch (Throwable t) { System.err.println(className + " init failed: " + message(t)); }
                 return null;
             }
         }
-        boolean initialize() { return ensureDevice() != null; }
-
         private Object invokeGetInstance(Class<?> clazz, Context context) {
-            try {
-                Method m = clazz.getDeclaredMethod("getInstance", Context.class);
-                m.setAccessible(true);
-                return m.invoke(null, context);
-            } catch (Throwable ignored) {
-                return null;
-            }
+            try { Method m = clazz.getDeclaredMethod("getInstance", Context.class); m.setAccessible(true); return m.invoke(null, context); } catch (Throwable ignored) { return null; }
         }
         private Object invokeFactory(Class<?> clazz, Context context) {
             String[] names = {"getInstance", "getSingleton", "create", "getDevice", "get"};
             for (String name : names) for (Method method : clazz.getDeclaredMethods()) {
                 if (!method.getName().equals(name) || !Modifier.isStatic(method.getModifiers())) continue;
                 try {
-                    method.setAccessible(true);
-                    Class<?>[] p = method.getParameterTypes();
+                    method.setAccessible(true); Class<?>[] p = method.getParameterTypes();
                     if (p.length == 0) return method.invoke(null);
                     if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return method.invoke(null, context);
                     if (p.length == 1 && p[0] == Context.class) return method.invoke(null, context);
                 } catch (Throwable ignored) {}
             }
             String[] fields = {"INSTANCE", "instance", "sInstance", "mInstance"};
-            for (String fieldName : fields) try {
-                Field field = clazz.getDeclaredField(fieldName);
-                field.setAccessible(true);
-                Object value = field.get(null);
-                if (value != null && clazz.isInstance(value)) return value;
-            } catch (Throwable ignored) {}
+            for (String fieldName : fields) try { Field field = clazz.getDeclaredField(fieldName); field.setAccessible(true); Object value = field.get(null); if (value != null && clazz.isInstance(value)) return value; } catch (Throwable ignored) {}
             for (Constructor<?> ctor : clazz.getDeclaredConstructors()) try {
-                ctor.setAccessible(true);
-                Class<?>[] p = ctor.getParameterTypes();
+                ctor.setAccessible(true); Class<?>[] p = ctor.getParameterTypes();
                 if (p.length == 0) return ctor.newInstance();
                 if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return ctor.newInstance(context);
                 if (p.length == 1 && p[0] == Context.class) return ctor.newInstance(context);
@@ -499,51 +445,25 @@ public final class BydLiveTelemetryDaemonMain {
             return null;
         }
         Double readNumber(String methodName) {
-            Object d = ensureDevice();
-            if (d == null) return null;
+            Object d = ensureDevice(); if (d == null) return null;
             try {
-                Method method = findNoArg(d.getClass(), methodName);
-                if (method == null) return null;
-                method.setAccessible(true);
-                Object result = method.invoke(d);
-                if (result instanceof Number) return ((Number) result).doubleValue();
-                if (result instanceof String) return Double.parseDouble((String) result);
-            } catch (Throwable t) {
-                System.err.println(className + "." + methodName + " failed: " + message(t));
-            }
+                Method method = findNoArgMethod(d.getClass(), methodName); if (method == null) return null;
+                method.setAccessible(true); Object result = method.invoke(d);
+                if (result instanceof Number) return ((Number)result).doubleValue();
+                if (result instanceof String) return Double.parseDouble((String)result);
+            } catch (Throwable t) { System.err.println(className + "." + methodName + " failed: " + message(t)); }
             return null;
         }
-        private Method findNoArg(Class<?> clazz, String name) {
-            for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
-                try { Method m = c.getDeclaredMethod(name); m.setAccessible(true); return m; } catch (Throwable ignored) {}
-            }
+        private Method findNoArgMethod(Class<?> clazz, String name) {
+            Class<?> current = clazz;
+            while (current != null) { try { Method m = current.getDeclaredMethod(name); m.setAccessible(true); return m; } catch (Throwable ignored) {} current = current.getSuperclass(); }
             try { return clazz.getMethod(name); } catch (Throwable ignored) { return null; }
         }
     }
 
-    private static final class LaunchArgs {
-        final String packageName;
-        final int userId;
-        private LaunchArgs(String packageName, int userId) { this.packageName = packageName; this.userId = userId; }
-        static LaunchArgs parse(String[] args) {
-            String packageName = null;
-            int userId = 0;
-            if (args != null) for (String arg : args) {
-                if (arg != null && arg.startsWith("--package=")) packageName = arg.substring("--package=".length()).trim();
-                else if (arg != null && arg.startsWith("--requested-user-id=")) {
-                    try { userId = Integer.parseInt(arg.substring("--requested-user-id=".length()).trim()); } catch (Throwable ignored) {}
-                }
-            }
-            if (packageName == null || packageName.isEmpty()) packageName = DEFAULT_PACKAGE;
-            return new LaunchArgs(packageName, userId);
-        }
-    }
-
     private static String message(Throwable t) {
-        Throwable current = t;
-        while (current.getCause() != null && current.getCause() != current) current = current.getCause();
-        String m = current.getMessage();
-        return (m == null || m.isEmpty()) ? current.getClass().getName() : current.getClass().getName() + ": " + m;
+        Throwable current = t; while (current.getCause() != null && current.getCause() != current) current = current.getCause();
+        String m = current.getMessage(); return (m == null || m.isEmpty()) ? current.getClass().getName() : current.getClass().getName() + ": " + m;
     }
 
     private static final class HandlerThreadCompat {
