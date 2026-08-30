@@ -28,13 +28,15 @@ import java.util.concurrent.TimeUnit;
  * after filtering the requested feature IDs through BYDAutoDeviceFeaturesMap.
  * This class reproduces that path instead of polling getMotorSpeed().
  *
- * A disassembly of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms the
- * HAL calls the listener's onDataEventChanged(int type, BYDAutoEventValue value)
- * for a registered feature, not onEngineSpeedChanged(int) directly -- DiPlus's
- * own listener only reaches onEngineSpeedChanged by forwarding into it itself
- * from inside onDataEventChanged. FrontMotorListener below overrides both so
- * it still catches the value regardless of which entry point this vehicle's
- * HAL build actually invokes.
+ * A full decompile of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms
+ * the HAL calls the listener's onDataEventChanged(int type, BYDAutoEventValue
+ * value) for a registered feature, not onEngineSpeedChanged(int) directly.
+ * For BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED specifically, DiPlus's own
+ * listener handles it entirely inside onDataEventChanged (storing
+ * -value.intValue) and never calls onEngineSpeedChanged for it -- that method
+ * fires only for a separate, unrelated feature ID. FrontMotorListener below
+ * mirrors that: it keys off onDataEventChanged and the registered feature ID
+ * only.
  */
 public final class BydDiPlusEngineTelemetryDaemonMain {
     private static final String HOST = "127.0.0.1";
@@ -351,13 +353,15 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
             this.expectedFeatureId = expectedFeatureId;
             this.sink = sink;
         }
-        // Primary HAL entry point confirmed by disassembly; DiPlus itself
-        // only reaches onEngineSpeedChanged via a manual call from here.
+        // DiPlus's own onDataEventChanged for ENGINE_FRONT_MOTOR_SPEED stores
+        // -value.intValue directly and never calls onEngineSpeedChanged; that
+        // method fires for a distinct, unrelated feature ID (generic "engine
+        // speed"), so it must NOT be treated as a front-motor-speed fallback
+        // here -- doing so would risk mixing in an unrelated signal. Math.abs
+        // in the sink already makes DiPlus's sign convention irrelevant.
         @Override public void onDataEventChanged(int type, BYDAutoEventValue value) {
             if (type == expectedFeatureId && value != null) sink.accept(value.intValue);
         }
-        // Kept as a defensive fallback in case this HAL build calls it directly.
-        @Override public void onEngineSpeedChanged(int value) { sink.accept(value); }
     }
 
     private static final class LaunchArgs {

@@ -8,14 +8,18 @@ import android.hardware.bydauto.BYDAutoEventValue;
  * The vehicle runtime supplies the real class from bmmcamera.jar because the
  * privileged daemon is launched with that jar before the APK on its classpath.
  *
- * A disassembly of com.van.diplus (see docs/BYD_LIVE_INTEGRATION.md) confirms
- * the HAL's actual dispatch entry point for a registered feature (front motor
- * speed included) is onDataEventChanged(int type, BYDAutoEventValue value),
- * where `type` is the registered feature ID. onEngineSpeedChanged is not
- * called by the HAL directly for that feature in that trace; DiPlus's own
- * listener forwards into it manually. A listener that only overrides
- * onEngineSpeedChanged can silently receive nothing, so callers should
- * override onDataEventChanged.
+ * A full decompile of com.van.diplus (see docs/BYD_LIVE_INTEGRATION.md)
+ * confirms the HAL's actual dispatch entry point for a registered feature is
+ * onDataEventChanged(int type, BYDAutoEventValue value), where `type` is the
+ * registered feature ID. For BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED
+ * specifically, DiPlus's own listener handles it entirely inside
+ * onDataEventChanged and never calls onEngineSpeedChanged for it.
+ * onEngineSpeedChanged instead fires for a separate, unrelated feature ID
+ * (DiPlus's own generic "engine speed", fed from getEngineSpeed()) -- it is
+ * not a fallback path for front motor speed and should not be treated as
+ * one. A listener that only overrides onEngineSpeedChanged can silently
+ * receive nothing for front motor speed, so callers must override
+ * onDataEventChanged instead.
  */
 public class AbsBYDAutoEngineListener {
     public void onDataEventChanged(int type, BYDAutoEventValue value) {}

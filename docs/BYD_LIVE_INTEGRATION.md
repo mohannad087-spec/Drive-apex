@@ -95,38 +95,53 @@ privileged daemon process alongside the existing reflection-based readers
 (`BydDiPlusEngineTelemetryDaemonMain`, `DirectBydTelemetryReader`), not the
 main app process, since the app itself has no direct BYD HAL access.
 
-## Confirmed HAL listener dispatch (from a DiPlus disassembly)
+## Confirmed HAL listener dispatch (from a full DiPlus decompile)
 
-A partial disassembly of `com.van.diplus` (`classes2.dex` from a DiPlus APK)
-confirmed a mechanism our engine listeners were missing:
+A first pass analyzed a small hand-transcribed slice of `com.van.diplus`
+(`classes2.dex` from a DiPlus APK). A follow-up full decompile of the actual
+APK (androguard, DAD decompiler, all of `classes.dex`/`classes2.dex`)
+confirmed that read and resolved the one piece it had left uncertain: the
+exact feature ID and the exact branch front motor speed takes.
 
 - `AbsBYDAutoEngineListener`'s real dispatch entry point for a registered
   feature is `onDataEventChanged(int type, BYDAutoEventValue value)`, where
-  `type` is the feature ID that changed. This is confirmed 100% from the
-  bytecode, not inferred.
-- `onEngineSpeedChanged(int)` is **not** called by the HAL directly for the
-  front motor speed feature in that trace. DiPlus's own listener only reaches
-  it by manually forwarding `value.intValue` into it from inside its
-  `onDataEventChanged` override, keyed on `type`.
+  `type` is the feature ID that changed. Confirmed from decompiled source,
+  not inferred.
 - `BYDAutoEventValue` exposes plain public fields `intValue` (int) and
   `doubleValue` (double), read/written directly — not getter methods.
+- DiPlus resolves each feature ID it cares about through a small helper
+  (`z.d.a(primary, fallback)`) that tries a live `sget` against the real
+  `android.hardware.bydauto.BYDAutoFeatureIds` field first, falling back to a
+  literal `int` if that field can't be resolved (`NoClassDefFoundError`).
+  Decompiling that helper's inputs for the front-motor-speed constant shows:
+  primary = `android.hardware.bydauto.BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED`,
+  fallback = **`1141899272`** — the exact same literal this codebase already
+  uses everywhere (`BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED`,
+  `FALLBACK_FRONT_MOTOR_SPEED`, `FRONT_RPM_FALLBACK`, etc.). That value is
+  now cross-verified against DiPlus's own compiled fallback, independent of
+  this codebase's own history.
+- In `onDataEventChanged`, the branch for that exact feature ID reads
+  `value.intValue`, negates it, and stores it directly — **it never calls
+  `onEngineSpeedChanged`**. `onEngineSpeedChanged` fires only from a
+  different branch, for a separate, unrelated feature ID that DiPlus feeds
+  from `BYDAutoEngineDevice.getEngineSpeed()` (DiPlus's own generic "engine
+  speed", most likely combustion-engine RPM on a hybrid, not the front
+  motor). Treating `onEngineSpeedChanged` as a front-motor-speed fallback, as
+  an earlier version of this fix did, risks mixing in that unrelated signal
+  instead of doing nothing.
 
 Before this was found, `BydDiPlusEngineTelemetryDaemonMain`'s
-`FrontMotorListener` only overrode `onEngineSpeedChanged`, which the HAL may
-never call for this feature — a plausible explanation for the front motor
-speed feature repeatedly failing to update across earlier fixes. It now
-overrides `onDataEventChanged` (checked against the registered feature ID)
-as the primary path, keeping `onEngineSpeedChanged` only as a defensive
-fallback. `FrontMotorSpeedReader` follows the same pattern.
-
-The exact integer value of the front motor speed feature ID could not be
-confirmed from this disassembly (the constant-holding class was merged by
-R8 into an unrelated-looking synthetic class), so `BYDAutoFeatureIds`
-continues to use the value already verified elsewhere in this codebase
-against a working DiPlus/Overdrive collector path. If front motor speed
-still does not update after this fix, that ID is the next thing to
-re-verify (e.g. by observing live telemetry on the target vehicle/software
-version), not the listener dispatch mechanism.
+`FrontMotorListener` only overrode `onEngineSpeedChanged`, which the HAL
+never calls for this feature — the confirmed explanation for the front
+motor speed feature repeatedly failing to update across earlier fixes. It
+now overrides only `onDataEventChanged`, checked against the registered
+feature ID. `FrontMotorSpeedReader` follows the same pattern. Neither
+listener re-applies DiPlus's sign negation; both already take the absolute
+value downstream, which makes the sign convention irrelevant. DiPlus also
+applies no min/max clamp on this branch (unlike the 0..8000 clamp on the
+unrelated `onEngineSpeedChanged` branch), consistent with EV front motor
+RPM legitimately exceeding a combustion engine's redline -- this codebase's
+existing 25,000 RPM sanity ceiling was left as is.
 
 ## Important
 

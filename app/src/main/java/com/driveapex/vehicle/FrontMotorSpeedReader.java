@@ -18,11 +18,14 @@ import android.hardware.bydauto.engine.BYDAutoEngineDevice;
  * BydDiPlusEngineTelemetryDaemonMain/DirectBydTelemetryReader for callers
  * that can link directly against the vendor jar.
  *
- * A disassembly of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms
+ * A full decompile of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms
  * the HAL's actual dispatch entry point for a registered feature is
- * onDataEventChanged(int type, BYDAutoEventValue value), not
- * onEngineSpeedChanged(int) directly, so that is what this listener relies
- * on. onEngineSpeedChanged is also overridden as a defensive fallback.
+ * onDataEventChanged(int type, BYDAutoEventValue value). For
+ * ENGINE_FRONT_MOTOR_SPEED specifically, DiPlus handles it entirely inside
+ * onDataEventChanged (storing -value.intValue) and never calls
+ * onEngineSpeedChanged for it -- that method fires only for a separate,
+ * unrelated feature ID, so it is deliberately not overridden here to avoid
+ * mixing in an unrelated signal.
  */
 public final class FrontMotorSpeedReader {
     private static final int MAX_RPM = 25_000;
@@ -33,11 +36,6 @@ public final class FrontMotorSpeedReader {
         @Override
         public void onDataEventChanged(int type, BYDAutoEventValue value) {
             if (type == FRONT_MOTOR_FEATURE_ID && value != null) accept(value.intValue);
-        }
-
-        @Override
-        public void onEngineSpeedChanged(int value) {
-            accept(value);
         }
     };
 
