@@ -6,7 +6,7 @@ on:
 
 jobs:
   fix:
-    if: ${{ !contains(github.event.head_commit.message, 'fix: correct daemon listener invocation') }}
+    if: "${{ !contains(github.event.head_commit.message, 'fix: correct daemon listener invocation') }}"
     runs-on: ubuntu-latest
     permissions:
       contents: write
