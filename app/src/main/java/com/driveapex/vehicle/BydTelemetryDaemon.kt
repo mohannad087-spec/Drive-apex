@@ -5,6 +5,9 @@ import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import java.io.BufferedWriter
 import java.io.OutputStreamWriter
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -16,6 +19,8 @@ object BydTelemetryDaemon {
     private const val PORT = 18765
     private const val SCAN_PORT = 18766
     private const val POLL_MS = 50L
+    private const val FALLBACK_FRONT_MOTOR_SPEED_ID = 1141899272
+    private const val FALLBACK_REAR_MOTOR_SPEED_ID = 1141899274
 
     private data class ScanType(val clazz: Class<*>, val name: String)
     private data class ScanDevice(val name: String, val device: ReflectDevice)
@@ -26,6 +31,7 @@ object BydTelemetryDaemon {
         val speed = ReflectDevice("android.hardware.bydauto.speed.BYDAutoSpeedDevice", context)
         val motor = ReflectDevice("android.hardware.bydauto.motor.BYDAutoMotorDevice", context)
         val engine = ReflectDevice("android.hardware.bydauto.engine.BYDAutoEngineDevice", context)
+        engine.registerFrontMotorSpeedListener()
         val server = ServerSocket(PORT, 4, InetAddress.getByName(HOST))
         val scanServer = ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST))
         Runtime.getRuntime().addShutdownHook(Thread {
@@ -52,54 +58,56 @@ object BydTelemetryDaemon {
                 val speedKph = speed.readNumber("getCurrentSpeed")
                 val throttlePct = speed.readNumber("getAccelerateDeepness")
                 val brakePct = speed.readNumber("getBrakeDeepness")
+                val eventRpm = engine.frontMotorSpeedEventRpm()
                 val motorRpm = motor.readNumber("getMotorSpeed")
                 val engineRpm = engine.readNumber("getEngineSpeed")
                 val rpm = when {
+                    eventRpm != null && eventRpm.isFinite() && eventRpm >= 0.0 -> eventRpm
                     motorRpm != null && motorRpm.isFinite() && motorRpm >= 0.0 -> motorRpm
                     engineRpm != null && engineRpm.isFinite() && engineRpm >= 0.0 -> engineRpm
                     else -> 0.0
                 }
-                writer.write("$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},BYD_DAEMON")
+                writer.write("$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},BYD_ENGINE_FRONT_MOTOR_EVENT")
                 writer.newLine(); writer.flush(); Thread.sleep(POLL_MS)
             }
         }
     }
 
-    /** Read-only generic HAL scanner based on OverDrive's get(int[], Class) pattern. */
+    /** Read-only scanner. It now probes the exact BYD motor feature IDs used by DiPlus first. */
     private fun serveScan(socket: Socket, motor: ReflectDevice, engine: ReflectDevice) {
         socket.use {
             val writer = BufferedWriter(OutputStreamWriter(it.getOutputStream(), Charsets.UTF_8))
             writer.write("SCAN_READY\n"); writer.flush()
-            val candidates = 4080..4120
-            val types: List<ScanType> = listOf(
-                ScanType(Int::class.javaPrimitiveType!!, "int"),
-                ScanType(Float::class.javaPrimitiveType!!, "float"),
-                ScanType(Double::class.javaPrimitiveType!!, "double"),
-                ScanType(Long::class.javaPrimitiveType!!, "long"),
-                ScanType(Short::class.javaPrimitiveType!!, "short")
-            )
-            val devices: List<ScanDevice> = listOf(
-                ScanDevice("MOTOR", motor),
-                ScanDevice("ENGINE", engine)
-            )
-            for (deviceEntry: ScanDevice in devices) {
-                val name = deviceEntry.name
-                val device = deviceEntry.device
-                for (typeEntry: ScanType in types) {
-                    val type = typeEntry.clazz
-                    val typeName = typeEntry.name
-                    for (id in candidates) {
-                        val result: Pair<Any, String>? = device.genericGet(id, type)
-                        if (result != null) {
-                            writer.write("HIT,$name,$id,$typeName,${result.second}\n")
-                            writer.flush()
-                        }
+            val frontId = resolveFeatureId("ENGINE_FRONT_MOTOR_SPEED", FALLBACK_FRONT_MOTOR_SPEED_ID)
+            val rearId = resolveFeatureId("ENGINE_REAR_MOTOR_SPEED", FALLBACK_REAR_MOTOR_SPEED_ID)
+            writer.write("FEATURE,ENGINE_FRONT_MOTOR_SPEED,$frontId\n")
+            writer.write("FEATURE,ENGINE_REAR_MOTOR_SPEED,$rearId\n")
+            writer.write("EVENT_FRONT_MOTOR_SPEED,${engine.frontMotorSpeedEventRpm() ?: 0.0}\n")
+            writer.flush()
+            for ((name, device, id) in listOf(
+                Triple("ENGINE_FRONT_MOTOR_SPEED", engine, frontId),
+                Triple("ENGINE_REAR_MOTOR_SPEED", engine, rearId),
+                Triple("MOTOR_GET_MOTOR_SPEED", motor, 0)
+            )) {
+                if (id != 0) {
+                    val result = device.readFeatureVariants(id)
+                    for ((typeName, value) in result) {
+                        writer.write("HIT,$name,$id,$typeName,$value\n")
+                        writer.flush()
                     }
+                } else {
+                    val value = motor.readNumber("getMotorSpeed")
+                    if (value != null) writer.write("HIT,$name,GETTER,double,$value\n")
                 }
             }
             writer.write("SCAN_DONE\n"); writer.flush()
         }
     }
+
+    private fun resolveFeatureId(fieldName: String, fallback: Int): Int = runCatching {
+        val clazz = Class.forName("android.hardware.bydauto.BYDAutoFeatureIds")
+        clazz.getField(fieldName).getInt(null)
+    }.getOrDefault(fallback)
 
     private fun createPackageContext(): Context {
         val c = Class.forName("android.app.ActivityThread")
@@ -120,6 +128,9 @@ object BydTelemetryDaemon {
 
     private class ReflectDevice(private val className: String, private val context: Context) {
         @Volatile private var device: Any? = null
+        @Volatile private var frontMotorEventRpm: Double? = null
+        @Volatile private var frontMotorListenerRegistered = false
+
         private fun ensure(): Any? {
             device?.let { return it }
             return runCatching {
@@ -128,27 +139,105 @@ object BydTelemetryDaemon {
                 device = created; created
             }.getOrNull()
         }
+
         fun readNumber(methodName: String): Double? = runCatching {
             val d = ensure() ?: return null
             (d.javaClass.getMethod(methodName).invoke(d) as Number).toDouble()
         }.getOrNull()
-        fun genericGet(featureId: Int, type: Class<*>): Pair<Any, String>? = runCatching {
+
+        fun registerFrontMotorSpeedListener(): Boolean = synchronized(this) {
+            if (frontMotorListenerRegistered) return true
+            val d = ensure() ?: return false
+            runCatching {
+                val listenerInterface = Class.forName("android.hardware.IBYDAutoListener")
+                if (!listenerInterface.isInterface) return false
+                val featureId = resolveFeatureId("ENGINE_FRONT_MOTOR_SPEED", FALLBACK_FRONT_MOTOR_SPEED_ID)
+                val listener = Proxy.newProxyInstance(
+                    listenerInterface.classLoader,
+                    arrayOf(listenerInterface),
+                    InvocationHandler { _, method, args ->
+                        if (method.name == "onDataEventChanged" && args != null && args.size >= 2) {
+                            val incomingId = (args[0] as? Number)?.toInt()
+                            if (incomingId == featureId) {
+                                val event = args[1]
+                                frontMotorEventRpm = extractEventNumber(event)
+                            }
+                        }
+                        when (method.returnType) {
+                            java.lang.Boolean.TYPE -> false
+                            java.lang.Integer.TYPE -> 0
+                            java.lang.Long.TYPE -> 0L
+                            java.lang.Float.TYPE -> 0f
+                            java.lang.Double.TYPE -> 0.0
+                            else -> null
+                        }
+                    }
+                )
+                val register = d.javaClass.methods.firstOrNull { m ->
+                    m.name == "registerListener" &&
+                        m.parameterTypes.size == 2 &&
+                        m.parameterTypes[0] == listenerInterface &&
+                        m.parameterTypes[1] == IntArray::class.java
+                } ?: d.javaClass.methods.firstOrNull { m ->
+                    m.name == "registerListener" &&
+                        m.parameterTypes.size == 1 &&
+                        m.parameterTypes[0] == listenerInterface
+                } ?: return false
+                register.isAccessible = true
+                if (register.parameterTypes.size == 2) register.invoke(d, listener, intArrayOf(featureId))
+                else register.invoke(d, listener)
+                frontMotorListenerRegistered = true
+                System.out.println("BYD front motor event listener registered feature=$featureId")
+                true
+            }.getOrElse {
+                System.err.println("BYD front motor listener failed: ${it.message}")
+                false
+            }
+        }
+
+        fun frontMotorSpeedEventRpm(): Double? = frontMotorEventRpm
+
+        fun readFeatureVariants(featureId: Int): List<Pair<String, String>> {
+            val out = ArrayList<Pair<String, String>>()
+            for ((clazz, name) in listOf(
+                Int::class.javaPrimitiveType!! to "int",
+                Float::class.javaPrimitiveType!! to "float",
+                Double::class.javaPrimitiveType!! to "double",
+                Long::class.javaPrimitiveType!! to "long",
+                Short::class.javaPrimitiveType!! to "short"
+            )) {
+                genericGet(featureId, clazz)?.let { out.add(name to it.toString()) }
+            }
+            return out
+        }
+
+        private fun genericGet(featureId: Int, type: Class<*>): Any? = runCatching {
             val d = ensure() ?: return null
             val method = d.javaClass.methods.firstOrNull { m ->
                 m.name == "get" && m.parameterTypes.size == 2 &&
                     m.parameterTypes[0] == IntArray::class.java && m.parameterTypes[1] == Class::class.java
             } ?: return null
             val value = method.invoke(d, intArrayOf(featureId), type) ?: return null
-            val scalar: Any = when (value) {
+            when (value) {
                 is Number -> value
-                is IntArray -> value.firstOrNull() ?: return null
-                is LongArray -> value.firstOrNull() ?: return null
-                is FloatArray -> value.firstOrNull() ?: return null
-                is DoubleArray -> value.firstOrNull() ?: return null
-                is ShortArray -> value.firstOrNull() ?: return null
-                else -> return null
+                is IntArray -> value.firstOrNull()
+                is LongArray -> value.firstOrNull()
+                is FloatArray -> value.firstOrNull()
+                is DoubleArray -> value.firstOrNull()
+                is ShortArray -> value.firstOrNull()
+                else -> null
             }
-            scalar to scalar.toString()
+        }.getOrNull()
+
+        private fun extractEventNumber(event: Any?): Double? = runCatching {
+            if (event == null) return null
+            val clazz = event.javaClass
+            val intValue = runCatching { clazz.getField("intValue").getInt(event).toDouble() }.getOrNull()
+            if (intValue != null) return intValue
+            val doubleValue = runCatching { clazz.getField("doubleValue").getDouble(event) }.getOrNull()
+            if (doubleValue != null) return doubleValue
+            val floatValue = runCatching { clazz.getField("floatValue").getFloat(event).toDouble() }.getOrNull()
+            floatValue
         }.getOrNull()
     }
 }
