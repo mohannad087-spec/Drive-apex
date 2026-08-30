@@ -1,0 +1,33 @@
+name: One-shot daemon fix
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, 'fix: correct daemon listener invocation') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix listener invocation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java')
+          s = p.read_text()
+          old = 'boolean listenerRegistered = engine.registerDiPlusEngineListener(snapshot);'
+          new = 'boolean listenerRegistered = registerDiPlusEngineListener(engine, snapshot);'
+          if old not in s:
+              raise SystemExit('expected listener invocation not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java
+          git commit -m 'fix: correct daemon listener invocation'
+          git push
