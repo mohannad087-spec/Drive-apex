@@ -3,6 +3,7 @@ package com.driveapex.vehicle;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
+import android.hardware.bydauto.BYDAutoEventValue;
 import android.hardware.bydauto.engine.AbsBYDAutoEngineListener;
 import android.os.Looper;
 
@@ -26,6 +27,14 @@ import java.util.concurrent.TimeUnit;
  * DiPlus registers an AbsBYDAutoEngineListener with registerListener(listener, featureIds)
  * after filtering the requested feature IDs through BYDAutoDeviceFeaturesMap.
  * This class reproduces that path instead of polling getMotorSpeed().
+ *
+ * A disassembly of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms the
+ * HAL calls the listener's onDataEventChanged(int type, BYDAutoEventValue value)
+ * for a registered feature, not onEngineSpeedChanged(int) directly -- DiPlus's
+ * own listener only reaches onEngineSpeedChanged by forwarding into it itself
+ * from inside onDataEventChanged. FrontMotorListener below overrides both so
+ * it still catches the value regardless of which entry point this vehicle's
+ * HAL build actually invokes.
  */
 public final class BydDiPlusEngineTelemetryDaemonMain {
     private static final String HOST = "127.0.0.1";
@@ -292,14 +301,15 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 Method typeMethod = d.getClass().getMethod("getDevicetype");
                 snapshot.deviceType = ((Number) typeMethod.invoke(d)).intValue();
                 int[] featureIds = filterFeatureIdsForDevice(snapshot.deviceType, snapshot.featureId);
-                FrontMotorListener listener = new FrontMotorListener(value -> {
+                RpmSink sink = value -> {
                     if (value < 0) value = Math.abs(value);
                     if (value <= MAX_RPM && value != 8191 && value != 16383 && value != 32767 && value != 65535) {
                         snapshot.frontRpm = value;
                         snapshot.timestamp = System.currentTimeMillis();
                         snapshot.valid = true;
                     }
-                });
+                };
+                FrontMotorListener listener = new FrontMotorListener(snapshot.featureId, sink);
 
                 Method twoArg = null;
                 for (Method m : d.getClass().getMethods()) {
@@ -335,8 +345,18 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
     private interface RpmSink { void accept(int rpm); }
 
     private static final class FrontMotorListener extends AbsBYDAutoEngineListener {
+        private final int expectedFeatureId;
         private final RpmSink sink;
-        FrontMotorListener(RpmSink sink) { this.sink = sink; }
+        FrontMotorListener(int expectedFeatureId, RpmSink sink) {
+            this.expectedFeatureId = expectedFeatureId;
+            this.sink = sink;
+        }
+        // Primary HAL entry point confirmed by disassembly; DiPlus itself
+        // only reaches onEngineSpeedChanged via a manual call from here.
+        @Override public void onDataEventChanged(int type, BYDAutoEventValue value) {
+            if (type == expectedFeatureId && value != null) sink.accept(value.intValue);
+        }
+        // Kept as a defensive fallback in case this HAL build calls it directly.
         @Override public void onEngineSpeedChanged(int value) { sink.accept(value); }
     }
 

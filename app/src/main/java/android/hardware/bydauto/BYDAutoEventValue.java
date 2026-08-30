@@ -5,17 +5,12 @@ package android.hardware.bydauto;
  *
  * The vehicle runtime supplies the real class from bmmcamera.jar because the
  * privileged daemon is launched with that jar before the APK on its classpath.
- * BYDAutoEngineDevice#get(int[], Class) can return this wrapper instead of a
- * raw Number, so callers must unwrap it via intValue() rather than casting.
+ * Field names/types are confirmed from a disassembly of com.van.diplus (see
+ * docs/BYD_LIVE_INTEGRATION.md): the real class exposes plain public fields
+ * `intValue` and `doubleValue`, read and written directly (no getters), so
+ * callers must not cast this to Number.
  */
 public class BYDAutoEventValue {
-    protected int value;
-
-    public int getValue() {
-        return value;
-    }
-
-    public int intValue() {
-        return value;
-    }
+    public int intValue;
+    public double doubleValue;
 }

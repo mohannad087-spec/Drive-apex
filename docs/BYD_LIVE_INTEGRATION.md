@@ -95,6 +95,39 @@ privileged daemon process alongside the existing reflection-based readers
 (`BydDiPlusEngineTelemetryDaemonMain`, `DirectBydTelemetryReader`), not the
 main app process, since the app itself has no direct BYD HAL access.
 
+## Confirmed HAL listener dispatch (from a DiPlus disassembly)
+
+A partial disassembly of `com.van.diplus` (`classes2.dex` from a DiPlus APK)
+confirmed a mechanism our engine listeners were missing:
+
+- `AbsBYDAutoEngineListener`'s real dispatch entry point for a registered
+  feature is `onDataEventChanged(int type, BYDAutoEventValue value)`, where
+  `type` is the feature ID that changed. This is confirmed 100% from the
+  bytecode, not inferred.
+- `onEngineSpeedChanged(int)` is **not** called by the HAL directly for the
+  front motor speed feature in that trace. DiPlus's own listener only reaches
+  it by manually forwarding `value.intValue` into it from inside its
+  `onDataEventChanged` override, keyed on `type`.
+- `BYDAutoEventValue` exposes plain public fields `intValue` (int) and
+  `doubleValue` (double), read/written directly — not getter methods.
+
+Before this was found, `BydDiPlusEngineTelemetryDaemonMain`'s
+`FrontMotorListener` only overrode `onEngineSpeedChanged`, which the HAL may
+never call for this feature — a plausible explanation for the front motor
+speed feature repeatedly failing to update across earlier fixes. It now
+overrides `onDataEventChanged` (checked against the registered feature ID)
+as the primary path, keeping `onEngineSpeedChanged` only as a defensive
+fallback. `FrontMotorSpeedReader` follows the same pattern.
+
+The exact integer value of the front motor speed feature ID could not be
+confirmed from this disassembly (the constant-holding class was merged by
+R8 into an unrelated-looking synthetic class), so `BYDAutoFeatureIds`
+continues to use the value already verified elsewhere in this codebase
+against a working DiPlus/Overdrive collector path. If front motor speed
+still does not update after this fix, that ID is the next thing to
+re-verify (e.g. by observing live telemetry on the target vehicle/software
+version), not the listener dispatch mechanism.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.
