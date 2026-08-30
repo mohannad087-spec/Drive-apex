@@ -3,14 +3,18 @@ package com.driveapex.vehicle
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
+import org.json.JSONObject
 import java.io.BufferedWriter
 import java.io.OutputStreamWriter
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
+import java.net.URLEncoder
 
 /** BYD telemetry daemon launched through ADB/app_process (UID 2000). */
 object BydTelemetryDaemon {
@@ -19,8 +23,12 @@ object BydTelemetryDaemon {
     private const val PORT = 18765
     private const val SCAN_PORT = 18766
     private const val POLL_MS = 50L
+    private const val DIPUS_MOTOR_CACHE_MS = 100L
     private const val FALLBACK_FRONT_MOTOR_SPEED_ID = 1141899272
     private const val FALLBACK_REAR_MOTOR_SPEED_ID = 1141899274
+
+    @Volatile private var cachedDiPlusFrontMotorRpm: Double? = null
+    @Volatile private var cachedDiPlusFrontMotorAtMs = 0L
 
     private data class ScanType(val clazz: Class<*>, val name: String)
     private data class ScanDevice(val name: String, val device: ReflectDevice)
@@ -58,18 +66,72 @@ object BydTelemetryDaemon {
                 val speedKph = speed.readNumber("getCurrentSpeed")
                 val throttlePct = speed.readNumber("getAccelerateDeepness")
                 val brakePct = speed.readNumber("getBrakeDeepness")
+
+                // DiPlus is the verified live source for this exact signal on the car:
+                // parameter 8 = 前电机转速 (Front-motor RPM). Use it first; keep the
+                // existing BYD HAL/event paths only as fallbacks. No other metric changes.
+                val diPlusFrontRpm = readDiPlusFrontMotorSpeed()
                 val eventRpm = engine.frontMotorSpeedEventRpm()
                 val motorRpm = motor.readNumber("getMotorSpeed")
                 val engineRpm = engine.readNumber("getEngineSpeed")
                 val rpm = when {
+                    diPlusFrontRpm != null && diPlusFrontRpm.isFinite() && diPlusFrontRpm >= 0.0 -> diPlusFrontRpm
                     eventRpm != null && eventRpm.isFinite() && eventRpm >= 0.0 -> eventRpm
                     motorRpm != null && motorRpm.isFinite() && motorRpm >= 0.0 -> motorRpm
                     engineRpm != null && engineRpm.isFinite() && engineRpm >= 0.0 -> engineRpm
                     else -> 0.0
                 }
-                writer.write("$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},BYD_ENGINE_FRONT_MOTOR_EVENT")
+                val source = when {
+                    diPlusFrontRpm != null -> "DIPLUS_FRONT_MOTOR_SPEED"
+                    eventRpm != null -> "BYD_ENGINE_FRONT_MOTOR_EVENT"
+                    motorRpm != null -> "BYD_MOTOR_GETTER"
+                    engineRpm != null -> "BYD_ENGINE_GETTER"
+                    else -> "NONE"
+                }
+                writer.write("$timestamp,$rpm,${speedKph ?: 0.0},${throttlePct ?: 0.0},${brakePct ?: 0.0},$source")
                 writer.newLine(); writer.flush(); Thread.sleep(POLL_MS)
             }
+        }
+    }
+
+    /**
+     * Verified DiPlus live path: GET /api/getVal?name=前电机转速&status=true.
+     * DiPlus documents parameter 8 as 前电机转速 (front-motor RPM).
+     * Cached for 100 ms so the 50 ms telemetry loop does not hammer localhost.
+     */
+    private fun readDiPlusFrontMotorSpeed(): Double? {
+        val now = System.currentTimeMillis()
+        if (now - cachedDiPlusFrontMotorAtMs < DIPUS_MOTOR_CACHE_MS) {
+            return cachedDiPlusFrontMotorRpm
+        }
+        synchronized(this) {
+            val secondNow = System.currentTimeMillis()
+            if (secondNow - cachedDiPlusFrontMotorAtMs < DIPUS_MOTOR_CACHE_MS) {
+                return cachedDiPlusFrontMotorRpm
+            }
+            val value = runCatching {
+                val encodedName = URLEncoder.encode("前电机转速", "UTF-8")
+                val connection = (URL("http://127.0.0.1:8988/api/getVal?name=$encodedName&status=true").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 500
+                    readTimeout = 500
+                    useCaches = false
+                }
+                try {
+                    if (connection.responseCode !in 200..299) return@runCatching null
+                    val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    val json = JSONObject(body)
+                    if (!json.optBoolean("success", false)) return@runCatching null
+                    val raw = json.optString("val", "").trim()
+                    if (raw.isEmpty() || raw.startsWith("{") || raw.startsWith("[")) return@runCatching null
+                    raw.replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0.0 }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrNull()
+            cachedDiPlusFrontMotorRpm = value
+            cachedDiPlusFrontMotorAtMs = secondNow
+            return value
         }
     }
 
@@ -82,6 +144,7 @@ object BydTelemetryDaemon {
             val rearId = resolveFeatureId("ENGINE_REAR_MOTOR_SPEED", FALLBACK_REAR_MOTOR_SPEED_ID)
             writer.write("FEATURE,ENGINE_FRONT_MOTOR_SPEED,$frontId\n")
             writer.write("FEATURE,ENGINE_REAR_MOTOR_SPEED,$rearId\n")
+            writer.write("DIPLUS_FRONT_MOTOR_SPEED,${readDiPlusFrontMotorSpeed() ?: 0.0}\n")
             writer.write("EVENT_FRONT_MOTOR_SPEED,${engine.frontMotorSpeedEventRpm() ?: 0.0}\n")
             writer.flush()
             for ((name, device, id) in listOf(
