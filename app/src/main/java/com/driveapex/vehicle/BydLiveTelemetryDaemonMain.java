@@ -9,8 +9,10 @@ import java.io.BufferedWriter;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -21,9 +23,11 @@ import java.util.concurrent.TimeUnit;
 /**
  * Shell-UID BYD telemetry daemon.
  *
- * Front Motor Speed is read through the typed BYD engine callback used by DiPlus:
- * AbsBYDAutoEngineListener.onEngineSpeedChanged(int). The getter path is kept only
- * as a fallback when no typed callback has been received yet.
+ * Front Motor Speed follows the path found in the supplied DiPlus APK and its
+ * matching open-source implementation: BYDAutoEngineDevice -> registerListener
+ * (android.hardware.IBYDAutoListener, int[]) -> onDataEventChanged(featureId,
+ * BYDAutoEventValue) -> intValue. The direct getMotorSpeed() getter remains only
+ * as a fallback when the event stream has not produced a value yet.
  */
 public final class BydLiveTelemetryDaemonMain {
     private static final String DEFAULT_PACKAGE = "com.driveapex";
@@ -35,7 +39,10 @@ public final class BydLiveTelemetryDaemonMain {
     private static final int SCAN_PORT = 18766;
     private static final long WATCHDOG_MS = 500L;
     private static final double MAX_RPM = 25000.0;
+
+    // DiPlus/TripStats confirmed feature fallback; runtime resolution wins when present.
     private static final int FRONT_RPM_FALLBACK = 1141899272;
+    private static final int REAR_RPM_FALLBACK = 621805576;
 
     private BydLiveTelemetryDaemonMain() {}
 
@@ -48,8 +55,10 @@ public final class BydLiveTelemetryDaemonMain {
         volatile boolean valid;
         volatile long eventCount;
         volatile int frontFeatureId = FRONT_RPM_FALLBACK;
+        volatile int rearFeatureId = REAR_RPM_FALLBACK;
         volatile long frontRpmAt;
         volatile int frontRpm;
+        volatile int rearRpm;
         volatile boolean frontListenerRegistered;
         volatile String frontListenerMethod = "NOT_REGISTERED";
     }
@@ -65,6 +74,7 @@ public final class BydLiveTelemetryDaemonMain {
             ReflectDevice engine = new ReflectDevice("android.hardware.bydauto.engine.BYDAutoEngineDevice", contexts);
             TelemetrySnapshot snapshot = new TelemetrySnapshot();
             snapshot.frontFeatureId = resolveFeatureId("ENGINE_FRONT_MOTOR_SPEED", FRONT_RPM_FALLBACK);
+            snapshot.rearFeatureId = resolveFeatureId("ENGINE_REAR_MOTOR_SPEED", REAR_RPM_FALLBACK);
 
             halThread = new HandlerThreadCompat("driveapex-byd-hal");
             halThread.start();
@@ -74,8 +84,7 @@ public final class BydLiveTelemetryDaemonMain {
                 boolean speedReady = speed.initialize();
                 boolean motorReady = motor.initialize();
                 boolean engineReady = engine.initialize();
-
-                boolean listenerRegistered = engine.registerFrontEngineSpeedListener(snapshot);
+                boolean listenerRegistered = engine.registerDiPlusEngineListener(snapshot);
                 snapshot.frontListenerRegistered = listenerRegistered;
                 sampleBase(speed, motor, engine, snapshot);
 
@@ -85,6 +94,7 @@ public final class BydLiveTelemetryDaemonMain {
                         + " frontListener=" + listenerRegistered
                         + " method=" + snapshot.frontListenerMethod
                         + " frontId=" + snapshot.frontFeatureId
+                        + " rearId=" + snapshot.rearFeatureId
                         + " package=" + launchArgs.packageName
                         + " user=" + launchArgs.userId);
                 initialized.countDown();
@@ -99,7 +109,7 @@ public final class BydLiveTelemetryDaemonMain {
             initialized.await(3, TimeUnit.SECONDS);
 
             scanServer = new ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST));
-            ServerSocket finalScanServer = scanServer;
+            final ServerSocket finalScanServer = scanServer;
             Thread scanThread = new Thread(() -> {
                 while (!finalScanServer.isClosed()) {
                     try {
@@ -144,13 +154,13 @@ public final class BydLiveTelemetryDaemonMain {
         if (brakePct != null) snapshot.brakePct = brakePct;
 
         long now = System.currentTimeMillis();
-        // Never overwrite a live front-engine callback with the known-stale 0 returned by getMotorSpeed().
-        if (snapshot.frontRpmAt <= 0L || now - snapshot.frontRpmAt > 1500L) {
+        // Do not overwrite a recent DiPlus-style front RPM event with the stale getter value.
+        if (snapshot.frontRpmAt > 0L && now - snapshot.frontRpmAt <= 1500L) {
+            snapshot.rpm = snapshot.frontRpm;
+        } else {
             Double fallback = sanitizeRpm(motor.readNumber("getMotorSpeed"));
             if (fallback == null) fallback = sanitizeRpm(engine.readNumber("getEngineSpeed"));
             if (fallback != null) snapshot.rpm = fallback;
-        } else {
-            snapshot.rpm = snapshot.frontRpm;
         }
         snapshot.timestamp = now;
         snapshot.valid = speedKph != null || throttlePct != null || brakePct != null || snapshot.frontRpmAt > 0L;
@@ -169,7 +179,7 @@ public final class BydLiveTelemetryDaemonMain {
                 writer.write(Double.toString(snapshot.rpm)); writer.write(',');
                 writer.write(Double.toString(snapshot.speedKph)); writer.write(',');
                 writer.write(Double.toString(snapshot.throttlePct)); writer.write(',');
-                writer.write(Double.toString(snapshot.brakePct)); writer.write(",BYD_DIPlUS_ENGINE_LISTENER");
+                writer.write(Double.toString(snapshot.brakePct)); writer.write(",BYD_DIPLUS_ENGINE_EVENT");
                 writer.newLine(); writer.flush();
                 Thread.sleep(50L);
             }
@@ -189,17 +199,144 @@ public final class BydLiveTelemetryDaemonMain {
             writer.write(String.format(Locale.US,
                     "HIT,ENGINE,FRONT_MOTOR_SPEED_LIVE,feature=%d,rpm=%d\n",
                     snapshot.frontFeatureId, snapshot.frontRpm));
-            writer.write("SCAN_DONE,2\n");
+            writer.write(String.format(Locale.US,
+                    "HIT,ENGINE,REAR_MOTOR_SPEED_LIVE,feature=%d,rpm=%d\n",
+                    snapshot.rearFeatureId, snapshot.rearRpm));
+            writer.write("SCAN_DONE,3\n");
             writer.flush();
         } catch (Throwable t) {
             try { socket.close(); } catch (Throwable ignored) {}
         }
     }
 
+    /** Exact DiPlus engine event mechanism: IBYDAutoListener + feature-id array. */
+    private static boolean registerDiPlusEngineListener(ReflectDevice engine, TelemetrySnapshot snapshot) {
+        Object device = engine.ensureDevice();
+        if (device == null) return false;
+        try {
+            Class<?> listenerType = Class.forName("android.hardware.IBYDAutoListener");
+            final String registerName = "registerListener";
+            Method target = null;
+            for (Class<?> c = device.getClass(); c != null && target == null; c = c.getSuperclass()) {
+                for (Method m : c.getDeclaredMethods()) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if (!registerName.equals(m.getName()) || p.length != 2 || p[1] != int[].class) continue;
+                    if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) {
+                        target = m;
+                        break;
+                    }
+                }
+            }
+            if (target == null) {
+                for (Method m : device.getClass().getMethods()) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if (!registerName.equals(m.getName()) || p.length != 2 || p[1] != int[].class) continue;
+                    if (p[0].isAssignableFrom(listenerType) || listenerType.isAssignableFrom(p[0])) {
+                        target = m;
+                        break;
+                    }
+                }
+            }
+            if (target == null) return false;
+
+            final int frontId = snapshot.frontFeatureId;
+            final int rearId = snapshot.rearFeatureId;
+            InvocationHandler handler = (proxy, method, args) -> {
+                String name = method.getName();
+                if ("onDataEventChanged".equals(name) && args != null && args.length >= 2) {
+                    Integer featureId = args[0] instanceof Integer ? (Integer) args[0] : null;
+                    Object event = args[1];
+                    if (featureId != null && event != null) {
+                        Integer intValue = readIntFieldOrGetter(event, "intValue");
+                        Double doubleValue = readDoubleFieldOrGetter(event, "doubleValue");
+                        int rpm;
+                        if (intValue != null) rpm = intValue;
+                        else if (doubleValue != null) rpm = (int) Math.round(doubleValue);
+                        else rpm = Integer.MIN_VALUE;
+                        if (rpm != Integer.MIN_VALUE) {
+                            int magnitude = Math.abs(rpm);
+                            boolean valid = magnitude <= 30000 && magnitude != 8191 && magnitude != 16383
+                                    && magnitude != 32767 && magnitude != 65535;
+                            if (valid && featureId == frontId) {
+                                snapshot.frontRpm = magnitude;
+                                snapshot.rpm = magnitude;
+                                snapshot.frontRpmAt = System.currentTimeMillis();
+                                snapshot.timestamp = snapshot.frontRpmAt;
+                                snapshot.valid = true;
+                                snapshot.eventCount++;
+                            } else if (valid && featureId == rearId) {
+                                snapshot.rearRpm = magnitude;
+                                snapshot.eventCount++;
+                            }
+                        }
+                    }
+                }
+                Class<?> returnType = method.getReturnType();
+                if (returnType == boolean.class) return false;
+                if (returnType == int.class) return 0;
+                if (returnType == long.class) return 0L;
+                return null;
+            };
+
+            Object proxy = Proxy.newProxyInstance(listenerType.getClassLoader(), new Class<?>[]{listenerType}, handler);
+            target.setAccessible(true);
+            // DiPlus/TripStats behavior: empty array primes all engine events; explicit front/rear IDs
+            // are then registered so firmware variants that require IDs are also covered.
+            boolean subscribedAll = false;
+            try {
+                target.invoke(device, proxy, new int[0]);
+                subscribedAll = true;
+            } catch (Throwable ignored) {}
+            try {
+                target.invoke(device, proxy, new int[]{frontId, rearId});
+            } catch (Throwable explicitError) {
+                if (!subscribedAll) throw explicitError;
+            }
+            snapshot.frontListenerMethod = target.getName() + "(" + target.getParameterTypes()[0].getName() + ",int[])";
+            return true;
+        } catch (Throwable t) {
+            System.err.println("DiPlus engine event listener failed: " + message(t));
+            snapshot.frontListenerMethod = "ERROR:" + message(t);
+            return false;
+        }
+    }
+
+    private static Integer readIntFieldOrGetter(Object event, String name) {
+        try {
+            Field field = event.getClass().getField(name);
+            field.setAccessible(true);
+            Object value = field.get(event);
+            return value instanceof Number ? ((Number) value).intValue() : null;
+        } catch (Throwable ignored) {}
+        try {
+            Method method = event.getClass().getMethod(name);
+            method.setAccessible(true);
+            Object value = method.invoke(event);
+            return value instanceof Number ? ((Number) value).intValue() : null;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static Double readDoubleFieldOrGetter(Object event, String name) {
+        try {
+            Field field = event.getClass().getField(name);
+            field.setAccessible(true);
+            Object value = field.get(event);
+            return value instanceof Number ? ((Number) value).doubleValue() : null;
+        } catch (Throwable ignored) {}
+        try {
+            Method method = event.getClass().getMethod(name);
+            method.setAccessible(true);
+            Object value = method.invoke(event);
+            return value instanceof Number ? ((Number) value).doubleValue() : null;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     private static Double sanitizeRpm(Double value) {
         if (value == null || !Double.isFinite(value)) return null;
-        if (value == 8191.0 || value == -8191.0 || value == 32767.0 || value == -32768.0
-                || value == 65535.0 || value == -65535.0) return null;
+        if (value == 8191.0 || value == -8191.0 || value == 16383.0 || value == -16383.0
+                || value == 32767.0 || value == -32768.0 || value == 65535.0 || value == -65535.0) return null;
         return value >= 0.0 && value <= MAX_RPM ? value : null;
     }
 
@@ -299,10 +436,7 @@ public final class BydLiveTelemetryDaemonMain {
             this.className = className;
             this.contexts = contexts;
         }
-
-        boolean initialize() { return ensure() != null; }
-
-        private Object ensure() {
+        Object ensureDevice() {
             Object cached = device;
             if (cached != null) return cached;
             synchronized (this) {
@@ -325,6 +459,7 @@ public final class BydLiveTelemetryDaemonMain {
                 return null;
             }
         }
+        boolean initialize() { return ensureDevice() != null; }
 
         private Object invokeGetInstance(Class<?> clazz, Context context) {
             try {
@@ -335,44 +470,36 @@ public final class BydLiveTelemetryDaemonMain {
                 return null;
             }
         }
-
         private Object invokeFactory(Class<?> clazz, Context context) {
             String[] names = {"getInstance", "getSingleton", "create", "getDevice", "get"};
-            for (String name : names) {
-                for (Method method : clazz.getDeclaredMethods()) {
-                    if (!method.getName().equals(name) || !Modifier.isStatic(method.getModifiers())) continue;
-                    try {
-                        method.setAccessible(true);
-                        Class<?>[] p = method.getParameterTypes();
-                        if (p.length == 0) return method.invoke(null);
-                        if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return method.invoke(null, context);
-                        if (p.length == 1 && p[0] == Context.class) return method.invoke(null, context);
-                    } catch (Throwable ignored) {}
-                }
+            for (String name : names) for (Method method : clazz.getDeclaredMethods()) {
+                if (!method.getName().equals(name) || !Modifier.isStatic(method.getModifiers())) continue;
+                try {
+                    method.setAccessible(true);
+                    Class<?>[] p = method.getParameterTypes();
+                    if (p.length == 0) return method.invoke(null);
+                    if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return method.invoke(null, context);
+                    if (p.length == 1 && p[0] == Context.class) return method.invoke(null, context);
+                } catch (Throwable ignored) {}
             }
             String[] fields = {"INSTANCE", "instance", "sInstance", "mInstance"};
-            for (String fieldName : fields) {
-                try {
-                    Field field = clazz.getDeclaredField(fieldName);
-                    field.setAccessible(true);
-                    Object value = field.get(null);
-                    if (value != null && clazz.isInstance(value)) return value;
-                } catch (Throwable ignored) {}
-            }
-            for (Constructor<?> ctor : clazz.getDeclaredConstructors()) {
-                try {
-                    ctor.setAccessible(true);
-                    Class<?>[] p = ctor.getParameterTypes();
-                    if (p.length == 0) return ctor.newInstance();
-                    if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return ctor.newInstance(context);
-                    if (p.length == 1 && p[0] == Context.class) return ctor.newInstance(context);
-                } catch (Throwable ignored) {}
-            }
+            for (String fieldName : fields) try {
+                Field field = clazz.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                Object value = field.get(null);
+                if (value != null && clazz.isInstance(value)) return value;
+            } catch (Throwable ignored) {}
+            for (Constructor<?> ctor : clazz.getDeclaredConstructors()) try {
+                ctor.setAccessible(true);
+                Class<?>[] p = ctor.getParameterTypes();
+                if (p.length == 0) return ctor.newInstance();
+                if (p.length == 1 && p[0].isAssignableFrom(context.getClass())) return ctor.newInstance(context);
+                if (p.length == 1 && p[0] == Context.class) return ctor.newInstance(context);
+            } catch (Throwable ignored) {}
             return null;
         }
-
         Double readNumber(String methodName) {
-            Object d = ensure();
+            Object d = ensureDevice();
             if (d == null) return null;
             try {
                 Method method = findNoArg(d.getClass(), methodName);
@@ -386,87 +513,18 @@ public final class BydLiveTelemetryDaemonMain {
             }
             return null;
         }
-
-        boolean registerFrontEngineSpeedListener(TelemetrySnapshot snapshot) {
-            Object d = ensure();
-            if (d == null) return false;
-            try {
-                BydFrontMotorSpeedListener listener = new BydFrontMotorSpeedListener(rpm -> {
-                    int magnitude = Math.abs(rpm);
-                    if (magnitude <= 8000 && magnitude != 8191 && magnitude != 16383 && magnitude != 32767 && magnitude != 65535) {
-                        snapshot.frontRpm = magnitude;
-                        snapshot.rpm = magnitude;
-                        snapshot.frontRpmAt = System.currentTimeMillis();
-                        snapshot.timestamp = snapshot.frontRpmAt;
-                        snapshot.valid = true;
-                        snapshot.eventCount++;
-                    }
-                });
-
-                Method oneArg = findListenerMethod(d.getClass(), 1, listener.getClass());
-                if (oneArg != null) {
-                    oneArg.setAccessible(true);
-                    oneArg.invoke(d, listener);
-                    snapshot.frontListenerMethod = oneArg.getName() + "(" + oneArg.getParameterTypes()[0].getName() + ")";
-                    return true;
-                }
-
-                Method twoArg = findListenerMethod(d.getClass(), 2, listener.getClass());
-                if (twoArg != null && twoArg.getParameterTypes()[1] == int[].class) {
-                    twoArg.setAccessible(true);
-                    twoArg.invoke(d, listener, new int[]{snapshot.frontFeatureId});
-                    snapshot.frontListenerMethod = twoArg.getName() + "(" + twoArg.getParameterTypes()[0].getName() + ",int[])";
-                    return true;
-                }
-            } catch (Throwable t) {
-                System.err.println(className + " typed engine listener failed: " + message(t));
-                snapshot.frontListenerMethod = "ERROR:" + message(t);
-            }
-            return false;
-        }
-
-        private Method findListenerMethod(Class<?> clazz, int parameterCount, Class<?> listenerClass) {
-            for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
-                for (Method method : c.getDeclaredMethods()) {
-                    Class<?>[] p = method.getParameterTypes();
-                    if (!"registerListener".equals(method.getName()) || p.length != parameterCount) continue;
-                    if (p.length > 0 && p[0].isAssignableFrom(listenerClass)) return method;
-                }
-            }
-            for (Method method : clazz.getMethods()) {
-                Class<?>[] p = method.getParameterTypes();
-                if (!"registerListener".equals(method.getName()) || p.length != parameterCount) continue;
-                if (p.length > 0 && p[0].isAssignableFrom(listenerClass)) return method;
-            }
-            return null;
-        }
-
         private Method findNoArg(Class<?> clazz, String name) {
             for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
-                try { return c.getDeclaredMethod(name); } catch (Throwable ignored) {}
+                try { Method m = c.getDeclaredMethod(name); m.setAccessible(true); return m; } catch (Throwable ignored) {}
             }
             try { return clazz.getMethod(name); } catch (Throwable ignored) { return null; }
         }
     }
 
-    private static int resolveFeatureIdSilent(String fieldName, int fallback) {
-        return resolveFeatureId(fieldName, fallback);
-    }
-
-    private static String message(Throwable t) {
-        Throwable current = t;
-        while (current.getCause() != null && current.getCause() != current) current = current.getCause();
-        String m = current.getMessage();
-        return (m == null || m.isEmpty()) ? current.getClass().getName() : current.getClass().getName() + ": " + m;
-    }
-
     private static final class LaunchArgs {
         final String packageName;
         final int userId;
-        private LaunchArgs(String packageName, int userId) {
-            this.packageName = packageName;
-            this.userId = userId;
-        }
+        private LaunchArgs(String packageName, int userId) { this.packageName = packageName; this.userId = userId; }
         static LaunchArgs parse(String[] args) {
             String packageName = null;
             int userId = 0;
@@ -479,6 +537,13 @@ public final class BydLiveTelemetryDaemonMain {
             if (packageName == null || packageName.isEmpty()) packageName = DEFAULT_PACKAGE;
             return new LaunchArgs(packageName, userId);
         }
+    }
+
+    private static String message(Throwable t) {
+        Throwable current = t;
+        while (current.getCause() != null && current.getCause() != current) current = current.getCause();
+        String m = current.getMessage();
+        return (m == null || m.isEmpty()) ? current.getClass().getName() : current.getClass().getName() + ": " + m;
     }
 
     private static final class HandlerThreadCompat {
