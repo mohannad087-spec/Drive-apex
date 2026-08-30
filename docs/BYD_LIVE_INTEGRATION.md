@@ -76,6 +76,25 @@ If live telemetry becomes stale, the application must enter its existing safe au
 7. Test low-speed controlled movement in a safe location.
 8. Compare telemetry timestamps against audible response and tune latency.
 
+## Compile-time BYD HAL stubs
+
+`app/src/main/java/android/hardware/bydauto/` holds compile-time-only stub
+classes (`BYDAutoFeatureIds`, `BYDAutoEventValue`, `AbsBYDAutoDevice`,
+`engine/AbsBYDAutoEngineListener`, `engine/BYDAutoEngineDevice`) that mirror
+the vendor `bmmcamera.jar` API surface actually used by this project. They
+exist only so app code can compile and link against typed BYD HAL calls; on
+the vehicle, the privileged telemetry daemon is launched with the real
+vendor jar ahead of the APK on its classpath, so the real classes shadow
+these stubs at runtime. Only feature IDs verified against a working
+DiPlus/Overdrive collector path belong in `BYDAutoFeatureIds`.
+
+`app/src/main/java/com/driveapex/vehicle/FrontMotorSpeedReader.java` is a
+type-safe reader built on these stubs for
+`BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED`. It is meant to run inside the
+privileged daemon process alongside the existing reflection-based readers
+(`BydDiPlusEngineTelemetryDaemonMain`, `DirectBydTelemetryReader`), not the
+main app process, since the app itself has no direct BYD HAL access.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.
