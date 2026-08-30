@@ -10,7 +10,7 @@ import java.io.InputStreamReader
 import java.net.Socket
 import java.util.Locale
 
-/** Truthful BYD telemetry capability probe and read-only HAL sensor scanner. */
+/** Truthful BYD telemetry capability probe using the DiPlus engine feature-listener path. */
 object BydTelemetryDiagnostics {
     data class Report(
         val adbStatus: String, val adbError: String?, val engineApiPresent: Boolean,
@@ -81,7 +81,7 @@ object BydTelemetryDiagnostics {
             } catch (t: Throwable) { daemonError = t.message ?: t.javaClass.simpleName } finally { bridge.stop() }
         } else daemonError = VehicleAdbConnection.lastError()
 
-        if (daemonAvailable) notes += "Telemetry source: shell-UID BYD daemon." else if (!daemonError.isNullOrBlank()) notes += "Telemetry daemon error: $daemonError"
+        if (daemonAvailable) notes += "Telemetry source: shell-UID DiPlus-compatible BYD engine feature listener." else if (!daemonError.isNullOrBlank()) notes += "Telemetry daemon error: $daemonError"
         var directFrame: DirectBydTelemetryReader.Frame? = null
         if (!daemonAvailable) {
             directFrame = runCatching { DirectBydTelemetryReader(activity).readOnce() }.getOrNull()
@@ -104,19 +104,15 @@ object BydTelemetryDiagnostics {
         val engineApiPresent = runCatching { Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice"); true }.getOrDefault(false) || runCatching { Class.forName("android.hardware.bydauto.motor.BYDAutoMotorDevice"); true }.getOrDefault(false)
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
-        notes += "Live path: shell-UID daemon first, direct HAL second, UDP only for development."
-        notes += "Daemon polls the BYD speed/engine devices continuously at 50 ms cadence."
+        notes += "Live path: shell-UID DiPlus-compatible engine listener first, direct HAL second."
+        notes += "Front Motor Speed uses registerListener(listener, featureIds), matching the DiPlus APK path."
+        notes += "Feature ID is resolved from BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED at runtime with a verified fallback."
         notes += "RPM invalid sentinels are rejected instead of being displayed as real RPM."
 
         val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
         val scanError = scan.firstOrNull { it.startsWith("SENSOR SCAN ERROR:") }
-        if (scanError != null) {
-            notes += scanError
-        } else if (scan.isEmpty()) {
-            notes += "Sensor scan returned no readable features in the 4080..4120 candidate range."
-        } else {
-            notes += "Sensor scan returned ${scan.size} readable feature/type combinations."
-        }
+        if (scanError != null) notes += scanError
+        else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
         return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
     }
@@ -132,7 +128,7 @@ object BydTelemetryDiagnostics {
                     line == "SCAN_DONE" || line.startsWith("SCAN_DONE,") -> break
                     line.startsWith("HIT,") -> {
                         val p = line.split(',', limit = 5)
-                        if (p.size == 5) hits += "${p[1]}  Feature ${p[2]}  ${p[3]}  = ${p[4]}"
+                        if (p.size == 5) hits += "${p[1]}  ${p[2]}  ${p[3]}  ${p[4]}"
                     }
                     line.startsWith("SCAN_ERROR,") -> return@use listOf("SENSOR SCAN ERROR: ${line.removePrefix("SCAN_ERROR,")}")
                 }
@@ -145,12 +141,12 @@ object BydTelemetryDiagnostics {
         appendLine("BYD TELEMETRY DIAGNOSTICS ${BuildConfig.VERSION_NAME}"); appendLine()
         appendLine("ADB: ${report.adbStatus}"); report.adbError?.let { appendLine("ADB error: $it") }; appendLine()
         appendLine("BYD HAL API: ${if (report.engineApiPresent || report.speedApiPresent) "FOUND" else "NOT FOUND"}")
-        appendLine("HAL read path: ${if (report.engineReadable) "LIVE DAEMON/HAL" else "NOT READY"}")
+        appendLine("HAL read path: ${if (report.engineReadable) "DIPLUS ENGINE FEATURE LISTENER" else "NOT READY"}")
         appendLine("Live telemetry read: ${if (report.engineReadable || report.speedReadable) "OK" else "FAILED"}")
         report.engineRpm?.let { appendLine("MOTOR RPM: $it RPM") }; report.currentSpeedKph?.let { appendLine(String.format(Locale.US, "Speed: %.1f km/h", it)) }
         report.acceleratorPercent?.let { appendLine("Accelerator: $it%") }; report.brakePercent?.let { appendLine("Brake: $it%") }; appendLine()
-        appendLine("READ-ONLY SENSOR SCAN (4080..4120)")
-        if (report.sensorScan.isEmpty()) appendLine("No readable feature/type combinations.") else report.sensorScan.forEach { appendLine(it) }
+        appendLine("DIPLUS FRONT MOTOR SPEED LISTENER")
+        if (report.sensorScan.isEmpty()) appendLine("No listener diagnostics returned.") else report.sensorScan.forEach { appendLine(it) }
         appendLine()
         appendLine("BYD permissions declared: ${report.declaredPermissions.size}/${REQUIRED_PERMISSIONS.size}")
         appendLine("BYD permissions reported granted: ${report.grantedPermissions.size}/${REQUIRED_PERMISSIONS.size}")
