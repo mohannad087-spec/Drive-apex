@@ -40,6 +40,7 @@ internal class VehicleAdbConnection(private val context: Context) {
         private val BYD_RUNTIME_GRANT_PERMISSIONS = arrayOf(
             "android.permission.BYDAUTO_SPEED_COMMON",
             "android.permission.BYDAUTO_ENGINE_COMMON",
+            "android.permission.BYDAUTO_MOTOR_COMMON",
             "android.permission.BYDAUTO_ENERGY_COMMON",
             "android.permission.BYDAUTO_GEARBOX_COMMON"
         )
