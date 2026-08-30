@@ -27,7 +27,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             "android.permission.BYDAUTO_ENERGY_COMMON",
             "android.permission.BYDAUTO_GEARBOX_COMMON"
         )
-        private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydLiveTelemetryDaemonMain"
+        private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydDiPlusEngineTelemetryDaemonMain"
         private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"
         private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
         private const val TELEMETRY_DAEMON_APK = "/data/local/tmp/driveapex-byd.apk"
@@ -116,7 +116,7 @@ internal class VehicleAdbConnection(private val context: Context) {
         }
     }
 
-    /** Launch the listener-driven telemetry daemon with the same package/source metadata pattern found in DiPlus. */
+    /** Launch the DiPlus-compatible listener-driven telemetry daemon. */
     fun ensureTelemetryDaemon(): Boolean {
         val dadb = connect() ?: return false
         return runCatching {
