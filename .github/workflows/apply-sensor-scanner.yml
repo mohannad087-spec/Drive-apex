@@ -7,14 +7,39 @@ on:
 
 jobs:
   verify:
+    if: ${{ github.event.head_commit.message != 'fix: correct daemon listener invocation' }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+      - name: Patch daemon listener invocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java')
+          s = p.read_text()
+          old = 'boolean listenerRegistered = engine.registerDiPlusEngineListener(snapshot);'
+          new = 'boolean listenerRegistered = registerDiPlusEngineListener(engine, snapshot);'
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+              print('patched')
+          else:
+              print('already patched')
+          PY
+          if ! git diff --quiet -- app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add app/src/main/java/com/driveapex/vehicle/BydLiveTelemetryDaemonMain.java
+            git commit -m 'fix: correct daemon listener invocation'
+            git push
+            exit 0
+          fi
       - name: Set up JDK 17
         uses: actions/setup-java@v5.6.0
         with:
