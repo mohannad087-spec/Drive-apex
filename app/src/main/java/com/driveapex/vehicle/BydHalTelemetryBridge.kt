@@ -14,6 +14,10 @@ import java.util.concurrent.ScheduledExecutorService
  *
  * The UI/app process never touches BYD HAL directly. After ADB authorization this
  * class starts the shell-UID BydTelemetryDaemon and consumes its local CSV stream.
+ *
+ * Motor RPM is overridden by the read-only DiPlus local API when available. This
+ * is the same front-motor value exposed by DiPlus as "前电机转速" (front motor speed),
+ * and avoids guessing BYD HAL feature IDs on head units where getMotorSpeed() is 0.
  */
 class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     private val appContext = context.applicationContext
@@ -72,9 +76,15 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
                 while (running) {
                     val line = reader.readLine() ?: break
                     parse(line)?.let { frame ->
-                        latestFrame = frame
+                        val diPlusRpm = DiPlusMotorSpeedReader.readFrontMotorRpm()
+                        val finalFrame = if (diPlusRpm != null) {
+                            frame.copy(rpm = diPlusRpm.toFloat(), source = "DIPLUS_FRONT_MOTOR_SPEED")
+                        } else {
+                            frame
+                        }
+                        latestFrame = finalFrame
                         lastError = null
-                        onFrame(frame)
+                        onFrame(finalFrame)
                     }
                 }
             }
