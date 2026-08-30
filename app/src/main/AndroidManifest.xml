@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Read-only BYD permissions mirrored from the existing vehicle-data path. -->
+    <!-- Read-only BYD permissions mirrored from the DiPlus vehicle-data path. -->
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
@@ -28,7 +28,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.DriveApex">
         <activity
-            android:name=".NextGenCockpitActivity"
+            android:name=".MainActivity"
             android:screenOrientation="unspecified"
             android:exported="true">
             <intent-filter>
@@ -37,7 +37,7 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".MainActivity"
+            android:name=".NextGenCockpitActivity"
             android:screenOrientation="unspecified"
             android:exported="false" />
 
@@ -50,6 +50,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
     </application>
 
 </manifest>
