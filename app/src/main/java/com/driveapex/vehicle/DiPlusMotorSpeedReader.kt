@@ -146,6 +146,10 @@ object DiPlusMotorSpeedReader {
                 while (addresses.hasMoreElements()) {
                     val address = addresses.nextElement()
                     if (address.isLoopbackAddress) continue
+                    // Link-local IPv6 needs a scope id to be routable; stripping the
+                    // %iface suffix made every fe80:: candidate fail with EINVAL and
+                    // buried the real results in noise.
+                    if (address.isLinkLocalAddress) continue
                     val text = address.hostAddress?.substringBefore('%') ?: continue
                     if (address is Inet6Address) ipv6 += text else hosts += text
                 }

@@ -27,6 +27,9 @@ object BydTelemetryDiagnostics {
         val diPlusInstall: List<String> = emptyList()
     )
 
+    /** Same endpoint DiPlusMotorSpeedReader uses, for the shell-side comparison. */
+    private const val PATH_QUERY = "/api/getVal?name=%E5%89%8D%E7%94%B5%E6%9C%BA%E8%BD%AC%E9%80%9F&status=true"
+
     private val REQUIRED_PERMISSIONS = listOf(
         "android.permission.BYDAUTO_SPEED_COMMON", "android.permission.BYDAUTO_SPEED_GET",
         "android.permission.BYDAUTO_ENGINE_COMMON", "android.permission.BYDAUTO_ENGINE_GET",
@@ -226,6 +229,23 @@ object BydTelemetryDiagnostics {
         run("DiPlus BYD permissions granted", "dumpsys package com.van.diplus | grep -E 'BYDAUTO_(ENGINE|MOTOR|SPEED)[A-Z_]*: granted=' | head -12", 12)
         run("Protection level of what we lack", "pm list permissions -f | grep -A4 -E 'BYDAUTO_(ENGINE|MOTOR)_GET\\b' | grep -E 'permission:|protectionLevel' | head -8", 8)
         run("DiPlus API port 8988", "netstat -tlnp 2>/dev/null | grep 8988 || echo 'nothing listening on 8988'", 4)
+
+        // The decisive test. Every attempt from inside this app -- IPv4 and IPv6
+        // loopback, the LAN address, two request shapes -- returned "Connection
+        // reset", while curl from a phone over the network to the same port
+        // returned 200 OK. The one variable never isolated is who is asking, so
+        // repeat the request from the shell UID on the vehicle itself:
+        //   reset here too  -> the service refuses same-host callers, and no local
+        //                      client of any kind can use this API
+        //   200 OK here     -> the service is fine locally and something about this
+        //                      app's process is being blocked
+        run("Local HTTP clients available", "command -v curl wget nc toybox busybox 2>/dev/null || echo none", 6)
+        run(
+            "Same request from shell UID on the vehicle",
+            "curl -sS -m 4 -D - 'http://127.0.0.1:8988" + PATH_QUERY + "' 2>&1 | head -12",
+            12
+        )
+        run("All listening TCP ports", "netstat -tlnp 2>/dev/null | head -20", 20)
         return out
     }
 
