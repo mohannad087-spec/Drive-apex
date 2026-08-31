@@ -61,6 +61,32 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         volatile int deviceType = -1;
         volatile int featureId = FALLBACK_FRONT_MOTOR_SPEED;
         volatile String registration = "NOT_REGISTERED";
+        volatile long eventCount;
+
+        /**
+         * Every distinct event type this listener has actually been handed, with its last
+         * value. On this vehicle the front motor feature ID had never been observed
+         * arriving at all, so recording what really does arrive is the only way to tell
+         * a wrong feature ID apart from a subscription that is never delivered.
+         */
+        final java.util.Map<Integer, Integer> observed =
+                java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<Integer, Integer>());
+
+        void record(int type, int value) {
+            eventCount++;
+            if (observed.size() < 128 || observed.containsKey(type)) observed.put(type, value);
+        }
+
+        String observedSummary() {
+            StringBuilder sb = new StringBuilder();
+            synchronized (observed) {
+                for (java.util.Map.Entry<Integer, Integer> e : observed.entrySet()) {
+                    if (sb.length() > 0) sb.append(';');
+                    sb.append(String.format("0x%08x=%d", e.getKey(), e.getValue()));
+                }
+            }
+            return sb.length() == 0 ? "NONE" : sb.toString();
+        }
     }
 
     public static void main(String[] args) {
@@ -88,11 +114,22 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                         + " listener=" + snapshot.listenerRegistered
                         + " registration=" + snapshot.registration
                         + " deviceType=" + snapshot.deviceType
-                        + " feature=" + snapshot.featureId);
+                        + String.format(" feature=%d (0x%08x)", snapshot.featureId, snapshot.featureId));
                 ready.countDown();
                 handler.post(new Runnable() {
+                    private long lastReport;
                     @Override public void run() {
                         sampleBase(speed, snapshot);
+                        // Periodic summary of what the engine device is actually
+                        // delivering, so a wrong feature ID and a dead subscription
+                        // can be told apart straight from the daemon log.
+                        long now = System.currentTimeMillis();
+                        if (now - lastReport >= 5000L) {
+                            lastReport = now;
+                            System.out.println("DIPLUS BYD events=" + snapshot.eventCount
+                                    + " rpm=" + snapshot.frontRpm
+                                    + " types=" + snapshot.observedSummary());
+                        }
                         handler.postDelayed(this, 500L);
                     }
                 });
@@ -167,9 +204,12 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
              BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), "UTF-8"))) {
             writer.write("SCAN_READY\n");
             writer.write("HIT,ENGINE,ENGINE_FRONT_MOTOR_SPEED,feature=" + snapshot.featureId
+                    + String.format(" (0x%08x)", snapshot.featureId)
                     + ",listener=" + snapshot.listenerRegistered + "\n");
             writer.write("HIT,ENGINE,REGISTRATION," + snapshot.registration + ",rpm=" + snapshot.frontRpm + "\n");
-            writer.write("SCAN_DONE,2\n");
+            writer.write("HIT,ENGINE,EVENTS,count=" + snapshot.eventCount
+                    + ",types=" + snapshot.observedSummary() + "\n");
+            writer.write("SCAN_DONE,3\n");
             writer.flush();
         } catch (Throwable ignored) {}
     }
@@ -300,9 +340,10 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         boolean registerDiPlusFrontMotorListener(Snapshot snapshot) {
             Object d = ensure(); if (d == null) return false;
             try {
-                Method typeMethod = d.getClass().getMethod("getDevicetype");
-                snapshot.deviceType = ((Number) typeMethod.invoke(d)).intValue();
-                int[] featureIds = filterFeatureIdsForDevice(snapshot.deviceType, snapshot.featureId);
+                try {
+                    Method typeMethod = d.getClass().getMethod("getDevicetype");
+                    snapshot.deviceType = ((Number) typeMethod.invoke(d)).intValue();
+                } catch (Throwable ignored) {}
                 RpmSink sink = value -> {
                     if (value < 0) value = Math.abs(value);
                     if (value <= MAX_RPM && value != 8191 && value != 16383 && value != 32767 && value != 65535) {
@@ -311,31 +352,37 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                         snapshot.valid = true;
                     }
                 };
-                FrontMotorListener listener = new FrontMotorListener(snapshot.featureId, sink);
+                FrontMotorListener listener = new FrontMotorListener(snapshot.featureId, sink, snapshot);
 
-                Method twoArg = null;
-                for (Method m : d.getClass().getMethods()) {
-                    Class<?>[] p = m.getParameterTypes();
-                    if (!"registerListener".equals(m.getName()) || p.length != 2 || p[1] != int[].class) continue;
-                    if (p[0].isAssignableFrom(listener.getClass())) { twoArg = m; break; }
+                // DiPlus registers its engine listener with the SINGLE-argument
+                // registerListener(listener) -- it passes no feature IDs at all and
+                // filters by type inside onDataEventChanged. The two-argument form
+                // runs the requested IDs through BYDAutoDeviceFeaturesMap, which
+                // returns the intersection with the device's declared feature set:
+                // if ENGINE_FRONT_MOTOR_SPEED is not in that set on this vehicle the
+                // array comes back empty and the listener is subscribed to nothing,
+                // which is indistinguishable from a wrong feature ID. Prefer DiPlus's
+                // own form, and keep the filtered form only as a fallback.
+                Method oneArg = findRegisterListener(d.getClass(), listener.getClass(), false);
+                if (oneArg != null) {
+                    oneArg.setAccessible(true);
+                    oneArg.invoke(d, listener);
+                    snapshot.registration = "registerListener(listener):unfiltered";
+                    return true;
                 }
+
+                Method twoArg = findRegisterListener(d.getClass(), listener.getClass(), true);
                 if (twoArg == null) {
-                    for (Class<?> c = d.getClass(); c != null && twoArg == null; c = c.getSuperclass()) {
-                        for (Method m : c.getDeclaredMethods()) {
-                            Class<?>[] p = m.getParameterTypes();
-                            if ("registerListener".equals(m.getName()) && p.length == 2 && p[1] == int[].class && p[0].isAssignableFrom(listener.getClass())) {
-                                twoArg = m; break;
-                            }
-                        }
-                    }
-                }
-                if (twoArg == null) {
-                    snapshot.registration = "NO_REGISTER_LISTENER_FEATURE_OVERLOAD";
+                    snapshot.registration = "NO_REGISTER_LISTENER_OVERLOAD";
                     return false;
                 }
+                int[] featureIds = filterFeatureIdsForDevice(snapshot.deviceType, snapshot.featureId);
+                // An empty filter result means "subscribe to nothing" -- fall back to the
+                // raw requested ID rather than registering a listener that can never fire.
+                if (featureIds.length == 0) featureIds = new int[]{snapshot.featureId};
                 twoArg.setAccessible(true);
                 twoArg.invoke(d, listener, featureIds);
-                snapshot.registration = twoArg.getName() + ":featureCount=" + featureIds.length + ":first=" + (featureIds.length == 0 ? -1 : featureIds[0]);
+                snapshot.registration = twoArg.getName() + ":featureCount=" + featureIds.length + ":first=" + featureIds[0];
                 return true;
             } catch (Throwable t) {
                 snapshot.registration = "ERROR:" + message(t);
@@ -344,14 +391,36 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         }
     }
 
+    /** Finds registerListener(listener) or registerListener(listener, int[]) on the device or a superclass. */
+    private static Method findRegisterListener(Class<?> deviceClass, Class<?> listenerClass, boolean withFeatureIds) {
+        int arity = withFeatureIds ? 2 : 1;
+        for (Method m : deviceClass.getMethods()) {
+            Class<?>[] p = m.getParameterTypes();
+            if (!"registerListener".equals(m.getName()) || p.length != arity) continue;
+            if (withFeatureIds && p[1] != int[].class) continue;
+            if (p[0].isAssignableFrom(listenerClass)) return m;
+        }
+        for (Class<?> c = deviceClass; c != null; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                Class<?>[] p = m.getParameterTypes();
+                if (!"registerListener".equals(m.getName()) || p.length != arity) continue;
+                if (withFeatureIds && p[1] != int[].class) continue;
+                if (p[0].isAssignableFrom(listenerClass)) return m;
+            }
+        }
+        return null;
+    }
+
     private interface RpmSink { void accept(int rpm); }
 
     private static final class FrontMotorListener extends AbsBYDAutoEngineListener {
         private final int expectedFeatureId;
         private final RpmSink sink;
-        FrontMotorListener(int expectedFeatureId, RpmSink sink) {
+        private final Snapshot snapshot;
+        FrontMotorListener(int expectedFeatureId, RpmSink sink, Snapshot snapshot) {
             this.expectedFeatureId = expectedFeatureId;
             this.sink = sink;
+            this.snapshot = snapshot;
         }
         // DiPlus's own onDataEventChanged for ENGINE_FRONT_MOTOR_SPEED stores
         // -value.intValue directly and never calls onEngineSpeedChanged; that
@@ -359,8 +428,17 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         // speed"), so it must NOT be treated as a front-motor-speed fallback
         // here -- doing so would risk mixing in an unrelated signal. Math.abs
         // in the sink already makes DiPlus's sign convention irrelevant.
+        //
+        // Registration is unfiltered (see registerDiPlusFrontMotorListener), so
+        // every engine-device event lands here. Record them all: a vehicle log
+        // capture showed the front motor feature ID never being delivered at
+        // all, and only the list of IDs that really do arrive can tell a wrong
+        // ID apart from a subscription that was silently filtered to nothing.
         @Override public void onDataEventChanged(int type, BYDAutoEventValue value) {
-            if (type == expectedFeatureId && value != null) sink.accept(value.intValue);
+            if (value == null) return;
+            snapshot.record(type, value.intValue);
+            System.out.println(String.format("EVENT type=0x%08x value=%d", type, value.intValue));
+            if (type == expectedFeatureId) sink.accept(value.intValue);
         }
     }
 

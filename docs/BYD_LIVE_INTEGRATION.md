@@ -179,6 +179,67 @@ spliced in from the daemon's latest frame. The direct reader is otherwise
 left as-is on purpose, since re-verifying its speed/throttle/brake access
 was out of scope here.
 
+## Feature IDs are (CAN id << 20) | signal offset
+
+A logcat capture from the target vehicle shows the HAL logging every
+dispatched event:
+
+```
+D/BYDAutoSpeedDevice(25065):     postEvent device_type: 1013, event_type =12100008, value = 25.98
+D/BYDAutoStatisticDevice(25065): postEvent device_type: 1014, event_type =44a00020, value = 6132
+```
+
+Decoding those hex event types against the constants recovered from the
+DiPlus decompile shows the layout is `(CAN id << 20) | signal offset`:
+`0x12100008` is CAN `0x121` (vehicle speed), `0x447xxxxx` is CAN `0x447`
+(the battery-temperature family — DiPlus's own STATISTIC_*_BATTERY_TEMP
+constants land at `0x44700020`/`0x44700038`, straddling the `0x44700028`
+in the capture). `ENGINE_FRONT_MOTOR_SPEED` = `1141899272` = `0x44100008`,
+i.e. CAN `0x441` — and DiPlus's neighbouring constant `1141899288` =
+`0x44100018` is the same CAN frame at a different offset, consistent with
+`0x441` being the front-motor message.
+
+CAN `0x441` never appears anywhere in that capture, while `0x445`,
+`0x446`, `0x447` and `0x44a` all do. `postEvent` is logged once per
+*subscribed process*, so an event only shows up if something registered
+for it — the absence of `0x441` is evidence that nothing was subscribed to
+the engine device, not proof that the vehicle does not broadcast it.
+
+## Register the engine listener unfiltered, like DiPlus does
+
+That points at how the subscription itself is made. In DiPlus's
+`DiplusBYDDataByApi.B()`, the engine listener is registered with a **null**
+feature-ID array:
+
+```java
+this.h1 = (AbsBYDAutoEngineListener) C(v3_12, 0, v6_5, v7_7);   // p4 == null
+```
+
+and `C()` only takes the filtered path when that array is non-null:
+
+```java
+if (p4 != null) { if (SDK_INT >= 29) { v5_2.registerListener(v3_2, A(v5_2.getDevicetype(), p4)); return v3_2; } }
+v5_2.registerListener(v3_2);    // single-arg: every event from this device
+```
+
+So DiPlus subscribes to *all* engine-device events and filters by `type`
+inside `onDataEventChanged`. This codebase did the opposite: it looked only
+for the two-argument overload and passed IDs through
+`BYDAutoDeviceFeaturesMap.getFeatureIdsFromDevice`, which (per DiPlus's own
+`A()`) returns the **intersection** with the device's declared feature set.
+If `ENGINE_FRONT_MOTOR_SPEED` is not in that set on a given vehicle, the
+array comes back empty, the listener is registered for nothing, and no
+event ever arrives — indistinguishable from a wrong feature ID, and an
+exact match for the observed "RPM stays 0 forever".
+
+`BydDiPlusEngineTelemetryDaemonMain` now prefers the single-argument
+`registerListener(listener)`, falls back to the two-argument form, and
+never registers an empty feature array. Because the subscription is now
+unfiltered, the listener also records every `(type, value)` it is handed —
+logged to the daemon log every 5s and exposed on the scan port as
+`HIT,ENGINE,EVENTS,count=…,types=0x…=v;…`. That list is what settles
+whether the feature ID is wrong or the events were simply never delivered.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.
