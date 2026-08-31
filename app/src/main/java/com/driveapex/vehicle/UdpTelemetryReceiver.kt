@@ -38,6 +38,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var useByd = false
     @Volatile private var useAdbBridge = false
     @Volatile private var smoothedRpm: Float? = null
+    @Volatile private var lastPublishedRpm = 0f
+    private val rpmValidator = MotorRpmValidator()
     @Volatile private var lastControlsValue: Controls? = null
     @Volatile private var lastControlsAtMs = 0L
     private val controlsHoldMs = 1_200L
@@ -70,7 +72,9 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         invalidPacketCount = 0L
         lastSource = "NONE"
         smoothedRpm = null
+        lastPublishedRpm = 0f
         lastControlsValue = null
+        rpmValidator.reset()
         diPlusAdb?.let {
             diPlusAdbStarted = true
             runCatching { it.start() }
@@ -148,7 +152,15 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 ?: socketRpm?.toFloat()
                 ?: listenerRpm?.toFloat()
                 ?: daemonFrame?.rpm
-            val rpm = rawRpm?.let { smoothRpm(it) }
+            // Validate before smoothing, not after. A dropout to zero exceeds the
+            // smoother's snap threshold, so it would be passed through at full
+            // speed -- the filter is bypassed exactly when it is most needed.
+            val validated = rpmValidator.accept(
+                rawRpm,
+                controlsSpeedHint(frame, daemonFrame),
+                SystemClock.elapsedRealtime()
+            )
+            val rpm = validated?.let { smoothRpm(it) }
 
             // Speed, throttle and brake come from whichever source has them. The
             // daemon publishes a whole frame, not just RPM, and dropping its
@@ -167,12 +179,15 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             // a vehicle where that reader fails the RPM fetched just above was
             // dropped on the floor and the dashboard never received a single
             // frame -- zero from launch, for every field.
+            if (rpm != null) lastPublishedRpm = rpm
             if (frame != null || rpm != null || daemonFrame != null) {
                 val base = frame?.source ?: "BYD_ADB"
                 publish(
                     TelemetryFrame(
                         timestampMs = frame?.timestampMs ?: System.currentTimeMillis(),
-                        rpm = rpm ?: 0f,
+                        // Never assert zero for a value this pass simply does not
+                        // have; that is what made the reading collapse and recover.
+                        rpm = rpm ?: lastPublishedRpm,
                         speedKph = controls.speedKph,
                         throttle = controls.throttle,
                         brake = controls.brake,
@@ -384,6 +399,12 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         val age = SystemClock.elapsedRealtime() - lastControlsAtMs
         return if (age <= controlsHoldMs) remembered else Controls(0f, 0f, 0f)
     }
+
+    /** Road speed from whichever source has it, for the plausibility check. */
+    private fun controlsSpeedHint(
+        frame: DirectBydTelemetryReader.Frame?,
+        daemonFrame: TelemetryFrame?
+    ): Float = frame?.speedKph ?: daemonFrame?.speedKph ?: lastControlsValue?.speedKph ?: 0f
 
     private fun sleep50() {
         try { Thread.sleep(50L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
