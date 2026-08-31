@@ -143,6 +143,42 @@ unrelated `onEngineSpeedChanged` branch), consistent with EV front motor
 RPM legitimately exceeding a combustion engine's redline -- this codebase's
 existing 25,000 RPM sanity ceiling was left as is.
 
+## The in-app direct reader was masking the daemon fix
+
+Confirming the listener dispatch bug above is not enough on its own: on
+real hardware, `MainActivity`'s live pipeline (`UdpTelemetryReceiver`)
+never actually reaches the (now-fixed) privileged daemon for motor speed at
+all, because of a second, independent bug.
+
+`UdpTelemetryReceiver.liveLoop()` polls `DirectBydTelemetryReader` first —
+an in-app-process reader that calls BYD HAL directly, without going through
+the ADB-launched daemon. Its own `BydPermissionContext` overrides
+`checkPermission`/`checkSelfPermission` etc. to always return `GRANTED`,
+but that only fools client-side checks inside this process; it cannot
+grant the real, OS-enforced `BYDAUTO_ENGINE_GET`-tier permission, which
+only `VehicleAdbConnection.grantBydReadPermissions` (run through the ADB
+shell UID) can actually obtain. So in this process, `getCurrentSpeed`/
+`getAccelerateDeepness`/`getBrakeDeepness` (a less privileged tier) tend to
+succeed, while the front-motor-speed read silently fails and `readOnce()`
+defaults `motorSpeed` to `0f`.
+
+The bug: `UdpTelemetryReceiver.isUsable()` only checked that `motorSpeed`
+was finite and in range, and `0f` satisfies that. So every direct-reader
+frame counted as fully "usable", which reset the failure counter that was
+supposed to trigger falling back to the privileged daemon — the daemon
+holding our `onDataEventChanged` fix was never even started for motor
+speed, no matter how correct that fix was.
+
+Fixed by tracking whether the direct reader actually obtained a motor
+speed reading (`DirectBydTelemetryReader.Frame.motorSpeedAvailable`,
+`true` only when its own front-motor-speed read succeeded) and, in
+`UdpTelemetryReceiver`, starting the privileged daemon bridge specifically
+to source the RPM field whenever `motorSpeedAvailable` is `false` —
+speed/throttle/brake still come from the direct reader, only RPM is
+spliced in from the daemon's latest frame. The direct reader is otherwise
+left as-is on purpose, since re-verifying its speed/throttle/brake access
+was out of scope here.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.

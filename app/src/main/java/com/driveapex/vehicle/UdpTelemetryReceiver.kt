@@ -17,6 +17,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var running = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
+    @Volatile private var bydDaemonStarted = false
     @Volatile private var latest: LiveTelemetry? = null
     @Volatile private var lastPacketAtMs = 0L
     @Volatile private var packetCount = 0L
@@ -70,23 +71,29 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
 
     private fun liveLoop() {
         var directFailures = 0
-        var daemonStarted = false
         while (running) {
             val frame = runCatching { direct?.readOnce() }.getOrNull()
             if (frame != null && isUsable(frame)) {
                 useDirect = true
-                useByd = false
                 directFailures = 0
-                daemonStarted = false
+                // The direct in-process reader can reliably get speed/throttle/brake
+                // without elevated permissions, but front motor speed needs the
+                // ADB-granted BYDAUTO_ENGINE_GET permission this process does not
+                // have -- it silently fails and defaults motorSpeed to 0, which
+                // still passes isUsable(). Without this check that 0 would always
+                // win and the privileged daemon (which can actually read it) would
+                // never even start.
+                val daemonFrame = if (!frame.motorSpeedAvailable) startBydDaemonForRpm() else null
+                useByd = daemonFrame != null
                 publish(
                     TelemetryFrame(
                         timestampMs = frame.timestampMs,
-                        rpm = frame.motorSpeed,
+                        rpm = daemonFrame?.rpm ?: frame.motorSpeed,
                         speedKph = frame.speedKph,
                         throttle = frame.throttle,
                         brake = frame.brake,
                         regen = 0f,
-                        source = frame.source
+                        source = if (daemonFrame != null) "${frame.source}+BYD_DAEMON_RPM" else frame.source
                     )
                 )
                 sleep50()
@@ -95,24 +102,24 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
 
             directFailures++
             invalidPacketCount++
-            if (!daemonStarted && directFailures >= 5 && byd != null) {
-                daemonStarted = true
-                val bridge = byd
-                val started = runCatching {
-                    if (!bridge.isAvailable()) false
-                    else {
-                        useByd = true
-                        bridge.start { publish(it) }
-                        true
-                    }
-                }.getOrDefault(false)
-                if (!started) {
-                    useByd = false
-                    daemonStarted = false
-                }
+            if (directFailures >= 5) {
+                useDirect = false
+                useByd = startBydDaemonForRpm() != null
             }
             sleep50()
         }
+    }
+
+    /** Starts (if not already running) the privileged BYD daemon bridge and returns its latest frame. Idempotent. */
+    private fun startBydDaemonForRpm(): TelemetryFrame? {
+        val bridge = byd ?: return null
+        if (!bydDaemonStarted) {
+            bydDaemonStarted = runCatching {
+                if (!bridge.isAvailable()) false
+                else { bridge.start { publish(it) }; true }
+            }.getOrDefault(false)
+        }
+        return bridge.latest()
     }
 
     private fun isUsable(frame: DirectBydTelemetryReader.Frame): Boolean =

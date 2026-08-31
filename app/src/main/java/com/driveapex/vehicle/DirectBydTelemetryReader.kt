@@ -23,6 +23,7 @@ class DirectBydTelemetryReader(context: Context) {
     data class Frame(
         val timestampMs: Long,
         val motorSpeed: Float,
+        val motorSpeedAvailable: Boolean,
         val speedKph: Float,
         val throttle: Float,
         val brake: Float,
@@ -54,6 +55,7 @@ class DirectBydTelemetryReader(context: Context) {
         val frame = Frame(
             timestampMs = System.currentTimeMillis(),
             motorSpeed = (motorSpeed ?: 0f).coerceIn(0f, MAX_MOTOR_SPEED.toFloat()),
+            motorSpeedAvailable = motorSpeed != null,
             speedKph = (speedKph ?: 0.0).toFloat().coerceIn(0f, 400f),
             throttle = ((throttlePct ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f),
             brake = ((brakePct ?: 0.0) / 100.0).toFloat().coerceIn(0f, 1f)
