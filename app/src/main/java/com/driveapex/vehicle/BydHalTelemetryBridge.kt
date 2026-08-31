@@ -13,7 +13,7 @@ import java.util.concurrent.ScheduledExecutorService
  * Live BYD telemetry bridge.
  *
  * The UI/app process never touches BYD HAL directly. After ADB authorization this
- * class starts the shell-UID BydTelemetryDaemon and consumes its local CSV stream.
+ * class starts the shell-UID telemetry daemon and consumes its local CSV stream.
  */
 class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     private val appContext = context.applicationContext
