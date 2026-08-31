@@ -29,12 +29,32 @@ import kotlin.math.tanh
  */
 class CharacterRenderer(private val sampleRate: Int = 44_100) {
 
-    private var character: EngineCharacter = EngineCharacters.default
-    private var phases = DoubleArray(0)
+    /**
+     * Everything a render pass needs, swapped as one object.
+     *
+     * The pieces have to change together. Rebuilding them in place crashed the
+     * audio thread: setCharacter cleared the filter list and refilled it, and a
+     * render landing in that gap read index 0 of an empty list. The tuning
+     * screen calls setCharacter on every slider movement, from the UI thread,
+     * against a render running continuously on its own -- so the window was
+     * being hit in ordinary use.
+     *
+     * A new voice is built complete and published with a single volatile write;
+     * the render reads the reference once and works from that. No locks on the
+     * audio path, and no way to observe a half-built state.
+     */
+    private class Voice(
+        val character: EngineCharacter,
+        val phases: DoubleArray,
+        val filters: Array<Biquad>,
+        val gearbox: VirtualGearbox?
+    )
+
+    @Volatile private var voice: Voice = newVoice(EngineCharacters.default, null)
+
     private var whinePhase = 0.0
     private var noiseState = 0x4D595DF4L
 
-    private val bodyFilters = ArrayList<Biquad>()
     private val noiseFilter = Biquad()
     private val hitFilter = Biquad()
 
@@ -48,37 +68,41 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
     private var hitTone = 0.0
     private var previousEventSum = 0.0
 
-    private var gearbox: VirtualGearbox? = null
-    private var gear = 0
+    @Volatile private var gear = 0
     /** Elapsed time counted from rendered frames, so shift timing does not
      *  depend on the wall clock and stays identical across runs. */
     private var elapsedMs = 0L
 
     fun setCharacter(value: EngineCharacter) {
-        character = value
-        if (phases.size != value.orders.size) phases = DoubleArray(value.orders.size)
-        bodyFilters.clear()
-        repeat(value.resonances.size) { bodyFilters += Biquad() }
-        // Rebuilding the gearbox resets to first gear, which would drop the
-        // engine back to idle every time a tuning slider moves. Keep the
-        // running box when this is the same engine with the same ratios.
-        val spec = value.gearbox
-        val keep = gearbox != null && spec != null && spec.ratios == previousRatios
-        if (!keep) {
-            gearbox = spec?.let { VirtualGearbox(it) }
-            gear = 0
-        } else if (spec != null) {
-            gearbox?.retune(spec)
-        }
-        previousRatios = spec?.ratios
+        voice = newVoice(value, voice)
     }
 
-    private var previousRatios: List<Float>? = null
-
     /** Current virtual gear, 1-based, or 0 when the character has no gearbox. */
-    fun currentGear(): Int = if (gearbox == null) 0 else gear + 1
+    fun currentGear(): Int = if (voice.gearbox == null) 0 else gear + 1
 
-    fun currentCharacter(): EngineCharacter = character
+    fun currentCharacter(): EngineCharacter = voice.character
+
+    private fun newVoice(value: EngineCharacter, previous: Voice?): Voice {
+        // Rebuilding the gearbox resets to first gear, which would drop the
+        // engine back to idle every time a tuning slider moves. Keep the running
+        // box when this is the same engine with the same ratios.
+        val spec = value.gearbox
+        val running = previous?.gearbox
+        val box = when {
+            spec == null -> null
+            running != null && spec.ratios == previous.character.gearbox?.ratios ->
+                running.also { it.retune(spec) }
+            else -> VirtualGearbox(spec)
+        }
+        if (box !== running) gear = 0
+
+        // Carry oscillator phases across so a tuning change is not a click.
+        val phases = DoubleArray(value.orders.size)
+        previous?.phases?.let { old ->
+            for (i in phases.indices) if (i < old.size) phases[i] = old[i]
+        }
+        return Voice(value, phases, Array(value.resonances.size) { Biquad() }, box)
+    }
 
     /**
      * Fills one stereo buffer.
@@ -95,12 +119,12 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         scene: AudioScene,
         events: AcousticEventComposer.Events
     ) {
-        val c = character
-        if (phases.size != c.orders.size) phases = DoubleArray(c.orders.size)
-        if (bodyFilters.size != c.resonances.size) {
-            bodyFilters.clear()
-            repeat(c.resonances.size) { bodyFilters += Biquad() }
-        }
+        // Read the shared state exactly once. Everything below works from this
+        // snapshot, so a swap mid-buffer changes the next pass, never this one.
+        val v = voice
+        val c = v.character
+        val phases = v.phases
+        val bodyFilters = v.filters
 
         val sceneGain = sceneGain(scene)
         val nyquist = sampleRate * 0.5
@@ -110,7 +134,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         elapsedMs += (frames * 1000L) / sampleRate
         var shiftCut = 1.0
         var voiceRpm = rpmTarget
-        gearbox?.let { box ->
+        v.gearbox?.let { box ->
             val state = box.update(rpmTarget, elapsedMs)
             voiceRpm = state.virtualRpm
             gear = state.gear
@@ -138,7 +162,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         // Resonance and noise coefficients move slowly; once per buffer is
         // plenty and keeps the per-sample cost down.
         c.resonances.forEachIndexed { i, r ->
-            bodyFilters[i].bandpass(r.hz.toDouble(), r.q.toDouble(), sampleRate)
+            if (i < bodyFilters.size) bodyFilters[i].bandpass(r.hz.toDouble(), r.q.toDouble(), sampleRate)
         }
         val noiseHz = (c.noise.baseHz + c.noise.hzPerKph * speedNow)
             .coerceIn(80.0, nyquist * 0.85)

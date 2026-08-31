@@ -16,7 +16,11 @@ package com.driveapex.audio
  * by a constant factor, so every gear shifts at the same virtual rpm and drops
  * to the same place -- the way a real gearset is spaced.
  */
-class VirtualGearbox(private var spec: EngineCharacter.Gearbox) {
+class VirtualGearbox(spec: EngineCharacter.Gearbox) {
+
+    // retune() runs on the UI thread while update() runs on the audio thread, so
+    // the new shift points have to be visible across that boundary.
+    @Volatile private var spec: EngineCharacter.Gearbox = spec
 
     /** Current gear, virtual engine rpm, and whether a shift happened this tick. */
     data class State(val gear: Int, val virtualRpm: Float, val shifted: Int)

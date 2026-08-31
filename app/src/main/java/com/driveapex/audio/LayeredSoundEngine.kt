@@ -106,11 +106,28 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         track = null
     }
 
+    /**
+     * A fault here must cost the sound, not the app.
+     *
+     * This thread died on an IndexOutOfBounds and took the whole process with
+     * it, because an uncaught exception on any thread ends the app -- from the
+     * driver's seat that reads as the app closing on its own. The cause is
+     * fixed, but a renderer defect should never again be fatal: catch it, record
+     * it so the log names the file and line, and stop cleanly.
+     */
     private fun renderLoop() {
         val pcm = ShortArray(bufferSize * 2)
-        while (running) {
-            renderer.render(pcm, bufferSize, rpm, load, speedKph, scene, events)
-            runCatching { track?.write(pcm, 0, pcm.size) }
+        try {
+            while (running) {
+                renderer.render(pcm, bufferSize, rpm, load, speedKph, scene, events)
+                runCatching { track?.write(pcm, 0, pcm.size) }
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "render loop failed", t)
+            DriveApexLog.e("audio", "render loop failed; sound stopped, app kept running", t)
+            running = false
+            runCatching { track?.let { it.pause(); it.flush(); it.stop(); it.release() } }
+            track = null
         }
     }
 }
