@@ -9,7 +9,16 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Read-only BYD permissions mirrored from the DiPlus vehicle-data path. -->
+    <!--
+      Read-only BYD permissions, mirroring the set DiPlus declares for the devices
+      this app reads. DiPlus is a self-signed third-party APK (CN=vanjoge) with no
+      sharedUserId, so whatever it can read is reachable by declaration alone -- it
+      never uses ADB or a privileged daemon. It declares 120 BYD permissions; this
+      app previously declared 10, which is the difference actually under test.
+
+      GET/COMMON only, deliberately: DriveApex is a read-only telemetry consumer and
+      must never hold a _SET permission (see the safety boundary below).
+    -->
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_SPEED_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_ENGINE_COMMON" />
@@ -20,6 +29,19 @@
     <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_COMMON" />
     <uses-permission android:name="android.permission.BYDAUTO_GEARBOX_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_VEHICLE_DATA_GET" />
+    <!-- The vehicle log showed the fast-changing drivetrain values arriving on
+         BYDAutoStatisticDevice and BYDAutoInstrumentDevice, neither of which this
+         app had ever declared a permission for. -->
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_STATISTIC_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_INSTRUMENT_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_BODYWORK_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_SENSOR_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_COMMON" />
+    <uses-permission android:name="android.permission.BYDAUTO_CHARGING_GET" />
+    <uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
 
     <application
         android:name=".DriveApexApplication"

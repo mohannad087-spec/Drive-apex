@@ -284,6 +284,52 @@ out completely: speed and pedals as well as RPM, on a vehicle where those had
 been working. The start attempt now runs on a background thread, rate-limited,
 and the loop keeps publishing from the direct reader while it happens.
 
+## DiPlus has no privilege we lack — it just declares more
+
+The assumption that DiPlus reads the motor because it is a system app or carries
+a BYD platform signature is **wrong**. Inspecting the APK directly:
+
+```
+package      : com.van.diplus
+sharedUserId : None                     <- ordinary app UID, not android.uid.system
+certificate  : subject CN=vanjoge
+               issuer  CN=vanjoge       <- self-signed developer key, not BYD's
+```
+
+DiPlus is a self-signed third-party APK with no privileged install, and it reads
+the HAL straight from its own process: `getInstance(context)` then
+`registerListener(listener)`. No ADB, no shell-UID daemon, no spoofed Context —
+none of the machinery this project built.
+
+The one measurable difference is the manifest: **DiPlus declares 120 BYD
+permissions; this app declared 10.** If a self-signed app can read the motor by
+declaration alone, these permissions are reachable without any of the workarounds,
+and the entire daemon architecture may be solving a problem that does not exist.
+
+Also correcting an earlier reading of the diagnostics: "granted 4/10" did **not**
+mean six grants were refused. `grantBydReadPermissions` iterated only over the
+four-entry `BYD_RUNTIME_GRANT_PERMISSIONS` array, so only four were ever
+attempted, while the screen compares against a ten-entry `REQUIRED_PERMISSIONS`
+list. The other six were never asked about, and may already have been held.
+
+Acting on this: the manifest now declares the read-side BYD permissions for every
+device this app touches — including `BYDAUTO_STATISTIC_*` and
+`BYDAUTO_INSTRUMENT_*`, which the vehicle log showed carrying the fast-changing
+drivetrain values and which were never declared at all. GET/COMMON only; a
+read-only telemetry consumer must never hold a `_SET` permission.
+`UdpTelemetryReceiver` now tries the in-process listener (`FrontMotorSpeedReader`,
+written earlier and never wired up) before the ADB daemon.
+
+### The stub-shadowing trap this exposes
+
+`Class.forName("android.hardware.bydauto.…")` succeeding in the app process proves
+nothing on its own: this APK ships its own compile-time stubs under those exact
+names. Boot-classpath classes report a null class loader; APK classes report the
+app's `PathClassLoader`. If the engine device resolves to the local stub, then
+`getInstance()` returns null and no in-process read can ever work, regardless of
+permissions — and `isBydVehicleRuntime()` would be reporting a false positive on
+any device. The diagnostics screen now prints which of the two it actually got.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.

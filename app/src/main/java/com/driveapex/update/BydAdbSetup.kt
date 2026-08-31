@@ -86,7 +86,7 @@ object BydAdbSetup {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (pm.resolveActivity(exact, PackageManager.MATCH_DEFAULT_ONLY) != null) {
-            activity.startActivity(exact)
+            startOnMain(activity, exact)
             return@runCatching true
         }
 
@@ -107,19 +107,24 @@ object BydAdbSetup {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 if (pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY) != null) {
-                    activity.startActivity(intent)
+                    startOnMain(activity, intent)
                     return@runCatching true
                 }
             }
 
             pm.getLaunchIntentForPackage(packageName)?.let { intent ->
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                activity.startActivity(intent)
+                startOnMain(activity, intent)
                 return@runCatching true
             }
         }
         false
     }.getOrDefault(false)
+
+    /** startActivity is invoked from the background ADB thread; hop to the main looper. */
+    private fun startOnMain(activity: Activity, intent: Intent) {
+        mainHandler.post { runCatching { activity.startActivity(intent) } }
+    }
 
     private fun scoreActivity(name: String): Int {
         val n = name.lowercase()

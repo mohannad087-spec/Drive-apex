@@ -104,8 +104,9 @@ object BydTelemetryDiagnostics {
         val engineApiPresent = runCatching { Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice"); true }.getOrDefault(false) || runCatching { Class.forName("android.hardware.bydauto.motor.BYDAutoMotorDevice"); true }.getOrDefault(false)
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
-        notes += "Live path: shell-UID DiPlus-compatible engine listener first, direct HAL second."
-        notes += "Front Motor Speed uses registerListener(listener, featureIds), matching the DiPlus APK path."
+        notes += halOrigin("android.hardware.bydauto.engine.BYDAutoEngineDevice")
+        notes += halOrigin("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
+        notes += "Live path: in-process listener (DiPlus style) first, shell-UID daemon second, direct HAL third."
         notes += "Feature ID is resolved from BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED at runtime with a verified fallback."
         notes += "RPM invalid sentinels are rejected instead of being displayed as real RPM."
 
@@ -116,6 +117,21 @@ object BydTelemetryDiagnostics {
 
         return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
     }
+
+    /**
+     * Says whether a BYD HAL class resolves to the real head-unit framework or to this
+     * app's own compile-time stub. The stubs live in the APK under the same
+     * android.hardware.bydauto.* names, so "Class.forName succeeded" on its own proves
+     * nothing -- boot-classpath classes report a null class loader, APK classes report
+     * the app's PathClassLoader. If the engine device resolves to the stub, no
+     * in-process read can ever work no matter which permissions are held.
+     */
+    private fun halOrigin(className: String): String = runCatching {
+        val loader = Class.forName(className).classLoader
+        val short = className.substringAfterLast('.')
+        if (loader == null) "$short: real framework class (boot classpath)"
+        else "$short: LOCAL STUB from this APK (${loader.javaClass.simpleName}) -- not the vehicle HAL"
+    }.getOrElse { "${className.substringAfterLast('.')}: not present (${it.javaClass.simpleName})" }
 
     private fun runSensorScan(): List<String> = runCatching {
         Socket("127.0.0.1", 18766).use { socket ->

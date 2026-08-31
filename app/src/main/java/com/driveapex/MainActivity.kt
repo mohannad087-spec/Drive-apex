@@ -162,7 +162,13 @@ class MainActivity : Activity() {
 
         setContentView(scroll)
         syncSimulator()
-        handler.postDelayed({ BydAdbSetup.prepare(this, false) }, 500L)
+        // Never on the main thread: prepare() -> VehicleAdbConnection.connect() blocks
+        // for up to 7s on the ADB handshake and then runs one shell round-trip per BYD
+        // permission. That is well past the ANR window, and the app freezes on launch.
+        handler.postDelayed({
+            Thread({ runCatching { BydAdbSetup.prepare(this, false) } }, "DriveApex-AdbBootstrap")
+                .apply { isDaemon = true }.start()
+        }, 500L)
         handler.postDelayed({ updateManager.checkSilently() }, 1500L)
         handler.postDelayed({
             if (isBydVehicleRuntime() && !liveMode) toggleTelemetryMode()
@@ -312,14 +318,23 @@ class MainActivity : Activity() {
     }
 
     private fun runAdbSetup(forceOpen: Boolean) {
-        val result = BydAdbSetup.prepare(this, forceOpen)
-        val message = when (result) {
-            BydAdbSetup.Result.ALREADY_AVAILABLE -> "ADB port 5555 is available."
-            BydAdbSetup.Result.SETTINGS_OPENED -> "BYD ADB settings opened. Enable wireless ADB."
-            BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD ADB settings activity was not found."
-        }
-        liveStatus.text = "ADB: ${result.name}"
-        AlertDialog.Builder(this).setTitle("BYD ADB setup").setMessage(message).setPositiveButton("OK", null).show()
+        // Same reason as the launch bootstrap: prepare() blocks on ADB for seconds.
+        liveStatus.text = "ADB: WORKING"
+        Thread({
+            val result = runCatching { BydAdbSetup.prepare(this, forceOpen) }
+                .getOrDefault(BydAdbSetup.Result.SETTINGS_UNAVAILABLE)
+            val message = when (result) {
+                BydAdbSetup.Result.ALREADY_AVAILABLE -> "ADB port 5555 is available."
+                BydAdbSetup.Result.SETTINGS_OPENED -> "BYD ADB settings opened. Enable wireless ADB."
+                BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD ADB settings activity was not found."
+            }
+            handler.post {
+                if (isFinishing) return@post
+                liveStatus.text = "ADB: ${result.name}"
+                AlertDialog.Builder(this).setTitle("BYD ADB setup").setMessage(message)
+                    .setPositiveButton("OK", null).show()
+            }
+        }, "DriveApex-AdbSetup").apply { isDaemon = true }.start()
     }
 
     private fun showBydDiagnostics() {

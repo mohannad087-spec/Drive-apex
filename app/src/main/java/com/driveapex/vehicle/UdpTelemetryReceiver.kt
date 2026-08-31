@@ -14,6 +14,16 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     private val direct = context?.let { DirectBydTelemetryReader(it) }
     private val byd = context?.let { BydHalTelemetryBridge(it) }
 
+    /**
+     * DiPlus's own approach, and the cheapest one: register an engine listener from
+     * this process and read what it delivers. DiPlus is a self-signed third-party APK
+     * with no sharedUserId and no privileged install, and it does exactly this -- no
+     * ADB, no daemon -- so if the declared BYD permissions are grantable by
+     * declaration alone this is all that was ever needed.
+     */
+    private val inProcess = context?.let { runCatching { FrontMotorSpeedReader(it) }.getOrNull() }
+    @Volatile private var inProcessStarted = false
+
     @Volatile private var running = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
@@ -48,6 +58,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         bydDaemonStarted = false
         bydStartAttemptedAtMs = 0L
         byd?.stop()
+        if (inProcessStarted) runCatching { inProcess?.stop() }
+        inProcessStarted = false
         runCatching { socket?.close() }
         socket = null
         thread = null
@@ -81,24 +93,33 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             if (frame != null && isUsable(frame)) {
                 useDirect = true
                 directFailures = 0
-                // The direct in-process reader can reliably get speed/throttle/brake
-                // without elevated permissions, but front motor speed needs the
-                // ADB-granted BYDAUTO_ENGINE_GET permission this process does not
-                // have -- it silently fails and defaults motorSpeed to 0, which
-                // still passes isUsable(). Without this check that 0 would always
-                // win and the privileged daemon (which can actually read it) would
-                // never even start.
-                val daemonFrame = if (!frame.motorSpeedAvailable) startBydDaemonForRpm() else null
+                // The direct reader gets speed/throttle/brake but its front-motor read
+                // can fail silently and default motorSpeed to 0, which still passes
+                // isUsable() -- so that 0 must never be allowed to win on its own.
+                // Preference for RPM: the direct reader's own value, then the
+                // in-process listener (DiPlus's approach, no ADB), then the daemon.
+                val inProcessRpm = if (!frame.motorSpeedAvailable) inProcessRpm() else null
+                val daemonFrame =
+                    if (!frame.motorSpeedAvailable && inProcessRpm == null) startBydDaemonForRpm() else null
                 useByd = daemonFrame != null
+                val rpm = frame.motorSpeed.takeIf { frame.motorSpeedAvailable }
+                    ?: inProcessRpm?.toFloat()
+                    ?: daemonFrame?.rpm
+                    ?: frame.motorSpeed
                 publish(
                     TelemetryFrame(
                         timestampMs = frame.timestampMs,
-                        rpm = daemonFrame?.rpm ?: frame.motorSpeed,
+                        rpm = rpm,
                         speedKph = frame.speedKph,
                         throttle = frame.throttle,
                         brake = frame.brake,
                         regen = 0f,
-                        source = if (daemonFrame != null) "${frame.source}+BYD_DAEMON_RPM" else frame.source
+                        source = when {
+                            frame.motorSpeedAvailable -> frame.source
+                            inProcessRpm != null -> "${frame.source}+INPROCESS_RPM"
+                            daemonFrame != null -> "${frame.source}+BYD_DAEMON_RPM"
+                            else -> frame.source
+                        }
                     )
                 )
                 sleep50()
@@ -109,10 +130,27 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             invalidPacketCount++
             if (directFailures >= 5) {
                 useDirect = false
+                inProcessRpm()
                 useByd = startBydDaemonForRpm() != null
             }
             sleep50()
         }
+    }
+
+    /**
+     * Latest RPM from the in-process engine listener, registering it on first use.
+     * Unlike the daemon bridge this costs nothing -- getInstance() plus
+     * registerListener(), no ADB round-trip -- so it is safe to call from the loop.
+     * Returns null until a plausible value has actually been delivered, which keeps
+     * a silently-inert listener from reporting a fake 0.
+     */
+    private fun inProcessRpm(): Int? {
+        val reader = inProcess ?: return null
+        if (!inProcessStarted) {
+            inProcessStarted = true
+            runCatching { reader.start() }
+        }
+        return runCatching { reader.frontMotorRpm }.getOrNull()
     }
 
     /**
