@@ -19,6 +19,8 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.audio.CharacterTuning
+import com.driveapex.diag.DriveApexLog
+import com.driveapex.diag.LogViewer
 import com.driveapex.audio.EngineCharacter
 import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.TuningStore
@@ -150,6 +152,7 @@ class MainActivity : Activity() {
             if (!liveMode) syncSimulator()
         }, margin(6))
         service.addView(serviceButton("SOUND TUNING") { showSoundTuning() }, margin(6))
+        service.addView(serviceButton("APP LOG / WHY IT CLOSED") { LogViewer.show(this) }, margin(6))
         service.addView(serviceButton("CHECK FOR UPDATE") { updateManager.checkManually() })
         root.addView(service)
 
@@ -530,15 +533,27 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        DriveApexLog.i("lifecycle", "onResume")
         if (::updateManager.isInitialized) updateManager.onResume()
     }
 
     override fun onStop() {
+        DriveApexLog.i("lifecycle", "onStop: shutting telemetry and audio down")
         handler.removeCallbacks(livePoller)
         genomeSession.finishDrive()
         telemetryReceiver.stop()
         engine.stop()
         super.onStop()
+    }
+
+    /**
+     * The orderly-shutdown marker. Its absence on the next launch is what proves
+     * the previous run ended some other way, so it is written last and only
+     * here -- onStop also runs when the screen merely goes to the background.
+     */
+    override fun onDestroy() {
+        DriveApexLog.markCleanExit()
+        super.onDestroy()
     }
 
     companion object {

@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="update_cache" path="." />
+    <!-- So a log can be shared out of the car without a USB cable. -->
+    <files-path name="logs" path="logs/" />
 </paths>

@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
+import com.driveapex.diag.DriveApexLog
 
 /**
  * Real-time layered EV sound renderer.
@@ -69,18 +70,21 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             )
         }.onFailure {
             Log.e(TAG, "Unable to create navigation AudioTrack stream=$navStream", it)
+            DriveApexLog.e("audio", "AudioTrack create failed on stream $navStream", it)
         }.getOrNull() ?: return
 
         track = created
         runCatching { created.setVolume(1f) }
         runCatching { created.play() }.onFailure {
             Log.e(TAG, "Unable to start navigation AudioTrack stream=$navStream", it)
+            DriveApexLog.e("audio", "AudioTrack play failed on stream $navStream", it)
             runCatching { created.release() }
             track = null
             return
         }
 
         Log.i(TAG, "AudioTrack started on OEM navigation stream=$navStream")
+        DriveApexLog.i("audio", "AudioTrack started on stream $navStream, buffer $targetBuffer bytes")
         running = true
         Thread(::renderLoop, "DriveApex-LayeredAudio").apply { isDaemon = true }.start()
     }
