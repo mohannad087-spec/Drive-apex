@@ -35,6 +35,9 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     fun setCharacter(value: EngineCharacter) { renderer.setCharacter(value) }
 
     fun character(): EngineCharacter = renderer.currentCharacter()
+
+    /** Virtual gear, 1-based; 0 when the current character has no gearbox. */
+    fun currentGear(): Int = renderer.currentGear()
     fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setSpeed(value: Float) { speedKph = value.coerceAtLeast(0f) }

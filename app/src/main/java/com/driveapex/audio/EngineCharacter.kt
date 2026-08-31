@@ -25,7 +25,13 @@ data class EngineCharacter(
     /** Waveshaper drive. Combustion wants far more of this than an EV. */
     val drive: Float,
     /** Overall output trim. */
-    val level: Float
+    val level: Float,
+    /**
+     * Virtual gearbox, or null to drive the voice straight from motor rpm.
+     * Only a geared engine has the rise-cut-drop shape; without this a
+     * combustion voice is one continuous sweep to the motor's own redline.
+     */
+    val gearbox: Gearbox? = null
 ) {
     /**
      * One partial. `order` is relative to shaft rotation: 1.0 is one cycle per
@@ -175,6 +181,58 @@ object EngineCharacters {
         level = 0.95f
     )
 
-    val all = listOf(evRealistic, evSport, iceSport)
+    /**
+     * AMG V12, geared.
+     *
+     * A twelve-cylinder four-stroke fires six times per crank revolution, so
+     * order 6 is the voice and 3/9/12/18 are what make it dense rather than
+     * hollow. The low half-orders carry the idle rumble a big twelve has and a
+     * four-cylinder does not.
+     *
+     * Ratios step by 0.7, with the shift point at 7000 virtual rpm. First gear
+     * multiplies by 3.5, so the first upshift lands at 2000 motor rpm as asked,
+     * and each later one follows from the spacing: roughly 2860, 4080, 5830,
+     * 8330 and 11900 motor rpm. Every shift drops the note back to about 4900.
+     */
+    val mercedesV12 = EngineCharacter(
+        id = "amg_v12",
+        name = "Mercedes AMG V12",
+        orders = listOf(
+            EngineCharacter.Order(order = 0.5f, gain = 0.13f, loadGain = 1.7f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.11f, loadGain = 1.8f, stereo = -0.15f),
+            EngineCharacter.Order(order = 3f, gain = 0.17f, loadGain = 2.1f),
+            EngineCharacter.Order(order = 4.5f, gain = 0.09f, loadGain = 2.2f, stereo = 0.2f),
+            EngineCharacter.Order(order = 6f, gain = 0.26f, loadGain = 2.6f),
+            EngineCharacter.Order(order = 9f, gain = 0.11f, loadGain = 2.5f, stereo = -0.25f),
+            EngineCharacter.Order(order = 12f, gain = 0.15f, loadGain = 2.6f, stereo = 0.25f),
+            EngineCharacter.Order(order = 18f, gain = 0.08f, loadGain = 2.4f, fadeInRpm = 900f),
+            EngineCharacter.Order(order = 24f, gain = 0.05f, loadGain = 2.2f, fadeInRpm = 1400f, stereo = -0.3f)
+        ),
+        resonances = listOf(
+            EngineCharacter.Resonance(hz = 85f, q = 0.75f, gain = 0.90f),
+            EngineCharacter.Resonance(hz = 300f, q = 1.2f, gain = 0.60f),
+            EngineCharacter.Resonance(hz = 900f, q = 1.7f, gain = 0.38f),
+            EngineCharacter.Resonance(hz = 2600f, q = 2.4f, gain = 0.20f)
+        ),
+        noise = EngineCharacter.NoiseBed(
+            baseGain = 0.050f, speedGain = 0.15f, loadGain = 0.16f,
+            baseHz = 280f, hzPerKph = 5.5f, q = 0.6f
+        ),
+        whine = null,
+        drive = 1.9f,
+        level = 0.95f,
+        gearbox = EngineCharacter.Gearbox(
+            ratios = listOf(3.5f, 2.45f, 1.715f, 1.20f, 0.84f, 0.588f, 0.412f),
+            upshiftRpm = 7000f,
+            downshiftRpm = 2600f,
+            idleRpm = 700f,
+            limiterRpm = 7300f,
+            shiftCutMs = 140,
+            shiftCutDepth = 0.6f,
+            shiftLockoutMs = 450
+        )
+    )
+
+    val all = listOf(evRealistic, evSport, iceSport, mercedesV12)
     val default = evRealistic
 }

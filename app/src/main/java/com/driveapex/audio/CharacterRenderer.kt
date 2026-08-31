@@ -48,12 +48,23 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
     private var hitTone = 0.0
     private var previousEventSum = 0.0
 
+    private var gearbox: VirtualGearbox? = null
+    private var gear = 0
+    /** Elapsed time counted from rendered frames, so shift timing does not
+     *  depend on the wall clock and stays identical across runs. */
+    private var elapsedMs = 0L
+
     fun setCharacter(value: EngineCharacter) {
         character = value
         if (phases.size != value.orders.size) phases = DoubleArray(value.orders.size)
         bodyFilters.clear()
         repeat(value.resonances.size) { bodyFilters += Biquad() }
+        gearbox = value.gearbox?.let { VirtualGearbox(it) }
+        gear = 0
     }
+
+    /** Current virtual gear, 1-based, or 0 when the character has no gearbox. */
+    fun currentGear(): Int = if (gearbox == null) 0 else gear + 1
 
     fun currentCharacter(): EngineCharacter = character
 
@@ -82,6 +93,25 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         val sceneGain = sceneGain(scene)
         val nyquist = sampleRate * 0.5
 
+        // The gearbox turns the motor's single sweep into a virtual engine's
+        // stepped rev range, so from here on `rpm` means virtual engine rpm.
+        elapsedMs += (frames * 1000L) / sampleRate
+        var shiftCut = 1.0
+        var voiceRpm = rpmTarget
+        gearbox?.let { box ->
+            val state = box.update(rpmTarget, elapsedMs)
+            voiceRpm = state.virtualRpm
+            gear = state.gear
+            if (state.shifted != 0) {
+                // Jump rather than glide: the pitch change belongs inside the
+                // torque cut, where it is covered, not smeared across it.
+                rpmNow = state.virtualRpm.toDouble()
+                hitEnvelope = (hitEnvelope + 0.75).coerceAtMost(1.0)
+                hitTone = if (state.shifted > 0) 190.0 else 260.0
+            }
+            shiftCut = box.cutGain(elapsedMs).toDouble()
+        }
+
         // Trigger a transient when the event sum rises. Events themselves are
         // level-like, so the rising edge is what marks a hit.
         val eventSum = (events.launch * 1.0 + events.accelerationHit * 0.7 +
@@ -103,7 +133,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         noiseFilter.bandpass(noiseHz, c.noise.q.toDouble(), sampleRate)
         hitFilter.bandpass(hitTone.coerceIn(90.0, nyquist * 0.8), 1.4, sampleRate)
 
-        val rpmStep = (rpmTarget - rpmNow) / frames
+        val rpmStep = (voiceRpm - rpmNow) / frames
         val loadStep = (loadTarget - loadNow) / frames
         val speedStep = (speedTarget - speedNow) / frames
 
@@ -176,7 +206,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
                 hitEnvelope *= 0.9992
             }
 
-            val mix = c.level * sceneGain
+            val mix = c.level * sceneGain * shiftCut
             val outL = (bodyL + bed + whineValue + hit) * mix
             val outR = (bodyR + bed * 0.92 + whineValue * 0.95 + hit * 1.05) * mix
 

@@ -68,7 +68,8 @@ class MainActivity : Activity() {
       applyTelemetry(live)
       controller.apply(live.data)
       val motorSpeed = live.data.rpm.coerceIn(0f, 25000f).roundToInt()
-      rpmValue.text = "${motorSpeed} MOTOR SPEED"
+      val gear = engine.currentGear()
+      rpmValue.text = if (gear > 0) "$motorSpeed  ·  G$gear" else "${motorSpeed} MOTOR SPEED"
       motorSpeedBar.progress = motorSpeed
   } ?: showNoVehicleData()
             handler.postDelayed(this, 50L)
@@ -303,6 +304,9 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         row.addView(profile("COMBUSTION", "Petrol Sport", AMBER) {
             engine.setCharacter(EngineCharacters.iceSport)
+        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("MERCEDES", "AMG V12 · 7-speed", GREEN) {
+            engine.setCharacter(EngineCharacters.mercedesV12)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         return scroll
