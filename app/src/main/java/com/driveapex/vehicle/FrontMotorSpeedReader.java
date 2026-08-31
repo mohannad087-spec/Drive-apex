@@ -6,38 +6,90 @@ import android.hardware.bydauto.BYDAutoFeatureIds;
 import android.hardware.bydauto.engine.AbsBYDAutoEngineListener;
 import android.hardware.bydauto.engine.BYDAutoEngineDevice;
 
+import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
- * Compile-time-typed reader for the verified BYD "front motor speed" engine
- * feature (BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED).
+ * In-process reader for the BYD "front motor speed" engine feature, registered
+ * exactly the way DiPlus registers its own: from the app's own process, with an
+ * ordinary application Context, no ADB and no daemon.
  *
- * This class compiles against the stubs under android.hardware.bydauto.* and
- * is meant to run inside the privileged BYD telemetry daemon process, where
- * the real bmmcamera.jar classes are on the classpath ahead of the APK and
- * shadow these stubs at runtime (see AbsBYDAutoEngineListener). It is a
- * type-safe alternative to the reflection-based readers in
- * BydDiPlusEngineTelemetryDaemonMain/DirectBydTelemetryReader for callers
- * that can link directly against the vendor jar.
+ * This class compiles against the stubs under android.hardware.bydauto.*. On a
+ * real head unit the framework classes of the same name sit on the boot
+ * classpath and win parent-first delegation, so the stubs are shadowed and the
+ * anonymous listener below subclasses the real AbsBYDAutoEngineListener. If the
+ * head unit has no such framework classes, the stub is used instead,
+ * getInstance() returns null, and {@link #diagnostics()} says so rather than
+ * failing silently -- which is how this path went unmeasured for so long.
  *
- * A full decompile of com.van.diplus (docs/BYD_LIVE_INTEGRATION.md) confirms
- * the HAL's actual dispatch entry point for a registered feature is
- * onDataEventChanged(int type, BYDAutoEventValue value). For
- * ENGINE_FRONT_MOTOR_SPEED specifically, DiPlus handles it entirely inside
- * onDataEventChanged (storing -value.intValue) and never calls
- * onEngineSpeedChanged for it -- that method fires only for a separate,
- * unrelated feature ID, so it is deliberately not overridden here to avoid
- * mixing in an unrelated signal.
+ * Registration deliberately prefers the single-argument
+ * registerListener(listener), which is what DiPlus uses. The two-argument form
+ * filters the requested IDs through BYDAutoDeviceFeaturesMap and returns the
+ * intersection with the device's declared feature set; if
+ * ENGINE_FRONT_MOTOR_SPEED is not in that set the array comes back empty and
+ * the listener is registered for nothing. The stub only declares the
+ * two-argument form, so the preferred overload is resolved reflectively
+ * against whatever class is actually loaded.
  */
 public final class FrontMotorSpeedReader {
     private static final int MAX_RPM = 25_000;
     private static final int FRONT_MOTOR_FEATURE_ID = BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED;
 
     private final BYDAutoEngineDevice device;
+    private final String deviceOrigin;
+
+    private volatile int lastRpm = -1;
+    private volatile long lastUpdateMs = 0L;
+    private volatile boolean registered = false;
+    private volatile String registration = "not attempted";
+    private volatile int eventCount = 0;
+
+    /** Every event type seen, with its most recent raw value. */
+    private final Map<Integer, Integer> observed = new LinkedHashMap<>();
+
     private final AbsBYDAutoEngineListener listener = new AbsBYDAutoEngineListener() {
         @Override
         public void onDataEventChanged(int type, BYDAutoEventValue value) {
-            if (type == FRONT_MOTOR_FEATURE_ID && value != null) accept(value.intValue);
+            if (value == null) return;
+            record(type, value.intValue);
+            if (type == FRONT_MOTOR_FEATURE_ID) accept(value.intValue);
         }
     };
+
+    public FrontMotorSpeedReader(Context context) {
+        BYDAutoEngineDevice resolved = null;
+        String origin;
+        try {
+            // getApplicationContext(), exactly as DiPlus does -- no wrapper that
+            // fakes checkPermission(), which cannot grant anything the OS enforces.
+            Context appContext = context.getApplicationContext();
+            resolved = BYDAutoEngineDevice.getInstance(appContext != null ? appContext : context);
+            origin = describeOrigin();
+        } catch (Throwable t) {
+            origin = "getInstance failed: " + t.getClass().getSimpleName();
+        }
+        this.device = resolved;
+        this.deviceOrigin = origin;
+    }
+
+    /**
+     * Whether BYDAutoEngineDevice came from the head-unit framework or from this
+     * APK's own stub. Boot-classpath classes report a null class loader; APK
+     * classes report the app's PathClassLoader. If it is the stub, no in-process
+     * read can ever work, whatever permissions are held.
+     */
+    private static String describeOrigin() {
+        ClassLoader loader = BYDAutoEngineDevice.class.getClassLoader();
+        return loader == null ? "framework" : "LOCAL STUB (" + loader.getClass().getSimpleName() + ")";
+    }
+
+    private void record(int type, int value) {
+        eventCount++;
+        synchronized (observed) {
+            if (observed.size() < 64 || observed.containsKey(type)) observed.put(type, value);
+        }
+    }
 
     private void accept(int value) {
         int abs = Math.abs(value);
@@ -47,35 +99,94 @@ public final class FrontMotorSpeedReader {
         }
     }
 
-    private volatile int lastRpm = -1;
-    private volatile long lastUpdateMs = 0L;
-    private volatile boolean registered = false;
-
-    public FrontMotorSpeedReader(Context context) {
-        this.device = BYDAutoEngineDevice.getInstance(context);
+    /** Registers the engine listener. Safe to call more than once. */
+    public boolean start() {
+        if (registered) return true;
+        if (device == null) {
+            registration = "no device (" + deviceOrigin + ")";
+            return false;
+        }
+        Method oneArg = findUnfilteredRegister();
+        if (oneArg != null) {
+            try {
+                oneArg.invoke(device, listener);
+                registered = true;
+                registration = "registerListener(listener) unfiltered";
+                return true;
+            } catch (Throwable t) {
+                registration = "unfiltered failed: " + rootCause(t);
+            }
+        }
+        try {
+            device.registerListener(listener, new int[]{FRONT_MOTOR_FEATURE_ID});
+            registered = true;
+            registration = registration.startsWith("unfiltered failed")
+                    ? registration + "; fell back to filtered"
+                    : "registerListener(listener, ids) filtered";
+            return true;
+        } catch (Throwable t) {
+            registration = "filtered failed: " + rootCause(t);
+            return false;
+        }
     }
 
-    /** Registers the engine listener for the front motor speed feature. Safe to call once. */
-    public boolean start() {
-        if (device == null || registered) return registered;
-        device.registerListener(listener, new int[]{BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED});
-        registered = true;
-        return true;
+    /** The single-argument registerListener, if the loaded class declares one. */
+    private Method findUnfilteredRegister() {
+        for (Method m : device.getClass().getMethods()) {
+            if (!"registerListener".equals(m.getName())) continue;
+            Class<?>[] params = m.getParameterTypes();
+            if (params.length == 1 && params[0].isInstance(listener)) return m;
+        }
+        return null;
+    }
+
+    private static String rootCause(Throwable t) {
+        Throwable cause = t.getCause() != null ? t.getCause() : t;
+        String message = cause.getMessage();
+        return cause.getClass().getSimpleName() + (message != null ? ": " + message : "");
     }
 
     public void stop() {
         if (device == null || !registered) return;
-        device.unregisterListener(listener);
+        try {
+            device.unregisterListener(listener);
+        } catch (Throwable ignored) {
+        }
         registered = false;
     }
 
-    /** Latest verified front motor RPM, or null if no plausible sample has been received yet. */
+    /** Latest verified front motor RPM, or null if no plausible sample has arrived. */
     public Integer getFrontMotorRpm() {
         return lastRpm < 0 ? null : lastRpm;
     }
 
     public long lastUpdateMs() {
         return lastUpdateMs;
+    }
+
+    /**
+     * What actually happened, for the diagnostics screen. Distinguishes the four
+     * outcomes that all previously looked identical on screen: the HAL class is
+     * this APK's stub; getInstance() returned null; the listener registered but
+     * no event ever arrived; events arrive but none carry the front motor ID.
+     */
+    public String diagnostics() {
+        StringBuilder out = new StringBuilder();
+        out.append("device: ").append(device == null ? "null" : "ok").append(" (").append(deviceOrigin).append(")");
+        out.append("\nregistration: ").append(registration);
+        out.append("\nevents: ").append(eventCount);
+        synchronized (observed) {
+            if (observed.isEmpty()) {
+                out.append("\ntypes: NONE");
+            } else {
+                out.append("\ntypes:");
+                for (Map.Entry<Integer, Integer> e : observed.entrySet()) {
+                    out.append(String.format(" 0x%08x=%d", e.getKey(), e.getValue()));
+                }
+            }
+        }
+        out.append(String.format("\nlooking for: 0x%08x", FRONT_MOTOR_FEATURE_ID));
+        return out.toString();
     }
 
     private static boolean isPlausible(int value) {

@@ -20,7 +20,9 @@ object BydTelemetryDiagnostics {
         val directError: String?, val declaredPermissions: List<String>,
         val grantedPermissions: List<String>, val failedPermissionGrants: List<String>,
         val notes: List<String>, val sensorScan: List<String> = emptyList(),
-        val diPlusRpm: Int? = null, val diPlusHost: String = "", val diPlusError: String? = null
+        val diPlusRpm: Int? = null, val diPlusHost: String = "", val diPlusError: String? = null,
+        val heldPermissions: List<String> = emptyList(), val missingPermissions: List<String> = emptyList(),
+        val inProcessReport: String = "", val inProcessRpm: Int? = null
     )
 
     private val REQUIRED_PERMISSIONS = listOf(
@@ -43,6 +45,39 @@ object BydTelemetryDiagnostics {
             .onSuccess { diPlusRpm = it?.toInt() }
             .onFailure { diPlusError = it.javaClass.simpleName + (it.message?.let { m -> ": $m" } ?: "") }
         val diPlusHost = DiPlusMotorSpeedReader.lastPath()
+
+        // Ground truth for permissions. Everything reported before this came from
+        // `pm grant` exit codes; the app never asked the OS what it actually holds,
+        // and every checkSelfPermission in the telemetry readers is a local
+        // override that returns GRANTED unconditionally. This call is the real one.
+        val declaredBydPermissions = runCatching {
+            activity.packageManager.getPackageInfo(activity.packageName, PackageManager.GET_PERMISSIONS)
+                .requestedPermissions?.filter { it.startsWith("android.permission.BYDAUTO") }.orEmpty()
+        }.getOrDefault(emptyList())
+        val held = declaredBydPermissions.filter {
+            runCatching { activity.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }.getOrDefault(false)
+        }
+        val missing = declaredBydPermissions - held.toSet()
+
+        // Run the in-process listener the way DiPlus runs its own and report what
+        // it receives. Every previous "0 events" reading came from the shell-UID
+        // daemon on port 18766, which holds no manifest permissions at all, so it
+        // never said anything about this path.
+        var inProcessReport = "not attempted"
+        var inProcessRpm: Int? = null
+        val probeReader = runCatching { FrontMotorSpeedReader(activity) }.getOrNull()
+        if (probeReader == null) inProcessReport = "could not construct FrontMotorSpeedReader"
+        else {
+            runCatching { probeReader.start() }
+            var waited = 0
+            while (waited < 3_000 && probeReader.frontMotorRpm == null) {
+                Thread.sleep(100L)
+                waited += 100
+            }
+            inProcessRpm = runCatching { probeReader.frontMotorRpm }.getOrNull()
+            inProcessReport = runCatching { probeReader.diagnostics() }.getOrElse { "diagnostics failed: ${it.javaClass.simpleName}" }
+            runCatching { probeReader.stop() }
+        }
         val adbConnection = VehicleAdbConnection(activity).connect()
         val adbStatus = when {
             adbConnection != null -> "AUTHORIZED"
@@ -127,8 +162,8 @@ object BydTelemetryDiagnostics {
         if (scanError != null) notes += scanError
         else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
-        val anyRead = readable || diPlusRpm != null
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError)
+        val anyRead = readable || diPlusRpm != null || inProcessRpm != null
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm)
     }
 
     /** The name this process actually reports, to confirm android:process took effect. */
@@ -180,6 +215,14 @@ object BydTelemetryDiagnostics {
             report.diPlusError != null -> appendLine("ERROR: ${report.diPlusError}")
             else -> appendLine("NO ANSWER from ${report.diPlusHost} -- is DiPlus running?")
         }
+        appendLine()
+        appendLine("=== FRONT MOTOR (BYD HAL, in-process like DiPlus) ===")
+        appendLine(if (report.inProcessRpm != null) "OK: ${report.inProcessRpm} RPM" else "no value")
+        appendLine(report.inProcessReport)
+        appendLine()
+        appendLine("=== BYD PERMISSIONS THIS APP ACTUALLY HOLDS ===")
+        appendLine("held ${report.heldPermissions.size} / ${report.heldPermissions.size + report.missingPermissions.size} (asked the OS, not pm grant)")
+        report.missingPermissions.forEach { appendLine("MISSING ${it.removePrefix("android.permission.")}") }
         appendLine()
         appendLine("ADB: ${report.adbStatus}"); report.adbError?.let { appendLine("ADB error: $it") }; appendLine()
         appendLine("BYD HAL API: ${if (report.engineApiPresent || report.speedApiPresent) "FOUND" else "NOT FOUND"}")
