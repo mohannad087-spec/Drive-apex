@@ -12,7 +12,7 @@
     <!--
       Read-only BYD permissions, mirroring the set DiPlus declares for the devices
       this app reads. DiPlus is a self-signed third-party APK (CN=vanjoge) with no
-      sharedUserId, so whatever it can read is reachable by declaration alone -- it
+      sharedUserId, so whatever it can read is reachable by declaration alone: it
       never uses ADB or a privileged daemon. It declares 120 BYD permissions; this
       app previously declared 10, which is the difference actually under test.
 
