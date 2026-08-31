@@ -81,7 +81,11 @@ public final class FrontMotorSpeedReader {
      */
     private static String describeOrigin() {
         ClassLoader loader = BYDAutoEngineDevice.class.getClassLoader();
-        return loader == null ? "framework" : "LOCAL STUB (" + loader.getClass().getSimpleName() + ")";
+        // On Android a boot-classpath class reports a BootClassLoader instance,
+        // NOT null -- only the JVM returns null there. Treating non-null as "this
+        // APK's stub" reported the real vehicle HAL as a local stub.
+        if (loader == null || loader == Object.class.getClassLoader()) return "framework";
+        return "LOCAL STUB (" + loader.getClass().getSimpleName() + ")";
     }
 
     private void record(int type, int value) {

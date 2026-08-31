@@ -20,8 +20,8 @@ import java.util.regex.Pattern
 object DiPlusMotorSpeedReader {
     private const val PORT = 8988
     private const val PATH = "/api/getVal?name=%E5%89%8D%E7%94%B5%E6%9C%BA%E8%BD%AC%E9%80%9F&status=true"
-    private const val CONNECT_TIMEOUT_MS = 120
-    private const val READ_TIMEOUT_MS = 250
+    private const val CONNECT_TIMEOUT_MS = 800
+    private const val READ_TIMEOUT_MS = 2000
     private const val MAX_RPM = 25000.0
     private const val MAX_RESPONSE_CHARS = 8192
 
@@ -35,28 +35,41 @@ object DiPlusMotorSpeedReader {
     private val numberPattern = Pattern.compile("\"val\"\\s*:\\s*\"?([-+]?\\d+(?:\\.\\d+)?)\"?")
 
     @Volatile private var lastHost: String? = null
-    @Volatile private var lastTried: String = ""
+    @Volatile private var lastDetail: String = "not attempted"
 
-    /** The address that last answered, or the list tried if none did. */
-    fun lastPath(): String = lastHost ?: "none of [$lastTried]"
+    /**
+     * The address that answered, or per-host failure reasons. "No answer" on its
+     * own is useless: ConnectException means nothing is listening there,
+     * SocketTimeoutException means the service is there but slower than the read
+     * timeout, and the two call for opposite fixes.
+     */
+    fun lastPath(): String = lastHost ?: lastDetail
 
     fun readFrontMotorRpm(): Double? {
-        val hosts = candidateHosts()
-        lastTried = hosts.joinToString()
-        for (host in hosts) {
-            val raw = readFrom(host) ?: continue
-            if (!raw.isFinite()) continue
-            val rpm = kotlin.math.abs(raw)
-            if (rpm <= MAX_RPM) {
-                lastHost = host
-                return rpm
+        val failures = mutableListOf<String>()
+        for (host in candidateHosts()) {
+            val outcome = readFrom(host)
+            val raw = outcome.getOrNull()
+            if (raw == null) {
+                val why = outcome.exceptionOrNull()?.let {
+                    it.javaClass.simpleName + (it.message?.let { m -> " ($m)" } ?: "")
+                } ?: "no val field in response"
+                failures += "$host: $why"
+                continue
             }
+            if (!raw.isFinite()) { failures += "$host: non-finite value"; continue }
+            val rpm = kotlin.math.abs(raw)
+            if (rpm > MAX_RPM) { failures += "$host: out of range ($rpm)"; continue }
+            lastHost = host
+            lastDetail = host
+            return rpm
         }
         lastHost = null
+        lastDetail = failures.joinToString("; ").ifBlank { "no candidate addresses" }
         return null
     }
 
-    private fun readFrom(host: String): Double? = runCatching {
+    private fun readFrom(host: String): Result<Double?> = runCatching {
         Socket().use { socket ->
             socket.connect(java.net.InetSocketAddress(host, PORT), CONNECT_TIMEOUT_MS)
             socket.soTimeout = READ_TIMEOUT_MS
@@ -86,7 +99,7 @@ object DiPlusMotorSpeedReader {
             }
             value
         }
-    }.getOrNull()
+    }
 
     private fun candidateHosts(): List<String> {
         val hosts = LinkedHashSet<String>()

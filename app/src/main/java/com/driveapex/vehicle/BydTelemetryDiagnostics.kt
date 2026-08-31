@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.driveapex.BuildConfig
 import com.driveapex.update.VehicleAdbConnection
+import dadb.Dadb
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Socket
@@ -22,7 +23,8 @@ object BydTelemetryDiagnostics {
         val notes: List<String>, val sensorScan: List<String> = emptyList(),
         val diPlusRpm: Int? = null, val diPlusHost: String = "", val diPlusError: String? = null,
         val heldPermissions: List<String> = emptyList(), val missingPermissions: List<String> = emptyList(),
-        val inProcessReport: String = "", val inProcessRpm: Int? = null
+        val inProcessReport: String = "", val inProcessRpm: Int? = null,
+        val diPlusInstall: List<String> = emptyList()
     )
 
     private val REQUIRED_PERMISSIONS = listOf(
@@ -157,13 +159,16 @@ object BydTelemetryDiagnostics {
         notes += "Feature ID is resolved from BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED at runtime with a verified fallback."
         notes += "RPM invalid sentinels are rejected instead of being displayed as real RPM."
 
+        val diPlusInstall = if (adbConnection != null) inspectDiPlus(adbConnection)
+        else listOf("ADB not authorized -- cannot inspect DiPlus")
+
         val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
         val scanError = scan.firstOrNull { it.startsWith("SENSOR SCAN ERROR:") }
         if (scanError != null) notes += scanError
         else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
         val anyRead = readable || diPlusRpm != null || inProcessRpm != null
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm)
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm, diPlusInstall)
     }
 
     /** The name this process actually reports, to confirm android:process took effect. */
@@ -183,9 +188,44 @@ object BydTelemetryDiagnostics {
     private fun halOrigin(className: String): String = runCatching {
         val loader = Class.forName(className).classLoader
         val short = className.substringAfterLast('.')
-        if (loader == null) "$short: real framework class (boot classpath)"
+        // A boot-classpath class on Android reports a BootClassLoader instance, not
+        // null. The previous null check reported the real vehicle HAL as this APK's
+        // stub on every run.
+        if (loader == null || loader == Any::class.java.classLoader) "$short: real vehicle HAL (boot classpath)"
         else "$short: LOCAL STUB from this APK (${loader.javaClass.simpleName}) -- not the vehicle HAL"
     }.getOrElse { "${className.substringAfterLast('.')}: not present (${it.javaClass.simpleName})" }
+
+    /**
+     * How DiPlus is installed and which BYD permissions the OS says it holds,
+     * plus the protection level of the two permissions this app is missing.
+     *
+     * Every claim about why DiPlus can read the motor and this app cannot has so
+     * far been an inference from its decompiled code and its signing cert. These
+     * four shell commands replace all of that with what the package manager
+     * actually reports. protectionLevel is the crux: `signature` means the
+     * permission needs BYD's platform key and no third-party app can ever hold
+     * it -- in which case DiPlus must not hold it either, and it is reaching the
+     * data another way.
+     */
+    private fun inspectDiPlus(dadb: Dadb): List<String> {
+        val out = mutableListOf<String>()
+        fun run(label: String, command: String, maxLines: Int) {
+            runCatching {
+                val text = dadb.shell(command).output.trim()
+                if (text.isBlank()) out += "$label: (no output)"
+                else {
+                    out += "$label:"
+                    text.lineSequence().take(maxLines).forEach { out += "  ${it.trim()}" }
+                }
+            }.onFailure { out += "$label: failed (${it.javaClass.simpleName})" }
+        }
+        run("DiPlus installed at", "pm path com.van.diplus", 3)
+        run("DiPlus install flags", "dumpsys package com.van.diplus | grep -E 'codePath|flags=|privateFlags=' | head -5", 5)
+        run("DiPlus BYD permissions granted", "dumpsys package com.van.diplus | grep -E 'BYDAUTO_(ENGINE|MOTOR|SPEED)[A-Z_]*: granted=' | head -12", 12)
+        run("Protection level of what we lack", "pm list permissions -f | grep -A4 -E 'BYDAUTO_(ENGINE|MOTOR)_GET\\b' | grep -E 'permission:|protectionLevel' | head -8", 8)
+        run("DiPlus API port 8988", "netstat -tlnp 2>/dev/null | grep 8988 || echo 'nothing listening on 8988'", 4)
+        return out
+    }
 
     private fun runSensorScan(): List<String> = runCatching {
         Socket("127.0.0.1", 18766).use { socket ->
@@ -223,6 +263,9 @@ object BydTelemetryDiagnostics {
         appendLine("=== BYD PERMISSIONS THIS APP ACTUALLY HOLDS ===")
         appendLine("held ${report.heldPermissions.size} / ${report.heldPermissions.size + report.missingPermissions.size} (asked the OS, not pm grant)")
         report.missingPermissions.forEach { appendLine("MISSING ${it.removePrefix("android.permission.")}") }
+        appendLine()
+        appendLine("=== HOW DIPLUS DOES IT (asked the OS over ADB) ===")
+        if (report.diPlusInstall.isEmpty()) appendLine("no data") else report.diPlusInstall.forEach { appendLine(it) }
         appendLine()
         appendLine("ADB: ${report.adbStatus}"); report.adbError?.let { appendLine("ADB error: $it") }; appendLine()
         appendLine("BYD HAL API: ${if (report.engineApiPresent || report.speedApiPresent) "FOUND" else "NOT FOUND"}")
