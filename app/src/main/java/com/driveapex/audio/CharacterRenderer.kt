@@ -59,9 +59,21 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         if (phases.size != value.orders.size) phases = DoubleArray(value.orders.size)
         bodyFilters.clear()
         repeat(value.resonances.size) { bodyFilters += Biquad() }
-        gearbox = value.gearbox?.let { VirtualGearbox(it) }
-        gear = 0
+        // Rebuilding the gearbox resets to first gear, which would drop the
+        // engine back to idle every time a tuning slider moves. Keep the
+        // running box when this is the same engine with the same ratios.
+        val spec = value.gearbox
+        val keep = gearbox != null && spec != null && spec.ratios == previousRatios
+        if (!keep) {
+            gearbox = spec?.let { VirtualGearbox(it) }
+            gear = 0
+        } else if (spec != null) {
+            gearbox?.retune(spec)
+        }
+        previousRatios = spec?.ratios
     }
+
+    private var previousRatios: List<Float>? = null
 
     /** Current virtual gear, 1-based, or 0 when the character has no gearbox. */
     fun currentGear(): Int = if (gearbox == null) 0 else gear + 1

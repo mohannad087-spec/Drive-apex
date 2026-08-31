@@ -18,7 +18,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import com.driveapex.audio.CharacterTuning
+import com.driveapex.audio.EngineCharacter
 import com.driveapex.audio.EngineCharacters
+import com.driveapex.audio.TuningStore
+import com.driveapex.audio.tunedWith
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
@@ -34,6 +38,8 @@ import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
     private val engine = LayeredSoundEngine(EngineCharacters.default)
+    private val tuningStore by lazy { TuningStore(this) }
+    private var activeCharacter: EngineCharacter = EngineCharacters.default
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
@@ -143,6 +149,7 @@ class MainActivity : Activity() {
             genomeSession.reset()
             if (!liveMode) syncSimulator()
         }, margin(6))
+        service.addView(serviceButton("SOUND TUNING") { showSoundTuning() }, margin(6))
         service.addView(serviceButton("CHECK FOR UPDATE") { updateManager.checkManually() })
         root.addView(service)
 
@@ -297,16 +304,16 @@ class MainActivity : Activity() {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(profile("EV REAL", "Authentic EV", BLUE) {
-            engine.setCharacter(EngineCharacters.evRealistic)
+            selectCharacter(EngineCharacters.evRealistic)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         row.addView(profile("EV SPORT", "Electric GT", PURPLE) {
-            engine.setCharacter(EngineCharacters.evSport)
+            selectCharacter(EngineCharacters.evSport)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         row.addView(profile("COMBUSTION", "Petrol Sport", AMBER) {
-            engine.setCharacter(EngineCharacters.iceSport)
+            selectCharacter(EngineCharacters.iceSport)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         row.addView(profile("MERCEDES", "AMG V12 · 7-speed", GREEN) {
-            engine.setCharacter(EngineCharacters.mercedesV12)
+            selectCharacter(EngineCharacters.mercedesV12)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         return scroll
@@ -341,6 +348,18 @@ class MainActivity : Activity() {
                     .setPositiveButton("OK", null).show()
             }
         }, "DriveApex-AdbSetup").apply { isDaemon = true }.start()
+    }
+
+    /** Applies a character together with whatever tuning was saved for it. */
+    private fun selectCharacter(character: EngineCharacter) {
+        activeCharacter = character
+        engine.setCharacter(character.tunedWith(tuningStore.load(character.id)))
+    }
+
+    private fun showSoundTuning() {
+        SoundTuningDialog.show(this, activeCharacter, tuningStore) { tuning ->
+            engine.setCharacter(activeCharacter.tunedWith(tuning))
+        }
     }
 
     private fun showBydDiagnostics() {

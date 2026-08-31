@@ -67,6 +67,22 @@ data class EngineCharacter(
     )
 
     /**
+     * Ratios are applied to motor rpm to give a virtual engine rpm, so they
+     * step down by a constant factor: every gear then reaches the shift point
+     * and drops back to the same place, which is how a real gearset is spaced.
+     */
+    data class Gearbox(
+        val ratios: List<Float>,
+        val upshiftRpm: Float,
+        val downshiftRpm: Float,
+        val idleRpm: Float,
+        val limiterRpm: Float,
+        val shiftCutMs: Int = 130,
+        val shiftCutDepth: Float = 0.55f,
+        val shiftLockoutMs: Int = 420
+    )
+
+    /**
      * A high tone tracking rpm: inverter switching on an EV, turbo on an ICE.
      * Its order must not coincide with one already in `orders`, or it merely
      * makes that partial louder instead of adding an element of its own.

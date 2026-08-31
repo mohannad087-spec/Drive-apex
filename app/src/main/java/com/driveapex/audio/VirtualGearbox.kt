@@ -16,7 +16,7 @@ package com.driveapex.audio
  * by a constant factor, so every gear shifts at the same virtual rpm and drops
  * to the same place -- the way a real gearset is spaced.
  */
-class VirtualGearbox(private val spec: EngineCharacter.Gearbox) {
+class VirtualGearbox(private var spec: EngineCharacter.Gearbox) {
 
     /** Current gear, virtual engine rpm, and whether a shift happened this tick. */
     data class State(val gear: Int, val virtualRpm: Float, val shifted: Int)
@@ -70,6 +70,16 @@ class VirtualGearbox(private val spec: EngineCharacter.Gearbox) {
         // Dip fast, recover smoothly.
         val depth = spec.shiftCutDepth.coerceIn(0f, 0.95f)
         return 1f - depth * (1f - phase) * (1f - phase * 0.35f)
+    }
+
+    /**
+     * Adopts new shift points without disturbing the gear currently engaged, so
+     * moving a tuning slider mid-drive changes the next shift rather than
+     * dumping the engine back to first.
+     */
+    fun retune(value: EngineCharacter.Gearbox) {
+        spec = value
+        gear = gear.coerceIn(0, value.ratios.lastIndex.coerceAtLeast(0))
     }
 
     fun currentGear(): Int = gear
