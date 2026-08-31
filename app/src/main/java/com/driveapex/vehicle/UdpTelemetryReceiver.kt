@@ -220,7 +220,13 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         val reader = inProcess ?: return null
         if (!inProcessStarted) {
             inProcessStarted = true
-            runCatching { reader.start() }
+            // start() now hands registration to a Looper thread and waits for it,
+            // so it must not run inline: a couple of seconds here would stall the
+            // 50ms loop and blank the dashboard, which is the same mistake that
+            // cost a release earlier.
+            Thread({ runCatching { reader.start() } }, "DriveApex-HalRegister")
+                .apply { isDaemon = true }
+                .start()
         }
         return runCatching { reader.frontMotorRpm }.getOrNull()
     }

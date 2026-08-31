@@ -76,7 +76,7 @@ object BydTelemetryDiagnostics {
         else {
             runCatching { probeReader.start() }
             var waited = 0
-            while (waited < 3_000 && probeReader.frontMotorRpm == null) {
+            while (waited < 5_000 && probeReader.frontMotorRpm == null) {
                 Thread.sleep(100L)
                 waited += 100
             }

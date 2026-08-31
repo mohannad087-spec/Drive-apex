@@ -1,6 +1,8 @@
 package com.driveapex.vehicle;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.hardware.bydauto.BYDAutoEventValue;
 import android.hardware.bydauto.BYDAutoFeatureIds;
 import android.hardware.bydauto.engine.AbsBYDAutoEngineListener;
@@ -9,6 +11,8 @@ import android.hardware.bydauto.engine.BYDAutoEngineDevice;
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * In-process reader for the BYD "front motor speed" engine feature, registered
@@ -36,8 +40,11 @@ public final class FrontMotorSpeedReader {
     private static final int MAX_RPM = 25_000;
     private static final int FRONT_MOTOR_FEATURE_ID = BYDAutoFeatureIds.ENGINE_FRONT_MOTOR_SPEED;
 
-    private final BYDAutoEngineDevice device;
-    private final String deviceOrigin;
+    private final Context context;
+
+    private volatile BYDAutoEngineDevice device;
+    private volatile String deviceOrigin = "not resolved";
+    private HandlerThread halThread;
 
     private volatile int lastRpm = -1;
     private volatile long lastUpdateMs = 0L;
@@ -58,19 +65,10 @@ public final class FrontMotorSpeedReader {
     };
 
     public FrontMotorSpeedReader(Context context) {
-        BYDAutoEngineDevice resolved = null;
-        String origin;
-        try {
-            // getApplicationContext(), exactly as DiPlus does -- no wrapper that
-            // fakes checkPermission(), which cannot grant anything the OS enforces.
-            Context appContext = context.getApplicationContext();
-            resolved = BYDAutoEngineDevice.getInstance(appContext != null ? appContext : context);
-            origin = describeOrigin();
-        } catch (Throwable t) {
-            origin = "getInstance failed: " + t.getClass().getSimpleName();
-        }
-        this.device = resolved;
-        this.deviceOrigin = origin;
+        Context appContext = context.getApplicationContext();
+        // getApplicationContext(), exactly as DiPlus does -- no wrapper that fakes
+        // checkPermission(), which cannot grant anything the OS enforces.
+        this.context = appContext != null ? appContext : context;
     }
 
     /**
@@ -103,20 +101,66 @@ public final class FrontMotorSpeedReader {
         }
     }
 
-    /** Registers the engine listener. Safe to call more than once. */
+    /**
+     * Registers the engine listener from a thread that has a Looper.
+     *
+     * This is the difference between this reader and every daemon in this
+     * codebase, and it is a plausible explanation for the symptom that has held
+     * everything up: registration reports success and not one event is ever
+     * delivered. Android callback registrations routinely capture
+     * Looper.myLooper() at registration time and dispatch through it; register
+     * from a bare Thread, where it is null, and there is nowhere to dispatch to,
+     * so the listener sits silent rather than failing loudly.
+     *
+     * Every call site here was such a thread -- the telemetry loop's own thread
+     * and the diagnostics probe's -- while the shell-UID daemons, which do
+     * prepare a Looper, were the only code that ever got this right. DiPlus
+     * registers from its application thread, which has one.
+     *
+     * getInstance() is also called on that thread, since a HAL that captures a
+     * Looper is as likely to do it there as at registration.
+     */
     public boolean start() {
         if (registered) return true;
+        HandlerThread thread = new HandlerThread("driveapex-byd-hal");
+        thread.start();
+        halThread = thread;
+        final CountDownLatch done = new CountDownLatch(1);
+        new Handler(thread.getLooper()).post(new Runnable() {
+            @Override public void run() {
+                try {
+                    registerOnLooperThread();
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            done.await(2, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return registered;
+    }
+
+    private void registerOnLooperThread() {
+        try {
+            device = BYDAutoEngineDevice.getInstance(context);
+            deviceOrigin = describeOrigin();
+        } catch (Throwable t) {
+            deviceOrigin = "getInstance failed: " + t.getClass().getSimpleName();
+        }
         if (device == null) {
             registration = "no device (" + deviceOrigin + ")";
-            return false;
+            return;
         }
         Method oneArg = findUnfilteredRegister();
         if (oneArg != null) {
             try {
                 oneArg.invoke(device, listener);
                 registered = true;
-                registration = "registerListener(listener) unfiltered";
-                return true;
+                registration = "registerListener(listener) unfiltered on Looper thread";
+                return;
             } catch (Throwable t) {
                 registration = "unfiltered failed: " + rootCause(t);
             }
@@ -126,11 +170,9 @@ public final class FrontMotorSpeedReader {
             registered = true;
             registration = registration.startsWith("unfiltered failed")
                     ? registration + "; fell back to filtered"
-                    : "registerListener(listener, ids) filtered";
-            return true;
+                    : "registerListener(listener, ids) filtered on Looper thread";
         } catch (Throwable t) {
             registration = "filtered failed: " + rootCause(t);
-            return false;
         }
     }
 
@@ -151,12 +193,18 @@ public final class FrontMotorSpeedReader {
     }
 
     public void stop() {
-        if (device == null || !registered) return;
-        try {
-            device.unregisterListener(listener);
-        } catch (Throwable ignored) {
+        if (device != null && registered) {
+            try {
+                device.unregisterListener(listener);
+            } catch (Throwable ignored) {
+            }
         }
         registered = false;
+        HandlerThread thread = halThread;
+        if (thread != null) {
+            thread.quitSafely();
+            halThread = null;
+        }
     }
 
     /** Latest verified front motor RPM, or null if no plausible sample has arrived. */
