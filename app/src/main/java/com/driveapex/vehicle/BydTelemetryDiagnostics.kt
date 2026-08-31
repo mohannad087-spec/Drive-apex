@@ -107,7 +107,9 @@ object BydTelemetryDiagnostics {
         notes += "Process name: ${currentProcessName()} (DiPlus runs as com.byd.warning)"
         notes += runCatching {
             val v = DiPlusMotorSpeedReader.readFrontMotorRpm()
-            if (v != null) "DiPlus API front motor: ${v.toInt()} RPM" else "DiPlus API front motor: no value"
+            val where = DiPlusMotorSpeedReader.lastPath()
+            if (v != null) "DiPlus API front motor: ${v.toInt()} RPM via $where"
+            else "DiPlus API front motor: no answer from $where"
         }.getOrElse { "DiPlus API front motor: error ${it.javaClass.simpleName}" }
         notes += halOrigin("android.hardware.bydauto.engine.BYDAutoEngineDevice")
         notes += halOrigin("android.hardware.bydauto.speed.BYDAutoSpeedDevice")

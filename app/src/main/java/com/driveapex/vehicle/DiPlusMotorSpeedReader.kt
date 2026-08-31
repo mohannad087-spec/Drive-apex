@@ -3,12 +3,9 @@ package com.driveapex.vehicle
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.Inet4Address
-import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.Socket
-import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-import java.util.Locale
 import java.util.regex.Pattern
 
 /**
@@ -26,6 +23,7 @@ object DiPlusMotorSpeedReader {
     private const val CONNECT_TIMEOUT_MS = 120
     private const val READ_TIMEOUT_MS = 250
     private const val MAX_RPM = 25000.0
+    private const val MAX_RESPONSE_CHARS = 8192
 
     // Verified against the vehicle: the service answers
     //   HTTP/1.1 200 OK  Server: DiplusApi
@@ -36,13 +34,25 @@ object DiPlusMotorSpeedReader {
     // this reader could never have returned a value.
     private val numberPattern = Pattern.compile("\"val\"\\s*:\\s*\"?([-+]?\\d+(?:\\.\\d+)?)\"?")
 
+    @Volatile private var lastHost: String? = null
+    @Volatile private var lastTried: String = ""
+
+    /** The address that last answered, or the list tried if none did. */
+    fun lastPath(): String = lastHost ?: "none of [$lastTried]"
+
     fun readFrontMotorRpm(): Double? {
-        for (host in candidateHosts()) {
+        val hosts = candidateHosts()
+        lastTried = hosts.joinToString()
+        for (host in hosts) {
             val raw = readFrom(host) ?: continue
             if (!raw.isFinite()) continue
             val rpm = kotlin.math.abs(raw)
-            if (rpm <= MAX_RPM) return rpm
+            if (rpm <= MAX_RPM) {
+                lastHost = host
+                return rpm
+            }
         }
+        lastHost = null
         return null
     }
 
@@ -60,20 +70,21 @@ object DiPlusMotorSpeedReader {
             out.write(request.toByteArray(StandardCharsets.US_ASCII))
             out.flush()
 
+            // Match as the response arrives instead of reading to EOF. Waiting for the
+            // server to close would throw SocketTimeoutException on any server that
+            // ignores `Connection: close` -- discarding a value already in hand.
+            // Headers cannot contain `"val":`, so scanning everything is safe and also
+            // survives chunked transfer encoding.
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))
-            val body = StringBuilder()
-            var inBody = false
-            var line: String?
-            while (true) {
-                line = reader.readLine() ?: break
-                if (inBody) {
-                    body.append(line)
-                } else if (line.isEmpty()) {
-                    inBody = true
-                }
+            val received = StringBuilder()
+            var value: Double? = null
+            while (value == null && received.length < MAX_RESPONSE_CHARS) {
+                val line = reader.readLine() ?: break
+                received.append(line).append('\n')
+                val match = numberPattern.matcher(received)
+                if (match.find()) value = match.group(1)?.toDoubleOrNull()
             }
-            val match = numberPattern.matcher(body.toString())
-            if (!match.find()) null else match.group(1)?.toDoubleOrNull()
+            value
         }
     }.getOrNull()
 
