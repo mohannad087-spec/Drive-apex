@@ -27,12 +27,21 @@ object DiPlusMotorSpeedReader {
     private const val READ_TIMEOUT_MS = 250
     private const val MAX_RPM = 25000.0
 
-    private val numberPattern = Pattern.compile("\\\"val\\\"\\s*:\\s*([-+]?\\d+(?:\\.\\d+)?)")
+    // Verified against the vehicle: the service answers
+    //   HTTP/1.1 200 OK  Server: DiplusApi
+    //   {"success":true,"val":"-2571"}
+    // so `val` is a quoted string, not a bare number, and the reading is negative
+    // (DiPlus stores -value.intValue for this feature). The previous pattern
+    // required a bare number and the range check rejected anything below zero, so
+    // this reader could never have returned a value.
+    private val numberPattern = Pattern.compile("\"val\"\\s*:\\s*\"?([-+]?\\d+(?:\\.\\d+)?)\"?")
 
     fun readFrontMotorRpm(): Double? {
         for (host in candidateHosts()) {
-            val value = readFrom(host)
-            if (value != null && value.isFinite() && value in 0.0..MAX_RPM) return value
+            val raw = readFrom(host) ?: continue
+            if (!raw.isFinite()) continue
+            val rpm = kotlin.math.abs(raw)
+            if (rpm <= MAX_RPM) return rpm
         }
         return null
     }

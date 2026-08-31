@@ -31,6 +31,9 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var bydStartInFlight = false
     @Volatile private var bydStartAttemptedAtMs = 0L
     private val bydStartRetryMs = 15_000L
+    @Volatile private var diPlusCached: Int? = null
+    @Volatile private var diPlusReadAtMs = 0L
+    private val diPlusCacheMs = 100L
     @Volatile private var latest: LiveTelemetry? = null
     @Volatile private var lastPacketAtMs = 0L
     @Volatile private var packetCount = 0L
@@ -96,13 +99,18 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 // The direct reader gets speed/throttle/brake but its front-motor read
                 // can fail silently and default motorSpeed to 0, which still passes
                 // isUsable() -- so that 0 must never be allowed to win on its own.
-                // Preference for RPM: the direct reader's own value, then the
-                // in-process listener (DiPlus's approach, no ADB), then the daemon.
-                val inProcessRpm = if (!frame.motorSpeedAvailable) inProcessRpm() else null
+                // Preference for RPM: the direct reader's own value, then DiPlus's
+                // local API (verified working on the vehicle: 200 OK, no auth), then
+                // the in-process listener, then the ADB daemon.
+                val diPlusRpm = if (!frame.motorSpeedAvailable) diPlusRpm() else null
+                val inProcessRpm =
+                    if (!frame.motorSpeedAvailable && diPlusRpm == null) inProcessRpm() else null
                 val daemonFrame =
-                    if (!frame.motorSpeedAvailable && inProcessRpm == null) startBydDaemonForRpm() else null
+                    if (!frame.motorSpeedAvailable && diPlusRpm == null && inProcessRpm == null)
+                        startBydDaemonForRpm() else null
                 useByd = daemonFrame != null
                 val rpm = frame.motorSpeed.takeIf { frame.motorSpeedAvailable }
+                    ?: diPlusRpm?.toFloat()
                     ?: inProcessRpm?.toFloat()
                     ?: daemonFrame?.rpm
                     ?: frame.motorSpeed
@@ -116,6 +124,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                         regen = 0f,
                         source = when {
                             frame.motorSpeedAvailable -> frame.source
+                            diPlusRpm != null -> "${frame.source}+DIPLUS_RPM"
                             inProcessRpm != null -> "${frame.source}+INPROCESS_RPM"
                             daemonFrame != null -> "${frame.source}+BYD_DAEMON_RPM"
                             else -> frame.source
@@ -135,6 +144,20 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             }
             sleep50()
         }
+    }
+
+    /**
+     * Front motor RPM straight from DiPlus's local API, cached briefly so the 50 ms
+     * loop does not hammer it. DiPlus already holds the value the BYD HAL will not
+     * hand this app, and serves it unauthenticated on the loopback interface, so
+     * consuming it is far more reliable than re-deriving the HAL read.
+     */
+    private fun diPlusRpm(): Int? {
+        val now = SystemClock.elapsedRealtime()
+        if (now - diPlusReadAtMs < diPlusCacheMs) return diPlusCached
+        diPlusReadAtMs = now
+        diPlusCached = runCatching { DiPlusMotorSpeedReader.readFrontMotorRpm()?.toInt() }.getOrNull()
+        return diPlusCached
     }
 
     /**

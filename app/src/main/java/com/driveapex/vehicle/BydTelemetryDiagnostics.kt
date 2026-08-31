@@ -105,6 +105,10 @@ object BydTelemetryDiagnostics {
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
         notes += "Process name: ${currentProcessName()} (DiPlus runs as com.byd.warning)"
+        notes += runCatching {
+            val v = DiPlusMotorSpeedReader.readFrontMotorRpm()
+            if (v != null) "DiPlus API front motor: ${v.toInt()} RPM" else "DiPlus API front motor: no value"
+        }.getOrElse { "DiPlus API front motor: error ${it.javaClass.simpleName}" }
         notes += halOrigin("android.hardware.bydauto.engine.BYDAutoEngineDevice")
         notes += halOrigin("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
         notes += "Live path: in-process listener (DiPlus style) first, shell-UID daemon second, direct HAL third."
