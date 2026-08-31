@@ -36,6 +36,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var running = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
+    @Volatile private var useAdbBridge = false
     @Volatile private var diPlusCached: Int? = null
     @Volatile private var diPlusReadAtMs = 0L
     private val diPlusCacheMs = 30_000L
@@ -67,6 +68,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         running = false
         useDirect = false
         useByd = false
+        useAdbBridge = false
         byd?.stop()
         if (inProcessStarted) runCatching { inProcess?.stop() }
         inProcessStarted = false
@@ -92,7 +94,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             invalidPacketCount = invalidPacketCount,
             ageMs = age,
             source = lastSource,
-            port = if (useDirect || useByd) 0 else port
+            port = if (useDirect || useByd || useAdbBridge) 0 else port
         )
     }
 
@@ -101,83 +103,74 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     private fun liveLoop() {
         var directFailures = 0
         while (running) {
-            val frame = runCatching { direct?.readOnce() }.getOrNull()
-            if (frame != null && isUsable(frame)) {
+            val frame = runCatching { direct?.readOnce() }.getOrNull()?.takeIf { isUsable(it) }
+            if (frame != null) {
                 useDirect = true
                 directFailures = 0
-                // The direct reader gets speed/throttle/brake but its front-motor read
-                // can fail silently and default motorSpeed to 0, which still passes
-                // isUsable() -- so that 0 must never be allowed to win on its own.
-                // Preference for RPM: the direct reader's own value, then DiPlus's
-                // local API (verified working on the vehicle: 200 OK, no auth), then
-                // the in-process listener, then the ADB daemon.
-                // ADB first, deliberately. On this vehicle nothing in this app's
-                // own process can read the motor: the HAL listener registers and
-                // is never dispatched to, and a direct socket to the DiPlus API is
-                // met with a TCP reset while the identical request from the shell
-                // UID returns the value. ADB is the read path, not a fallback.
-                val diPlusAdbRpm = if (!frame.motorSpeedAvailable) diPlusAdbRpm() else null
-                val diPlusRpm =
-                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null) diPlusRpm() else null
-                val inProcessRpm =
-                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null && diPlusRpm == null)
-                        inProcessRpm() else null
-                // The shell-UID daemon is deliberately not started from here any
-                // more. It has never delivered a value on this vehicle, and its
-                // start path holds the ADB lock across many round trips, which
-                // starved the one source that does work: every 15s the bridge's
-                // reading went stale and the dashboard fell back to zero. Only
-                // consume a frame if some other caller has it running already.
-                val daemonFrame =
-                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null && diPlusRpm == null &&
-                        inProcessRpm == null
-                    ) byd?.latest() else null
-                useByd = daemonFrame != null
-                val rpm = frame.motorSpeed.takeIf { frame.motorSpeedAvailable }
-                    ?: diPlusAdbRpm?.toFloat()
-                    ?: diPlusRpm?.toFloat()
-                    ?: inProcessRpm?.toFloat()
-                    ?: daemonFrame?.rpm
-                    ?: frame.motorSpeed
+            } else {
+                directFailures++
+                if (directFailures >= 5) useDirect = false
+            }
+
+            // Motor RPM, in order of trust. ADB comes before everything except a
+            // genuine direct-reader value: on this vehicle nothing in this app's
+            // own process can read this signal -- the HAL listener registers
+            // unfiltered and is never dispatched to, and a direct socket to the
+            // DiPlus API is met with a TCP reset while the identical request from
+            // the shell UID returns the value.
+            val directRpm = if (frame != null && frame.motorSpeedAvailable) frame.motorSpeed else null
+            val adbRpm = if (directRpm == null) diPlusAdbRpm() else null
+            val socketRpm = if (directRpm == null && adbRpm == null) diPlusRpm() else null
+            val listenerRpm =
+                if (directRpm == null && adbRpm == null && socketRpm == null) inProcessRpm() else null
+            // The shell-UID daemon is never started from here: it has produced
+            // nothing on this vehicle and its start path holds the ADB lock across
+            // many round trips, which starved the one source that does work. Only
+            // consume its frame if something else already has it running.
+            val daemonFrame =
+                if (directRpm == null && adbRpm == null && socketRpm == null && listenerRpm == null)
+                    byd?.latest() else null
+            useByd = daemonFrame != null
+            useAdbBridge = adbRpm != null
+
+            val rpm = directRpm
+                ?: adbRpm?.toFloat()
+                ?: socketRpm?.toFloat()
+                ?: listenerRpm?.toFloat()
+                ?: daemonFrame?.rpm
+
+            // Publish whenever there is anything to publish. The previous version
+            // only published when the direct reader produced a usable frame, so on
+            // a vehicle where that reader fails the RPM fetched just above was
+            // dropped on the floor and the dashboard never received a single
+            // frame -- zero from launch, for every field.
+            if (frame != null || rpm != null) {
+                val base = frame?.source ?: "BYD_ADB"
                 publish(
                     TelemetryFrame(
-                        timestampMs = frame.timestampMs,
-                        rpm = rpm,
-                        speedKph = frame.speedKph,
-                        throttle = frame.throttle,
-                        brake = frame.brake,
+                        timestampMs = frame?.timestampMs ?: System.currentTimeMillis(),
+                        rpm = rpm ?: 0f,
+                        speedKph = frame?.speedKph ?: 0f,
+                        throttle = frame?.throttle ?: 0f,
+                        brake = frame?.brake ?: 0f,
                         regen = 0f,
                         source = when {
-                            frame.motorSpeedAvailable -> frame.source
-                            diPlusAdbRpm != null -> "${frame.source}+DIPLUS_ADB_RPM"
-                            diPlusRpm != null -> "${frame.source}+DIPLUS_RPM"
-                            inProcessRpm != null -> "${frame.source}+INPROCESS_RPM"
-                            daemonFrame != null -> "${frame.source}+BYD_DAEMON_RPM"
-                            else -> frame.source
+                            directRpm != null -> base
+                            adbRpm != null -> "$base+DIPLUS_ADB_RPM"
+                            socketRpm != null -> "$base+DIPLUS_RPM"
+                            listenerRpm != null -> "$base+INPROCESS_RPM"
+                            daemonFrame != null -> "$base+BYD_DAEMON_RPM"
+                            else -> base
                         }
                     )
                 )
-                sleep50()
-                continue
-            }
-
-            directFailures++
-            invalidPacketCount++
-            if (directFailures >= 5) {
-                useDirect = false
-                diPlusAdbRpm()
-                inProcessRpm()
+            } else {
+                invalidPacketCount++
             }
             sleep50()
         }
     }
 
-    /**
-     * Front motor RPM straight from DiPlus's local API, cached briefly so the 50 ms
-     * loop does not hammer it. DiPlus already holds the value the BYD HAL will not
-     * hand this app, and serves it unauthenticated on the loopback interface, so
-     * consuming it is far more reliable than re-deriving the HAL read.
-     */
     /**
      * The DiPlus API over a direct socket. Kept only as an opportunistic probe on
      * a long interval: this app's socket to the service is currently reset every
@@ -239,7 +232,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                         brake = frame.brake.coerceIn(0f, 1f),
                         regen = frame.regen.coerceIn(0f, 1f)
                     ),
-                    if (useDirect || useByd) TelemetrySource.LIVE_BRIDGE else TelemetrySource.LIVE_UDP,
+                    if (useDirect || useByd || useAdbBridge) TelemetrySource.LIVE_BRIDGE else TelemetrySource.LIVE_UDP,
                     frame.timestampMs
                 )
                 packetCount++

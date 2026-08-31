@@ -84,15 +84,28 @@ class DiPlusAdbBridge(context: Context) {
         }
         if (!writerStarted) startWriter(dadb)
         val result = runCatching { VehicleAdbConnection.shell(dadb, READ_COMMAND).output }
-        val body = result.getOrNull()
-        if (body == null) {
+        val cached = result.getOrNull()
+        if (cached == null) {
             status = "shell failed: ${result.exceptionOrNull()?.javaClass?.simpleName}"
             writerStarted = false
             return
         }
-        val value = parseRpm(body)
+        // Fall back to fetching directly this cycle if the file is not being kept
+        // up. The writer needs nohup, pkill and a shell that sleeps in fractions,
+        // and none of those are guaranteed on a head unit -- without this the
+        // whole path would silently produce nothing if any of them were missing.
+        var value = parseRpm(cached)
         if (value == null) {
-            status = "no val in response: ${body.trim().take(120)}"
+            val direct = runCatching { VehicleAdbConnection.shell(dadb, CURL_COMMAND).output }.getOrNull()
+            value = direct?.let { parseRpm(it) }
+            if (value != null) {
+                writerStarted = false
+                status = "ok ($value RPM via ADB curl; writer not producing)"
+                rpm = value
+                updatedAtMs = SystemClock.elapsedRealtime()
+                return
+            }
+            status = "no value (file: ${cached.trim().take(60)} / curl: ${direct?.trim()?.take(60)})"
             return
         }
         rpm = value
@@ -163,6 +176,7 @@ class DiPlusAdbBridge(context: Context) {
         private const val OUT_FILE = "/data/local/tmp/driveapex_front_motor"
         private const val WRITER_MARKER = "driveapex_rpm_writer"
         private const val READ_COMMAND = "cat $OUT_FILE 2>/dev/null"
+        private const val CURL_COMMAND = "curl -s -m 3 \"http://127.0.0.1:8988$PATH_QUERY\""
 
         /** Shared with DiPlusMotorSpeedReader: `val` is a quoted, signed number. */
         private val pattern = java.util.regex.Pattern.compile(
