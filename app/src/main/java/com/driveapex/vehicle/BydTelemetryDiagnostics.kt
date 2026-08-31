@@ -19,7 +19,8 @@ object BydTelemetryDiagnostics {
         val acceleratorPercent: Int?, val brakePercent: Int?, val directRead: Boolean,
         val directError: String?, val declaredPermissions: List<String>,
         val grantedPermissions: List<String>, val failedPermissionGrants: List<String>,
-        val notes: List<String>, val sensorScan: List<String> = emptyList()
+        val notes: List<String>, val sensorScan: List<String> = emptyList(),
+        val diPlusRpm: Int? = null, val diPlusHost: String = "", val diPlusError: String? = null
     )
 
     private val REQUIRED_PERMISSIONS = listOf(
@@ -32,6 +33,16 @@ object BydTelemetryDiagnostics {
 
     fun probe(activity: Activity): Report {
         val notes = mutableListOf<String>()
+
+        // Read this first and report it at the top. It is the only path that has
+        // actually produced a front motor value on this vehicle, and burying it
+        // under the ADB/permission output made it invisible on the head unit.
+        var diPlusRpm: Int? = null
+        var diPlusError: String? = null
+        runCatching { DiPlusMotorSpeedReader.readFrontMotorRpm() }
+            .onSuccess { diPlusRpm = it?.toInt() }
+            .onFailure { diPlusError = it.javaClass.simpleName + (it.message?.let { m -> ": $m" } ?: "") }
+        val diPlusHost = DiPlusMotorSpeedReader.lastPath()
         val adbConnection = VehicleAdbConnection(activity).connect()
         val adbStatus = when {
             adbConnection != null -> "AUTHORIZED"
@@ -105,12 +116,6 @@ object BydTelemetryDiagnostics {
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
         notes += "Process name: ${currentProcessName()} (DiPlus runs as com.byd.warning)"
-        notes += runCatching {
-            val v = DiPlusMotorSpeedReader.readFrontMotorRpm()
-            val where = DiPlusMotorSpeedReader.lastPath()
-            if (v != null) "DiPlus API front motor: ${v.toInt()} RPM via $where"
-            else "DiPlus API front motor: no answer from $where"
-        }.getOrElse { "DiPlus API front motor: error ${it.javaClass.simpleName}" }
         notes += halOrigin("android.hardware.bydauto.engine.BYDAutoEngineDevice")
         notes += halOrigin("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
         notes += "Live path: in-process listener (DiPlus style) first, shell-UID daemon second, direct HAL third."
@@ -122,7 +127,8 @@ object BydTelemetryDiagnostics {
         if (scanError != null) notes += scanError
         else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
+        val anyRead = readable || diPlusRpm != null
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError)
     }
 
     /** The name this process actually reports, to confirm android:process took effect. */
@@ -168,6 +174,13 @@ object BydTelemetryDiagnostics {
 
     fun format(report: Report): String = buildString {
         appendLine("BYD TELEMETRY DIAGNOSTICS ${BuildConfig.VERSION_NAME}"); appendLine()
+        appendLine("=== FRONT MOTOR (DiPlus API) ===")
+        when {
+            report.diPlusRpm != null -> appendLine("OK: ${report.diPlusRpm} RPM  (via ${report.diPlusHost})")
+            report.diPlusError != null -> appendLine("ERROR: ${report.diPlusError}")
+            else -> appendLine("NO ANSWER from ${report.diPlusHost} -- is DiPlus running?")
+        }
+        appendLine()
         appendLine("ADB: ${report.adbStatus}"); report.adbError?.let { appendLine("ADB error: $it") }; appendLine()
         appendLine("BYD HAL API: ${if (report.engineApiPresent || report.speedApiPresent) "FOUND" else "NOT FOUND"}")
         appendLine("HAL read path: ${if (report.engineReadable) "DIPLUS ENGINE FEATURE LISTENER" else "NOT READY"}")
