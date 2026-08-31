@@ -38,6 +38,10 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var useByd = false
     @Volatile private var useAdbBridge = false
     @Volatile private var smoothedRpm: Float? = null
+    @Volatile private var lastControlsValue: Controls? = null
+    @Volatile private var lastControlsAtMs = 0L
+    private val controlsHoldMs = 1_200L
+    @Volatile private var daemonStartAttempted = false
     @Volatile private var diPlusCached: Int? = null
     @Volatile private var diPlusReadAtMs = 0L
     private val diPlusCacheMs = 30_000L
@@ -66,10 +70,12 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         invalidPacketCount = 0L
         lastSource = "NONE"
         smoothedRpm = null
+        lastControlsValue = null
         diPlusAdb?.let {
             diPlusAdbStarted = true
             runCatching { it.start() }
         }
+        startDaemonOnce()
         thread = Thread(::liveLoop, "DriveApex-LiveTelemetry").also { it.start() }
     }
 
@@ -78,6 +84,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         useDirect = false
         useByd = false
         useAdbBridge = false
+        daemonStartAttempted = false
         byd?.stop()
         if (inProcessStarted) runCatching { inProcess?.stop() }
         inProcessStarted = false
@@ -132,13 +139,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             val socketRpm = if (directRpm == null && adbRpm == null) diPlusRpm() else null
             val listenerRpm =
                 if (directRpm == null && adbRpm == null && socketRpm == null) inProcessRpm() else null
-            // The shell-UID daemon is never started from here: it has produced
-            // nothing on this vehicle and its start path holds the ADB lock across
-            // many round trips, which starved the one source that does work. Only
-            // consume its frame if something else already has it running.
-            val daemonFrame =
-                if (directRpm == null && adbRpm == null && socketRpm == null && listenerRpm == null)
-                    byd?.latest() else null
+            val daemonFrame = byd?.latest()
             useByd = daemonFrame != null
             useAdbBridge = adbRpm != null
 
@@ -149,20 +150,32 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 ?: daemonFrame?.rpm
             val rpm = rawRpm?.let { smoothRpm(it) }
 
+            // Speed, throttle and brake come from whichever source has them. The
+            // daemon publishes a whole frame, not just RPM, and dropping its
+            // starter took those three down with it -- an RPM-only publish then
+            // wrote zeros over them every tick. Remember the last real reading and
+            // keep using it while it is fresh, rather than asserting zero for a
+            // value this pass simply does not have.
+            val controls = frame?.let {
+                Controls(it.speedKph, it.throttle, it.brake).also { c -> rememberControls(c) }
+            } ?: daemonFrame?.let {
+                Controls(it.speedKph, it.throttle, it.brake).also { c -> rememberControls(c) }
+            } ?: lastControls()
+
             // Publish whenever there is anything to publish. The previous version
             // only published when the direct reader produced a usable frame, so on
             // a vehicle where that reader fails the RPM fetched just above was
             // dropped on the floor and the dashboard never received a single
             // frame -- zero from launch, for every field.
-            if (frame != null || rpm != null) {
+            if (frame != null || rpm != null || daemonFrame != null) {
                 val base = frame?.source ?: "BYD_ADB"
                 publish(
                     TelemetryFrame(
                         timestampMs = frame?.timestampMs ?: System.currentTimeMillis(),
                         rpm = rpm ?: 0f,
-                        speedKph = frame?.speedKph ?: 0f,
-                        throttle = frame?.throttle ?: 0f,
-                        brake = frame?.brake ?: 0f,
+                        speedKph = controls.speedKph,
+                        throttle = controls.throttle,
+                        brake = controls.brake,
                         regen = 0f,
                         source = when {
                             directRpm != null -> base
@@ -331,6 +344,45 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         val next = previous + (target - previous) * RPM_SMOOTHING
         smoothedRpm = next
         return next
+    }
+
+    /**
+     * Brings up the shell-UID daemon exactly once, in the background.
+     *
+     * It supplies a whole frame -- speed, throttle and brake as well as RPM -- so
+     * it has to run; those three came from here and disappeared when its starter
+     * was removed. What was actually wrong was the retry: it fired from the live
+     * loop every 15s, and each attempt copies an APK and polls for a port over
+     * ADB, holding the shell lock long enough to starve the RPM poller. Once, off
+     * the loop, with no retry, keeps the frame without the starvation.
+     */
+    private fun startDaemonOnce() {
+        val bridge = byd ?: return
+        if (daemonStartAttempted) return
+        daemonStartAttempted = true
+        Thread({
+            runCatching {
+                if (bridge.isAvailable()) bridge.start { publish(it) }
+            }
+        }, "DriveApex-BydDaemonStart").apply { isDaemon = true }.start()
+    }
+
+    private data class Controls(val speedKph: Float, val throttle: Float, val brake: Float)
+
+    private fun rememberControls(controls: Controls) {
+        lastControlsValue = controls
+        lastControlsAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * The last real speed/throttle/brake, while it is recent enough to still mean
+     * something. Past that it reverts to zero rather than showing a reading the
+     * vehicle has not confirmed for over a second.
+     */
+    private fun lastControls(): Controls {
+        val remembered = lastControlsValue ?: return Controls(0f, 0f, 0f)
+        val age = SystemClock.elapsedRealtime() - lastControlsAtMs
+        return if (age <= controlsHoldMs) remembered else Controls(0f, 0f, 0f)
     }
 
     private fun sleep50() {
