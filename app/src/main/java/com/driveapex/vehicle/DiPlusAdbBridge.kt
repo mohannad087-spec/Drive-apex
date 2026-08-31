@@ -3,6 +3,7 @@ package com.driveapex.vehicle
 import android.content.Context
 import android.os.SystemClock
 import com.driveapex.update.VehicleAdbConnection
+import dadb.Dadb
 
 /**
  * Front motor RPM from the DiPlus local API, fetched by running curl through the
@@ -30,6 +31,7 @@ class DiPlusAdbBridge(context: Context) {
     @Volatile private var updatedAtMs = 0L
     @Volatile private var status: String = "not started"
     @Volatile private var running = false
+    @Volatile private var lastConnectAttemptMs = 0L
     private var worker: Thread? = null
 
     /** Latest value, or null if none has arrived or the last one went stale. */
@@ -70,7 +72,7 @@ class DiPlusAdbBridge(context: Context) {
     }
 
     private fun poll() {
-        val dadb = runCatching { VehicleAdbConnection(appContext).connect() }.getOrNull()
+        val dadb = liveConnection()
         if (dadb == null) {
             status = "ADB not available (${VehicleAdbConnection.lastError() ?: "not authorized"})"
             return
@@ -91,8 +93,26 @@ class DiPlusAdbBridge(context: Context) {
         status = "ok ($value RPM via ADB shell)"
     }
 
+    /**
+     * The established ADB connection, reconnecting at most once every few
+     * seconds when there is none.
+     *
+     * connect() must not be called per poll: even on its cached path it
+     * round-trips an `echo` and then re-runs one `pm grant` per declared
+     * permission, so polling through it would issue a dozen ADB commands every
+     * cycle and swamp the connection this app depends on for everything.
+     */
+    private fun liveConnection(): Dadb? {
+        VehicleAdbConnection(appContext).existing()?.let { return it }
+        val now = SystemClock.elapsedRealtime()
+        if (lastConnectAttemptMs != 0L && now - lastConnectAttemptMs < RECONNECT_INTERVAL_MS) return null
+        lastConnectAttemptMs = now
+        return runCatching { VehicleAdbConnection(appContext).connect() }.getOrNull()
+    }
+
     companion object {
         private const val POLL_INTERVAL_MS = 250L
+        private const val RECONNECT_INTERVAL_MS = 5_000L
         private const val STALE_AFTER_MS = 3_000L
         private const val PATH =
             "/api/getVal?name=%E5%89%8D%E7%94%B5%E6%9C%BA%E8%BD%AC%E9%80%9F&status=true"

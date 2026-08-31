@@ -83,6 +83,18 @@ internal class VehicleAdbConnection(private val context: Context) {
         }.getOrDefault(false)
     }
 
+    /**
+     * The live connection if one is already established, with no side effects.
+     *
+     * connect() is not usable on a hot path: even when it reuses the cached
+     * connection it first round-trips an `echo` and then re-runs
+     * grantBydReadPermissions, which is one `pm grant` per declared permission.
+     * A caller polling a few times a second would issue a dozen ADB commands
+     * per poll. Pollers should take this and fall back to connect() only when
+     * it returns null.
+     */
+    fun existing(): Dadb? = synchronized(sharedLock) { shared }
+
     fun connect(): Dadb? {
         synchronized(sharedLock) {
             shared?.let { existing ->

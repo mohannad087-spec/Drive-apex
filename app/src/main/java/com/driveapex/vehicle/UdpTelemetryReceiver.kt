@@ -42,7 +42,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     private val bydStartRetryMs = 15_000L
     @Volatile private var diPlusCached: Int? = null
     @Volatile private var diPlusReadAtMs = 0L
-    private val diPlusCacheMs = 100L
+    private val diPlusCacheMs = 30_000L
     @Volatile private var latest: LiveTelemetry? = null
     @Volatile private var lastPacketAtMs = 0L
     @Volatile private var packetCount = 0L
@@ -60,6 +60,10 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         packetCount = 0L
         invalidPacketCount = 0L
         lastSource = "NONE"
+        diPlusAdb?.let {
+            diPlusAdbStarted = true
+            runCatching { it.start() }
+        }
         thread = Thread(::liveLoop, "DriveApex-LiveTelemetry").also { it.start() }
     }
 
@@ -113,20 +117,25 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 // Preference for RPM: the direct reader's own value, then DiPlus's
                 // local API (verified working on the vehicle: 200 OK, no auth), then
                 // the in-process listener, then the ADB daemon.
-                val diPlusRpm = if (!frame.motorSpeedAvailable) diPlusRpm() else null
-                val diPlusAdbRpm =
-                    if (!frame.motorSpeedAvailable && diPlusRpm == null) diPlusAdbRpm() else null
+                // ADB first, deliberately. On this vehicle nothing in this app's
+                // own process can read the motor: the HAL listener registers and
+                // is never dispatched to, and a direct socket to the DiPlus API is
+                // met with a TCP reset while the identical request from the shell
+                // UID returns the value. ADB is the read path, not a fallback.
+                val diPlusAdbRpm = if (!frame.motorSpeedAvailable) diPlusAdbRpm() else null
+                val diPlusRpm =
+                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null) diPlusRpm() else null
                 val inProcessRpm =
-                    if (!frame.motorSpeedAvailable && diPlusRpm == null && diPlusAdbRpm == null)
+                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null && diPlusRpm == null)
                         inProcessRpm() else null
                 val daemonFrame =
-                    if (!frame.motorSpeedAvailable && diPlusRpm == null && diPlusAdbRpm == null &&
+                    if (!frame.motorSpeedAvailable && diPlusAdbRpm == null && diPlusRpm == null &&
                         inProcessRpm == null
                     ) startBydDaemonForRpm() else null
                 useByd = daemonFrame != null
                 val rpm = frame.motorSpeed.takeIf { frame.motorSpeedAvailable }
-                    ?: diPlusRpm?.toFloat()
                     ?: diPlusAdbRpm?.toFloat()
+                    ?: diPlusRpm?.toFloat()
                     ?: inProcessRpm?.toFloat()
                     ?: daemonFrame?.rpm
                     ?: frame.motorSpeed
@@ -140,8 +149,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                         regen = 0f,
                         source = when {
                             frame.motorSpeedAvailable -> frame.source
-                            diPlusRpm != null -> "${frame.source}+DIPLUS_RPM"
                             diPlusAdbRpm != null -> "${frame.source}+DIPLUS_ADB_RPM"
+                            diPlusRpm != null -> "${frame.source}+DIPLUS_RPM"
                             inProcessRpm != null -> "${frame.source}+INPROCESS_RPM"
                             daemonFrame != null -> "${frame.source}+BYD_DAEMON_RPM"
                             else -> frame.source
@@ -169,6 +178,13 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
      * loop does not hammer it. DiPlus already holds the value the BYD HAL will not
      * hand this app, and serves it unauthenticated on the loopback interface, so
      * consuming it is far more reliable than re-deriving the HAL read.
+     */
+    /**
+     * The DiPlus API over a direct socket. Kept only as an opportunistic probe on
+     * a long interval: this app's socket to the service is currently reset every
+     * time, so retrying it at loop rate would burn a connection attempt per frame
+     * for nothing. If it ever starts answering it is preferred over ADB, being
+     * far cheaper.
      */
     private fun diPlusRpm(): Int? {
         val now = SystemClock.elapsedRealtime()
