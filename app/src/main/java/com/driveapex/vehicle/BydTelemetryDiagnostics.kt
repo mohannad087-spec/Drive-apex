@@ -104,6 +104,7 @@ object BydTelemetryDiagnostics {
         val engineApiPresent = runCatching { Class.forName("android.hardware.bydauto.engine.BYDAutoEngineDevice"); true }.getOrDefault(false) || runCatching { Class.forName("android.hardware.bydauto.motor.BYDAutoMotorDevice"); true }.getOrDefault(false)
         val speedApiPresent = runCatching { Class.forName("android.hardware.bydauto.speed.BYDAutoSpeedDevice"); true }.getOrDefault(false)
         notes += "Android API ${Build.VERSION.SDK_INT}; BYD HAL behavior depends on head-unit firmware."
+        notes += "Process name: ${currentProcessName()} (DiPlus runs as com.byd.warning)"
         notes += halOrigin("android.hardware.bydauto.engine.BYDAutoEngineDevice")
         notes += halOrigin("android.hardware.bydauto.speed.BYDAutoSpeedDevice")
         notes += "Live path: in-process listener (DiPlus style) first, shell-UID daemon second, direct HAL third."
@@ -117,6 +118,12 @@ object BydTelemetryDiagnostics {
 
         return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, readable, readable, rpm, speedApiPresent, readable, speed, accelerator, brake, directFrame != null, if (readable) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan)
     }
+
+    /** The name this process actually reports, to confirm android:process took effect. */
+    private fun currentProcessName(): String = runCatching {
+        // cmdline is NUL-separated; take the first entry rather than trimming.
+        java.io.File("/proc/self/cmdline").readText().split(0.toChar())[0].trim()
+    }.getOrElse { "unknown (${it.javaClass.simpleName})" }
 
     /**
      * Says whether a BYD HAL class resolves to the real head-unit framework or to this

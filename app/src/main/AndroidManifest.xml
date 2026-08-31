@@ -43,8 +43,19 @@
     <uses-permission android:name="android.permission.BYDAUTO_CHARGING_GET" />
     <uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
 
+    <!--
+      android:process is the one structural difference left between this app and
+      DiPlus. DiPlus declares android:process="com.byd.warning" on its own
+      application, so its whole process reports that name instead of its package
+      name. That matches the observed behaviour exactly: an unfiltered engine
+      listener registers successfully and is then never dispatched to, which is
+      what a HAL that allowlists client processes rather than relying on
+      permissions alone would do. It grants no privilege by itself: the process
+      still runs under this app's own UID with only this app's permissions.
+    -->
     <application
         android:name=".DriveApexApplication"
+        android:process="com.byd.warning"
         android:allowBackup="true"
         android:label="DriveApex"
         android:supportsRtl="true"
