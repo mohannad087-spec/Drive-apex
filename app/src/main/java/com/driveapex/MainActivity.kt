@@ -72,7 +72,7 @@ class MainActivity : Activity() {
       rpmValue.text = "${motorSpeed} MOTOR SPEED"
       motorSpeedBar.progress = motorSpeed
   } ?: showNoVehicleData()
-            handler.postDelayed(this, 100L)
+            handler.postDelayed(this, 50L)
         }
     }
 

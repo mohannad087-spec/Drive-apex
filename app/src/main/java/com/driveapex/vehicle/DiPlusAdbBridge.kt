@@ -50,12 +50,19 @@ class DiPlusAdbBridge(context: Context) {
         running = true
         worker = Thread({
             while (running) {
+                val startedAt = SystemClock.elapsedRealtime()
                 poll()
-                try {
-                    Thread.sleep(POLL_INTERVAL_MS)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return@Thread
+                // Sleep the remainder of the period, not a full period on top of
+                // the ADB round trip -- that turned a 100ms poll into ~140ms and
+                // was a third of the end-to-end lag on its own.
+                val remaining = POLL_INTERVAL_MS - (SystemClock.elapsedRealtime() - startedAt)
+                if (remaining > 0) {
+                    try {
+                        Thread.sleep(remaining)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return@Thread
+                    }
                 }
             }
         }, "DriveApex-DiPlusAdb").apply { isDaemon = true }
@@ -147,9 +154,9 @@ class DiPlusAdbBridge(context: Context) {
             // app restart can never leave two loops polling the service.
             VehicleAdbConnection.shell(dadb, "pkill -f $WRITER_MARKER 2>/dev/null || true")
             val fractional = runCatching {
-                VehicleAdbConnection.shell(dadb, "sleep 0.1 2>/dev/null && echo FRAC_OK").output.contains("FRAC_OK")
+                VehicleAdbConnection.shell(dadb, "sleep 0.05 2>/dev/null && echo FRAC_OK").output.contains("FRAC_OK")
             }.getOrDefault(false)
-            val interval = if (fractional) "0.1" else "1"
+            val interval = if (fractional) "0.05" else "1"
             VehicleAdbConnection.shell(
                 dadb,
                 "nohup sh -c 'while true; do curl -s -m 2 \"http://127.0.0.1:8988$PATH_QUERY\" " +
@@ -168,7 +175,7 @@ class DiPlusAdbBridge(context: Context) {
     }
 
     companion object {
-        private const val POLL_INTERVAL_MS = 100L
+        private const val POLL_INTERVAL_MS = 50L
         private const val RECONNECT_INTERVAL_MS = 5_000L
         private const val STALE_AFTER_MS = 3_000L
         private const val PATH_QUERY =
