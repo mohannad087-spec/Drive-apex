@@ -22,8 +22,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
-import com.driveapex.audio.ETronInspiredSoundProfile
-import com.driveapex.audio.ApexSoundProfile
+import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.vehicle.LiveTelemetry
@@ -36,7 +35,7 @@ import kotlin.math.sin
 
 class NextGenCockpitActivity : Activity() {
     private val prefs: SharedPreferences by lazy { getSharedPreferences("driveapex_ui", Context.MODE_PRIVATE) }
-    private val engine = LayeredSoundEngine(ETronInspiredSoundProfile.layers)
+    private val engine = LayeredSoundEngine(EngineCharacters.default)
     private val controller = EngineSoundController(engine)
     private lateinit var receiver: UdpTelemetryReceiver
     private lateinit var root: LinearLayout
@@ -153,7 +152,7 @@ class NextGenCockpitActivity : Activity() {
             val p = card(10)
             p.setOnClickListener {
                 profile = item.first
-                if (profile == "EV GT") engine.setLayers(ETronInspiredSoundProfile.layers) else engine.setLayers(ApexSoundProfile.layers)
+                engine.setCharacter(if (profile == "EV GT") EngineCharacters.evRealistic else EngineCharacters.evSport)
                 render()
             }
             p.addView(text(item.first, 18f, fg(), true))

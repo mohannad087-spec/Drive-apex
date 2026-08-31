@@ -18,8 +18,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
-import com.driveapex.audio.ApexSoundProfile
-import com.driveapex.audio.ETronInspiredSoundProfile
+import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
@@ -34,7 +33,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
-    private val engine = LayeredSoundEngine(ETronInspiredSoundProfile.layers)
+    private val engine = LayeredSoundEngine(EngineCharacters.default)
     private val vehicle = SimulatorVehicleDataProvider()
     private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
@@ -296,11 +295,14 @@ class MainActivity : Activity() {
     private fun profiles(): HorizontalScrollView {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(profile("EV GT", "Electric GT", BLUE) {
-            engine.setLayers(ETronInspiredSoundProfile.layers)
+        row.addView(profile("EV REAL", "Authentic EV", BLUE) {
+            engine.setCharacter(EngineCharacters.evRealistic)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("APEX", "Performance", PURPLE) {
-            engine.setLayers(ApexSoundProfile.layers)
+        row.addView(profile("EV SPORT", "Electric GT", PURPLE) {
+            engine.setCharacter(EngineCharacters.evSport)
+        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("COMBUSTION", "Petrol Sport", AMBER) {
+            engine.setCharacter(EngineCharacters.iceSport)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         return scroll
