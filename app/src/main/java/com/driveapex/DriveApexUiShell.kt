@@ -138,7 +138,6 @@ class DriveApexUiShell(
         signature: TextView, genome: TextView, status: TextView, speed: TextView, throttle: TextView,
         brake: TextView, regen: TextView) = LinearLayout(activity).apply {
         orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.STRETCH
         addView(card(18).apply {
             val top = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
             top.addView(scene, LinearLayout.LayoutParams(0, -2, 1f)); top.addView(source); addView(top)
