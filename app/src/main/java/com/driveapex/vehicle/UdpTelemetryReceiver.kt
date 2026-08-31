@@ -24,6 +24,15 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     private val inProcess = context?.let { runCatching { FrontMotorSpeedReader(it) }.getOrNull() }
     @Volatile private var inProcessStarted = false
 
+    /**
+     * The DiPlus API by way of the shell UID. A direct socket from this process
+     * to 127.0.0.1:8988 is met with a TCP reset while the identical request from
+     * the shell UID returns the value, so this is the path proven to work on the
+     * vehicle. It polls on its own thread and the loop only reads a cached value.
+     */
+    private val diPlusAdb = context?.let { runCatching { DiPlusAdbBridge(it) }.getOrNull() }
+    @Volatile private var diPlusAdbStarted = false
+
     @Volatile private var running = false
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
@@ -63,6 +72,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         byd?.stop()
         if (inProcessStarted) runCatching { inProcess?.stop() }
         inProcessStarted = false
+        if (diPlusAdbStarted) runCatching { diPlusAdb?.stop() }
+        diPlusAdbStarted = false
         runCatching { socket?.close() }
         socket = null
         thread = null
@@ -103,14 +114,19 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 // local API (verified working on the vehicle: 200 OK, no auth), then
                 // the in-process listener, then the ADB daemon.
                 val diPlusRpm = if (!frame.motorSpeedAvailable) diPlusRpm() else null
+                val diPlusAdbRpm =
+                    if (!frame.motorSpeedAvailable && diPlusRpm == null) diPlusAdbRpm() else null
                 val inProcessRpm =
-                    if (!frame.motorSpeedAvailable && diPlusRpm == null) inProcessRpm() else null
+                    if (!frame.motorSpeedAvailable && diPlusRpm == null && diPlusAdbRpm == null)
+                        inProcessRpm() else null
                 val daemonFrame =
-                    if (!frame.motorSpeedAvailable && diPlusRpm == null && inProcessRpm == null)
-                        startBydDaemonForRpm() else null
+                    if (!frame.motorSpeedAvailable && diPlusRpm == null && diPlusAdbRpm == null &&
+                        inProcessRpm == null
+                    ) startBydDaemonForRpm() else null
                 useByd = daemonFrame != null
                 val rpm = frame.motorSpeed.takeIf { frame.motorSpeedAvailable }
                     ?: diPlusRpm?.toFloat()
+                    ?: diPlusAdbRpm?.toFloat()
                     ?: inProcessRpm?.toFloat()
                     ?: daemonFrame?.rpm
                     ?: frame.motorSpeed
@@ -125,6 +141,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                         source = when {
                             frame.motorSpeedAvailable -> frame.source
                             diPlusRpm != null -> "${frame.source}+DIPLUS_RPM"
+                            diPlusAdbRpm != null -> "${frame.source}+DIPLUS_ADB_RPM"
                             inProcessRpm != null -> "${frame.source}+INPROCESS_RPM"
                             daemonFrame != null -> "${frame.source}+BYD_DAEMON_RPM"
                             else -> frame.source
@@ -139,6 +156,7 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             invalidPacketCount++
             if (directFailures >= 5) {
                 useDirect = false
+                diPlusAdbRpm()
                 inProcessRpm()
                 useByd = startBydDaemonForRpm() != null
             }
@@ -158,6 +176,19 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         diPlusReadAtMs = now
         diPlusCached = runCatching { DiPlusMotorSpeedReader.readFrontMotorRpm()?.toInt() }.getOrNull()
         return diPlusCached
+    }
+
+    /**
+     * Same value via the shell UID, used when the direct socket is refused.
+     * Starting the poller is cheap and idempotent; reading is a cached field.
+     */
+    private fun diPlusAdbRpm(): Int? {
+        val bridge = diPlusAdb ?: return null
+        if (!diPlusAdbStarted) {
+            diPlusAdbStarted = true
+            runCatching { bridge.start() }
+        }
+        return runCatching { bridge.latestRpm() }.getOrNull()
     }
 
     /**

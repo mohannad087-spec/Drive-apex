@@ -44,18 +44,24 @@
     <uses-permission android:name="android.permission.BYDAUTO_POWER_GET" />
 
     <!--
-      android:process is the one structural difference left between this app and
-      DiPlus. DiPlus declares android:process="com.byd.warning" on its own
-      application, so its whole process reports that name instead of its package
-      name. That matches the observed behaviour exactly: an unfiltered engine
-      listener registers successfully and is then never dispatched to, which is
-      what a HAL that allowlists client processes rather than relying on
-      permissions alone would do. It grants no privilege by itself: the process
-      still runs under this app's own UID with only this app's permissions.
+      android:process="com.byd.warning" was set here on the theory that the HAL
+      allowlists client processes by name. Measurement on the vehicle removed
+      the reason for it and gave a reason against it.
+
+      Against the theory: DiPlus turns out to hold only BYDAUTO_ENGINE_COMMON
+      and BYDAUTO_SPEED_COMMON, exactly this app's tier, installed to /data/app
+      with no SYSTEM or PRIVILEGED flag - so nothing about its identity explains
+      what it can read, and its API is served by a native process rather than by
+      the Java HAL listener this attribute was meant to imitate.
+
+      Against the attribute: curl from the shell UID to 127.0.0.1:8988 on the
+      vehicle returns the value, while every request from inside this app to the
+      same address is met with a TCP reset. A per-process or per-UID network
+      rule rejecting with RST produces exactly that, and borrowing another
+      vendor app's process name is a plausible way to land in one.
     -->
     <application
         android:name=".DriveApexApplication"
-        android:process="com.byd.warning"
         android:allowBackup="true"
         android:label="DriveApex"
         android:supportsRtl="true"

@@ -24,7 +24,8 @@ object BydTelemetryDiagnostics {
         val diPlusRpm: Int? = null, val diPlusHost: String = "", val diPlusError: String? = null,
         val heldPermissions: List<String> = emptyList(), val missingPermissions: List<String> = emptyList(),
         val inProcessReport: String = "", val inProcessRpm: Int? = null,
-        val diPlusInstall: List<String> = emptyList()
+        val diPlusInstall: List<String> = emptyList(),
+        val diPlusAdbRpm: Int? = null, val diPlusAdbStatus: String = ""
     )
 
     /** Same endpoint DiPlusMotorSpeedReader uses, for the shell-side comparison. */
@@ -167,13 +168,18 @@ object BydTelemetryDiagnostics {
         val diPlusInstall = if (adbConnection != null) inspectDiPlus(adbConnection)
         else listOf("ADB not authorized -- cannot inspect DiPlus")
 
+        // The same value over the path measured to work: the shell UID.
+        val adbBridge = runCatching { DiPlusAdbBridge(activity) }.getOrNull()
+        val diPlusAdbRpm = runCatching { adbBridge?.readOnce() }.getOrNull()
+        val diPlusAdbStatus = runCatching { adbBridge?.status() }.getOrNull() ?: "unavailable"
+
         val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
         val scanError = scan.firstOrNull { it.startsWith("SENSOR SCAN ERROR:") }
         if (scanError != null) notes += scanError
         else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
-        val anyRead = readable || diPlusRpm != null || inProcessRpm != null
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm, diPlusInstall)
+        val anyRead = readable || diPlusRpm != null || inProcessRpm != null || diPlusAdbRpm != null
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm ?: diPlusAdbRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm, diPlusInstall, diPlusAdbRpm, diPlusAdbStatus)
     }
 
     /** The name this process actually reports, to confirm android:process took effect. */
@@ -246,6 +252,13 @@ object BydTelemetryDiagnostics {
             12
         )
         run("All listening TCP ports", "netstat -tlnp 2>/dev/null | head -20", 20)
+        run(
+            "Network rules for this app",
+            "dumpsys package com.driveapex | grep -m1 userId= ; dumpsys netpolicy | grep -i -m6 driveapex ; " +
+                "cmd connectivity list 2>/dev/null | head -3 ; echo '--- vpn ---' ; " +
+                "ip rule 2>/dev/null | head -8",
+            18
+        )
         return out
     }
 
@@ -277,6 +290,10 @@ object BydTelemetryDiagnostics {
             report.diPlusError != null -> appendLine("ERROR: ${report.diPlusError}")
             else -> appendLine("NO ANSWER from ${report.diPlusHost} -- is DiPlus running?")
         }
+        appendLine()
+        appendLine("=== FRONT MOTOR (DiPlus API via shell UID) ===")
+        appendLine(if (report.diPlusAdbRpm != null) "OK: ${report.diPlusAdbRpm} RPM" else "no value")
+        appendLine(report.diPlusAdbStatus)
         appendLine()
         appendLine("=== FRONT MOTOR (BYD HAL, in-process like DiPlus) ===")
         appendLine(if (report.inProcessRpm != null) "OK: ${report.inProcessRpm} RPM" else "no value")
