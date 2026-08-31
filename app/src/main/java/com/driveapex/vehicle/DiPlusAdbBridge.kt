@@ -2,6 +2,7 @@ package com.driveapex.vehicle
 
 import android.content.Context
 import android.os.SystemClock
+import com.driveapex.diag.DriveApexLog
 import com.driveapex.update.VehicleAdbConnection
 import dadb.Dadb
 
@@ -34,7 +35,6 @@ class DiPlusAdbBridge(context: Context) {
     @Volatile private var status: String = "not started"
     @Volatile private var running = false
     @Volatile private var lastConnectAttemptMs = 0L
-    @Volatile private var writerStarted = false
     @Volatile private var lastWriterCheckMs = 0L
     @Volatile private var fractionalSleep: Boolean? = null
     private var worker: Thread? = null
@@ -111,6 +111,23 @@ class DiPlusAdbBridge(context: Context) {
         status = "no value (file: ${cached?.trim()?.take(50)} / curl: ${direct?.trim()?.take(50)})"
     }
 
+    /**
+     * The established ADB connection, reconnecting at most every few seconds
+     * when there is none.
+     *
+     * connect() must not be called per poll: even on its cached path it
+     * round-trips an echo and then re-runs one `pm grant` per declared
+     * permission, so polling through it would issue a dozen ADB commands every
+     * cycle on the connection this app depends on for everything.
+     */
+    private fun liveConnection(): Dadb? {
+        VehicleAdbConnection(appContext).existing()?.let { return it }
+        val now = SystemClock.elapsedRealtime()
+        if (lastConnectAttemptMs != 0L && now - lastConnectAttemptMs < RECONNECT_INTERVAL_MS) return null
+        lastConnectAttemptMs = now
+        return runCatching { VehicleAdbConnection(appContext).connect() }.getOrNull()
+    }
+
     private fun publish(value: Int, via: String) {
         rpm = value
         updatedAtMs = SystemClock.elapsedRealtime()
@@ -143,10 +160,7 @@ class DiPlusAdbBridge(context: Context) {
             VehicleAdbConnection.shell(dadb, "kill -0 \"${'$'}(cat $PID_FILE 2>/dev/null)\" 2>/dev/null && echo ALIVE")
                 .output.contains("ALIVE")
         }.getOrDefault(false)
-        if (alive) {
-            writerStarted = true
-            return
-        }
+        if (alive) return
 
         // Probe fractional sleep once per connection, not per restart: it costs a
         // blocking shell round trip on a lock every other reader shares.
@@ -166,7 +180,7 @@ class DiPlusAdbBridge(context: Context) {
             "i=${d}((i+1)); sleep $interval; done; rm -f $PID_FILE"
         runCatching {
             VehicleAdbConnection.shell(dadb, "nohup sh -c '$loop' >/dev/null 2>&1 &")
-            writerStarted = true
+            DriveApexLog.i("rpm", "started on-vehicle writer, interval ${interval}s")
         }.onFailure { status = "writer start failed: ${it.javaClass.simpleName}" }
     }
 
@@ -175,7 +189,6 @@ class DiPlusAdbBridge(context: Context) {
         runCatching {
             VehicleAdbConnection.shell(dadb, "kill \"${'$'}(cat $PID_FILE 2>/dev/null)\" 2>/dev/null; rm -f $PID_FILE")
         }
-        writerStarted = false
         lastWriterCheckMs = 0L
     }
 

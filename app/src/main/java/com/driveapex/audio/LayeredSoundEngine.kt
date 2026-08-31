@@ -19,7 +19,12 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     }
 
     private val sampleRate = SAMPLE_RATE
-    private val bufferSize = 1_536
+
+    // Halved from 1536. Render latency is one chunk, so this is 17ms instead of
+    // 35ms, while the AudioTrack queue below stays two chunks deep -- the same
+    // number of frames as before, so the margin against underrun is unchanged
+    // and only the writes get more frequent.
+    private val bufferSize = 768
 
     // Declared after the sample rate on purpose: Kotlin initialises properties in
     // source order, so constructing this above would hand the renderer a zero.
@@ -57,7 +62,8 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             AudioManager::class.java.getField("STREAM_NAVI").getInt(null)
         }.getOrDefault(DEFAULT_NAV_STREAM)
 
-        val targetBuffer = maxOf(bufferSize * 4, minBuffer)
+        // Two chunks in bytes: four bytes per stereo frame, times two chunks.
+        val targetBuffer = maxOf(bufferSize * 4 * 2, minBuffer)
         val created = runCatching {
             @Suppress("DEPRECATION")
             AudioTrack(
