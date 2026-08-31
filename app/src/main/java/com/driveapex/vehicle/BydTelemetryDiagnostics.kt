@@ -97,6 +97,8 @@ object BydTelemetryDiagnostics {
         val declared = REQUIRED_PERMISSIONS.filter { permission -> packageInfo?.requestedPermissions?.contains(permission) == true }
         if (declared.size < REQUIRED_PERMISSIONS.size) notes += "Undeclared BYD permissions: ${(REQUIRED_PERMISSIONS - declared.toSet()).joinToString()}"
         if (failedPermissionGrants.isNotEmpty()) notes += "Some BYD GET/signature permissions are not runtime-grantable; common permissions are checked separately."
+        notes += "Measured on this vehicle: DiPlus holds only BYDAUTO_ENGINE_COMMON and BYDAUTO_SPEED_COMMON -- the same tier this app holds -- and is installed to /data/app with no SYSTEM or PRIVILEGED flag. So the missing _GET permissions cannot be what separates the two apps."
+        notes += "Its API is served by a native process (aps_diplus) on tcp6 :::8988, not by its Java HAL listener, so the decompiled listener may not be where its value comes from."
 
         var daemonAvailable = false
         var daemonRpm: Int? = null
