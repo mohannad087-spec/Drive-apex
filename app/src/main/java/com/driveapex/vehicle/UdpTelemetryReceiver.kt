@@ -18,6 +18,9 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var useDirect = false
     @Volatile private var useByd = false
     @Volatile private var bydDaemonStarted = false
+    @Volatile private var bydStartInFlight = false
+    @Volatile private var bydStartAttemptedAtMs = 0L
+    private val bydStartRetryMs = 15_000L
     @Volatile private var latest: LiveTelemetry? = null
     @Volatile private var lastPacketAtMs = 0L
     @Volatile private var packetCount = 0L
@@ -42,6 +45,8 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         running = false
         useDirect = false
         useByd = false
+        bydDaemonStarted = false
+        bydStartAttemptedAtMs = 0L
         byd?.stop()
         runCatching { socket?.close() }
         socket = null
@@ -110,14 +115,35 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
         }
     }
 
-    /** Starts (if not already running) the privileged BYD daemon bridge and returns its latest frame. Idempotent. */
+    /**
+     * Returns the daemon bridge's latest frame, kicking off a start attempt in the
+     * background if it is not running yet.
+     *
+     * This must never block: isAvailable() goes out over ADB (shell commands, an APK
+     * copy, up to several seconds of polling for the daemon's port). Called inline
+     * from liveLoop it stalls the 50 ms cadence, every frame goes stale past
+     * staleAfterMs, and the whole dashboard blanks out -- speed and pedals included,
+     * not just RPM. A failed attempt is retried on a timer rather than on every tick.
+     */
     private fun startBydDaemonForRpm(): TelemetryFrame? {
         val bridge = byd ?: return null
-        if (!bydDaemonStarted) {
-            bydDaemonStarted = runCatching {
-                if (!bridge.isAvailable()) false
-                else { bridge.start { publish(it) }; true }
-            }.getOrDefault(false)
+        if (!bydDaemonStarted && !bydStartInFlight) {
+            val now = SystemClock.elapsedRealtime()
+            if (bydStartAttemptedAtMs == 0L || now - bydStartAttemptedAtMs >= bydStartRetryMs) {
+                bydStartAttemptedAtMs = now
+                bydStartInFlight = true
+                Thread({
+                    try {
+                        if (bridge.isAvailable()) {
+                            bridge.start { publish(it) }
+                            bydDaemonStarted = true
+                        }
+                    } catch (_: Throwable) {
+                    } finally {
+                        bydStartInFlight = false
+                    }
+                }, "DriveApex-BydDaemonStart").apply { isDaemon = true }.start()
+            }
         }
         return bridge.latest()
     }

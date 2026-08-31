@@ -21,11 +21,25 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val SOCKET_TIMEOUT_MS = 45_000
         private const val QUICK_WAIT_MS = 7_000L
         private const val MAX_POLLS = 120
+        /**
+         * Every BYD permission the manifest declares, not just the _COMMON tier.
+         * On the target vehicle the diagnostics probe reported 4/10 granted -- exactly
+         * the four _COMMON permissions listed here before -- while the engine listener
+         * registered successfully and then received zero events. Registration only
+         * needs the _COMMON tier; delivering engine/motor values needs the matching
+         * _GET permission, and those were never passed to `pm grant` at all.
+         */
         private val BYD_RUNTIME_GRANT_PERMISSIONS = arrayOf(
             "android.permission.BYDAUTO_SPEED_COMMON",
+            "android.permission.BYDAUTO_SPEED_GET",
             "android.permission.BYDAUTO_ENGINE_COMMON",
+            "android.permission.BYDAUTO_ENGINE_GET",
+            "android.permission.BYDAUTO_MOTOR_GET",
             "android.permission.BYDAUTO_ENERGY_COMMON",
-            "android.permission.BYDAUTO_GEARBOX_COMMON"
+            "android.permission.BYDAUTO_ENERGY_GET",
+            "android.permission.BYDAUTO_GEARBOX_COMMON",
+            "android.permission.BYDAUTO_GEARBOX_GET",
+            "android.permission.BYDAUTO_VEHICLE_DATA_GET"
         )
         private const val TELEMETRY_DAEMON_CLASS = "com.driveapex.vehicle.BydDiPlusEngineTelemetryDaemonMain"
         private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"

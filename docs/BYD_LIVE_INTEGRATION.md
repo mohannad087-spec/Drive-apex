@@ -240,6 +240,50 @@ logged to the daemon log every 5s and exposed on the scan port as
 `HIT,ENGINE,EVENTS,count=…,types=0x…=v;…`. That list is what settles
 whether the feature ID is wrong or the events were simply never delivered.
 
+## Only the _COMMON permissions were ever granted
+
+Running the unfiltered-listener build on the vehicle settled it. The
+diagnostics probe reported:
+
+```
+ENGINE REGISTRATION  registerListener(listener):unfiltered   rpm=0
+ENGINE EVENTS        count=0  types=NONE
+BYD permissions declared: 10/10
+BYD permissions reported granted: 4/10
+  BYDAUTO_SPEED_COMMON  BYDAUTO_ENGINE_COMMON
+  BYDAUTO_ENERGY_COMMON BYDAUTO_GEARBOX_COMMON
+```
+
+Registration succeeds, it is genuinely unfiltered, and **zero** events
+arrive. That rules the feature ID out entirely: an unfiltered subscription
+that receives nothing at all cannot be explained by asking for the wrong
+id.
+
+The granted list is the answer, and it is exactly the four entries that
+were hardcoded in `VehicleAdbConnection.BYD_RUNTIME_GRANT_PERMISSIONS`.
+The manifest declares ten; the other six — every `_GET` permission,
+including `BYDAUTO_ENGINE_GET` and `BYDAUTO_MOTOR_GET` — were never passed
+to `pm grant` at all. Registering a listener only needs the `_COMMON`
+tier, which is why registration reported success while no engine value was
+ever delivered. All ten declared permissions are now granted.
+
+Note the split this implies, and which matches every earlier observation:
+the `_COMMON` tier is enough to open a device and register, the `_GET`
+tier is what actually releases values. It is also why the in-process
+`DirectBydTelemetryReader` could read speed/throttle/brake but never motor
+speed.
+
+## Never call the daemon bridge from the live loop
+
+`UdpTelemetryReceiver.startBydDaemonForRpm()` originally called
+`BydHalTelemetryBridge.isAvailable()` inline. That call goes out over ADB —
+shell commands, an APK copy, then up to several seconds polling for the
+daemon's port — and on failure it was retried on every 50 ms tick. The live
+loop stalled, every frame aged past `staleAfterMs`, and the dashboard blanked
+out completely: speed and pedals as well as RPM, on a vehicle where those had
+been working. The start attempt now runs on a background thread, rate-limited,
+and the loop keeps publishing from the direct reader while it happens.
+
 ## Important
 
 Do not assume a particular BYD/DiLink API, property name, port, ADB service, or CAN signal until it has been observed and verified on the target vehicle/software version.
