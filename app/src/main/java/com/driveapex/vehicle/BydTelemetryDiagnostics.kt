@@ -222,7 +222,7 @@ object BydTelemetryDiagnostics {
         val out = mutableListOf<String>()
         fun run(label: String, command: String, maxLines: Int) {
             runCatching {
-                val text = dadb.shell(command).output.trim()
+                val text = VehicleAdbConnection.shell(dadb, command).output.trim()
                 if (text.isBlank()) out += "$label: (no output)"
                 else {
                     out += "$label:"

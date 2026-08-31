@@ -20,9 +20,11 @@ import dadb.Dadb
  * process that something is refusing. Until that is fixed at the source, going
  * through the shell UID is the path already proven to work on this hardware.
  *
- * It is a fallback, not the primary: each poll is an ADB round trip, so the
- * value is refreshed on a background thread and the caller only ever reads a
- * cached number. Nothing here blocks the live telemetry loop.
+ * This is the primary read path on this vehicle, not a fallback, so it is built
+ * to keep up: a loop started once on the vehicle keeps a file topped up with the
+ * latest reading and each poll is a cheap `cat`, rather than launching curl over
+ * ADB every cycle. Refreshing happens on a background thread and callers only
+ * ever read a cached number, so nothing here blocks the live telemetry loop.
  */
 class DiPlusAdbBridge(context: Context) {
     private val appContext = context.applicationContext
@@ -32,6 +34,7 @@ class DiPlusAdbBridge(context: Context) {
     @Volatile private var status: String = "not started"
     @Volatile private var running = false
     @Volatile private var lastConnectAttemptMs = 0L
+    @Volatile private var writerStarted = false
     private var worker: Thread? = null
 
     /** Latest value, or null if none has arrived or the last one went stale. */
@@ -63,6 +66,7 @@ class DiPlusAdbBridge(context: Context) {
         running = false
         worker?.interrupt()
         worker = null
+        runCatching { stopWriter() }
     }
 
     /** One fetch, for the diagnostics screen, without starting the poll loop. */
@@ -75,12 +79,15 @@ class DiPlusAdbBridge(context: Context) {
         val dadb = liveConnection()
         if (dadb == null) {
             status = "ADB not available (${VehicleAdbConnection.lastError() ?: "not authorized"})"
+            writerStarted = false
             return
         }
-        val result = runCatching { dadb.shell(CURL_COMMAND).output }
+        if (!writerStarted) startWriter(dadb)
+        val result = runCatching { VehicleAdbConnection.shell(dadb, READ_COMMAND).output }
         val body = result.getOrNull()
         if (body == null) {
             status = "shell failed: ${result.exceptionOrNull()?.javaClass?.simpleName}"
+            writerStarted = false
             return
         }
         val value = parseRpm(body)
@@ -110,13 +117,52 @@ class DiPlusAdbBridge(context: Context) {
         return runCatching { VehicleAdbConnection(appContext).connect() }.getOrNull()
     }
 
+    /**
+     * Starts a small loop on the vehicle that keeps a file topped up with the
+     * latest reading, so a poll is a cheap `cat` instead of spawning curl over
+     * ADB every time. That is what makes the value feel live rather than
+     * arriving a quarter-second late behind a process launch.
+     *
+     * The write is to a temp file then renamed, so a reader never sees a
+     * half-written body. Fractional sleep is probed first: if this shell cannot
+     * do it, a busy loop would spin the vehicle's CPU, so it falls back to a
+     * one-second cadence instead.
+     */
+    private fun startWriter(dadb: Dadb) {
+        runCatching {
+            // Clear any previous writer before starting one, so a reconnect or an
+            // app restart can never leave two loops polling the service.
+            VehicleAdbConnection.shell(dadb, "pkill -f $WRITER_MARKER 2>/dev/null || true")
+            val fractional = runCatching {
+                VehicleAdbConnection.shell(dadb, "sleep 0.1 2>/dev/null && echo FRAC_OK").output.contains("FRAC_OK")
+            }.getOrDefault(false)
+            val interval = if (fractional) "0.1" else "1"
+            VehicleAdbConnection.shell(
+                dadb,
+                "nohup sh -c 'while true; do curl -s -m 2 \"http://127.0.0.1:8988$PATH_QUERY\" " +
+                    "> $OUT_FILE.tmp 2>/dev/null && mv $OUT_FILE.tmp $OUT_FILE; " +
+                    "echo $WRITER_MARKER > /dev/null; sleep $interval; done' >/dev/null 2>&1 &"
+            )
+            writerStarted = true
+            if (!fractional) status = "writer running at 1s (shell has no fractional sleep)"
+        }.onFailure { status = "writer start failed: ${it.javaClass.simpleName}" }
+    }
+
+    private fun stopWriter() {
+        val dadb = VehicleAdbConnection(appContext).existing() ?: return
+        runCatching { VehicleAdbConnection.shell(dadb, "pkill -f $WRITER_MARKER 2>/dev/null || true") }
+        writerStarted = false
+    }
+
     companion object {
-        private const val POLL_INTERVAL_MS = 250L
+        private const val POLL_INTERVAL_MS = 100L
         private const val RECONNECT_INTERVAL_MS = 5_000L
         private const val STALE_AFTER_MS = 3_000L
-        private const val PATH =
+        private const val PATH_QUERY =
             "/api/getVal?name=%E5%89%8D%E7%94%B5%E6%9C%BA%E8%BD%AC%E9%80%9F&status=true"
-        private const val CURL_COMMAND = "curl -s -m 3 'http://127.0.0.1:8988$PATH'"
+        private const val OUT_FILE = "/data/local/tmp/driveapex_front_motor"
+        private const val WRITER_MARKER = "driveapex_rpm_writer"
+        private const val READ_COMMAND = "cat $OUT_FILE 2>/dev/null"
 
         /** Shared with DiPlusMotorSpeedReader: `val` is a quoted, signed number. */
         private val pattern = java.util.regex.Pattern.compile(

@@ -49,7 +49,7 @@ class VehicleOtaInstaller(private val context: Context) {
             val marker = "${BuildConfig.VERSION_NAME} (${expectedVersionCode})"
             writeScript(dadb, buildInstallerScript(marker))
 
-            val run = dadb.shell("sh $REMOTE_SCRIPT")
+            val run = VehicleAdbConnection.shell(dadb, "sh $REMOTE_SCRIPT")
             val output = run.allOutput.trim()
             if (run.exitCode != 0) {
                 return Result.Failed("Vehicle package install failed (exit ${run.exitCode}): $output")
@@ -61,7 +61,7 @@ class VehicleOtaInstaller(private val context: Context) {
             var installedVersion: Int? = null
             repeat(10) {
                 val response = runCatching {
-                    dadb.shell("dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'")
+                    VehicleAdbConnection.shell(dadb, "dumpsys package ${BuildConfig.APPLICATION_ID} | grep -m 1 -E 'versionCode'")
                 }.getOrNull()
                 if (response != null && response.exitCode == 0) {
                     installedVersion = Regex("versionCode=(\\d+)")
@@ -92,7 +92,7 @@ class VehicleOtaInstaller(private val context: Context) {
             }
         } finally {
             if (!installSucceeded) {
-                runCatching { dadb.shell("rm -f $REMOTE_APK $REMOTE_SCRIPT 2>/dev/null") }
+                runCatching { VehicleAdbConnection.shell(dadb, "rm -f $REMOTE_APK $REMOTE_SCRIPT 2>/dev/null") }
             }
         }
     }
@@ -117,10 +117,10 @@ class VehicleOtaInstaller(private val context: Context) {
     private fun writeScript(dadb: Dadb, script: String) {
         val nonce = System.nanoTime().toString()
         val eof = "__DRIVE_APEX_EOF_${nonce}__"
-        val write = dadb.shell("cat > $REMOTE_SCRIPT <<'$eof'\n$script\n$eof")
+        val write = VehicleAdbConnection.shell(dadb, "cat > $REMOTE_SCRIPT <<'$eof'\n$script\n$eof")
         if (write.exitCode != 0) {
             throw IllegalStateException("Vehicle OTA script staging failed: ${write.allOutput}")
         }
-        dadb.shell("chmod 700 $REMOTE_SCRIPT 2>/dev/null")
+        VehicleAdbConnection.shell(dadb, "chmod 700 $REMOTE_SCRIPT 2>/dev/null")
     }
 }

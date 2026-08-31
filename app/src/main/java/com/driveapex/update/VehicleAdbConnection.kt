@@ -3,6 +3,7 @@ package com.driveapex.update
 import android.content.Context
 import com.driveapex.BuildConfig
 import dadb.AdbKeyPair
+import dadb.AdbShellResponse
 import dadb.Dadb
 import java.io.File
 import java.net.Socket
@@ -63,6 +64,24 @@ internal class VehicleAdbConnection(private val context: Context) {
         @Volatile private var state: State = State.OFF
         @Volatile private var lastError: String? = null
         @Volatile private var lastPermissionResults: List<PermissionResult> = emptyList()
+        @Volatile private var permissionsGranted = false
+
+        /**
+         * One ADB command at a time.
+         *
+         * The shared Dadb is a single multiplexed connection and several threads
+         * now reach for it -- the telemetry poller a few times a second, the
+         * diagnostics probe, the permission grants inside connect(). Overlapping
+         * shell calls on one connection interleave their responses, so every
+         * caller goes through here.
+         *
+         * connect() takes sharedLock and then this one; nothing takes them in the
+         * other order, so the pair cannot deadlock.
+         */
+        private val shellLock = Object()
+
+        fun shell(dadb: Dadb, command: String): AdbShellResponse =
+            synchronized(shellLock) { dadb.shell(command) }
 
         fun setAuthGrantedCallback(callback: (() -> Unit)?) { authCallback = callback }
         fun isAuthPending(): Boolean = authPending.get()
@@ -92,21 +111,32 @@ internal class VehicleAdbConnection(private val context: Context) {
      * A caller polling a few times a second would issue a dozen ADB commands
      * per poll. Pollers should take this and fall back to connect() only when
      * it returns null.
+     *
+     * Reads the volatile field directly rather than taking sharedLock: a
+     * connect() elsewhere holds that lock across many ADB round trips, and a
+     * poller blocking on it stalls the only working read path for seconds.
      */
-    fun existing(): Dadb? = synchronized(sharedLock) { shared }
+    fun existing(): Dadb? = shared
 
     fun connect(): Dadb? {
         synchronized(sharedLock) {
             shared?.let { existing ->
                 try {
-                    if (existing.shell("echo driveapex-adb-ready").exitCode == 0) {
+                    if (shell(existing, "echo driveapex-adb-ready").exitCode == 0) {
                         state = State.AUTHORIZED
-                        lastPermissionResults = grantBydReadPermissions(existing)
+                        // Grant once per connection. Re-running it on every call
+                        // meant one `pm grant` round trip per declared permission
+                        // every time anything asked for the connection.
+                        if (!permissionsGranted) {
+                            lastPermissionResults = grantBydReadPermissions(existing)
+                            permissionsGranted = true
+                        }
                         return existing
                     }
                 } catch (_: Exception) {}
                 runCatching { existing.close() }
                 shared = null
+                permissionsGranted = false
             }
             if (!adbPortOpen()) {
                 state = State.OFF
@@ -132,6 +162,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                 pollingStarted.set(false)
                 state = State.AUTHORIZED
                 lastPermissionResults = grantBydReadPermissions(connected)
+                permissionsGranted = true
                 lastError = null
                 authCallback?.invoke()
                 return connected
@@ -146,12 +177,12 @@ internal class VehicleAdbConnection(private val context: Context) {
     fun ensureTelemetryDaemon(): Boolean {
         val dadb = connect() ?: return false
         return runCatching {
-            val listening = dadb.shell(
+            val listening = shell(dadb, 
                 "(nc -z $HOST $TELEMETRY_DAEMON_PORT || toybox nc -z $HOST $TELEMETRY_DAEMON_PORT) 2>/dev/null; echo \$?"
             ).output.trim() == "0"
             if (listening) return@runCatching true
 
-            val apkPath = dadb.shell(
+            val apkPath = shell(dadb, 
                 "pm path ${BuildConfig.APPLICATION_ID} | sed -n 's/^package://p' | head -n 1"
             ).output.trim()
             if (!apkPath.startsWith("/")) {
@@ -160,7 +191,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             }
 
             val preferredPath = runCatching {
-                dadb.shell(
+                shell(dadb, 
                     "pm path $PREFERRED_BUNDLE | sed -n 's/^package://p' | head -n 1"
                 ).output.trim()
             }.getOrDefault("")
@@ -181,7 +212,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                     "--session-id=$sessionId --requested-user-id=$userId --external-root=/sdcard --cid=0 --caller-app-uid=2000 " +
                     "< /dev/null > $TELEMETRY_DAEMON_LOG 2>&1 &"
 
-            val launchResult = dadb.shell(launch)
+            val launchResult = shell(dadb, launch)
             if (launchResult.exitCode != 0) {
                 lastError = listOf(launchResult.output, launchResult.errorOutput)
                     .filter { it.isNotBlank() }.joinToString(" | ")
@@ -196,17 +227,17 @@ internal class VehicleAdbConnection(private val context: Context) {
                     return@runCatching true
                 }
                 val process = runCatching {
-                    dadb.shell("ps -A | grep -w $TELEMETRY_DAEMON_NAME | grep -v grep").output.trim()
+                    shell(dadb, "ps -A | grep -w $TELEMETRY_DAEMON_NAME | grep -v grep").output.trim()
                 }.getOrDefault("")
                 if (process.isBlank()) {
                     val log = runCatching {
-                        dadb.shell("tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                        shell(dadb, "tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
                     }.getOrDefault("")
                     if (log.isNotBlank()) lastError = log
                 }
             }
             lastError = runCatching {
-                dadb.shell("tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                shell(dadb, "tail -n 80 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
             }.getOrDefault("").ifBlank {
                 "Telemetry daemon did not open localhost:$TELEMETRY_DAEMON_PORT"
             }
@@ -219,7 +250,7 @@ internal class VehicleAdbConnection(private val context: Context) {
 
     fun close() {
         synchronized(sharedLock) {
-            runCatching { shared?.shell("killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true") }
+            runCatching { shared?.let { shell(it, "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true") } }
             runCatching { shared?.close() }
             shared = null
             state = State.OFF
@@ -252,7 +283,7 @@ internal class VehicleAdbConnection(private val context: Context) {
         val userId = currentUserId(dadb)
         return BYD_RUNTIME_GRANT_PERMISSIONS.map { permission ->
             runCatching {
-                val result = dadb.shell("pm grant --user $userId ${BuildConfig.APPLICATION_ID} $permission")
+                val result = shell(dadb, "pm grant --user $userId ${BuildConfig.APPLICATION_ID} $permission")
                 val detail = listOf(result.output, result.errorOutput).filter { it.isNotBlank() }.joinToString(" | ")
                 val granted = result.exitCode == 0 || permissionCheck(dadb, userId, permission)
                 PermissionResult(permission, granted, if (detail.isBlank()) "exit=${result.exitCode}" else detail)
@@ -261,12 +292,12 @@ internal class VehicleAdbConnection(private val context: Context) {
     }
 
     private fun permissionCheck(dadb: Dadb, userId: Int, permission: String): Boolean = runCatching {
-        dadb.shell("pm check-permission --user $userId ${BuildConfig.APPLICATION_ID} $permission")
+        shell(dadb, "pm check-permission --user $userId ${BuildConfig.APPLICATION_ID} $permission")
             .output.contains("granted", ignoreCase = true)
     }.getOrDefault(false)
 
     private fun currentUserId(dadb: Dadb): Int = runCatching {
-        dadb.shell("cmd activity get-current-user").output.trim().toInt()
+        shell(dadb, "cmd activity get-current-user").output.trim().toInt()
     }.getOrElse { 0 }
 
     private fun tryConnectWithTimeout(key: AdbKeyPair, waitMs: Long): Dadb? {
