@@ -15,6 +15,13 @@ package com.driveapex.audio
  *     NORMAL  shifts at motor 1000 2000 3000 4000 5000 6000 7000
  *     SPORT   shifts at motor 1250 2500 3750 5000 6250 7500 8750
  *
+ * and on the six-speed set the voices built from the driver's own recordings
+ * use:
+ *
+ *     ECO     shifts at motor 1131 2262 3392 4523 5654
+ *     NORMAL  shifts at motor 1400 2800 4200 5600 7000
+ *     SPORT   shifts at motor 1750 3500 5250 7000 8750
+ *
  * Eco upshifts early and hangs on to the tall gear; Sport holds each one to the
  * top of its range. That is the whole difference, and it is the right one.
  */
@@ -41,9 +48,15 @@ enum class DriveMode(
      * The character's gearbox with this mode's shift points in it.
      *
      * Downshift is additionally held below the lowest rpm any upshift drops to,
-     * so a mode can never be configured into hunting between two gears: on the
-     * eight-speed set that floor is 3250, and 2800 is the highest any mode asks
-     * for anyway.
+     * so a mode can never be configured into hunting between two gears. Both
+     * gear sets step by half at their closest pair, so the lowest an upshift
+     * drops to is half the mode's own upshift rpm, and this holds the downshift
+     * 15% below that: 1785 in Eco, 2210 in Normal, 2762 in Sport.
+     *
+     * The figures written in the modes themselves -- 2000, 2400, 2800 -- all sit
+     * under the drop already, so none of them hunts today. What the coercion
+     * adds is the margin, and it is computed rather than written down so that
+     * editing a shift point later cannot quietly remove it.
      */
     fun applyTo(gearbox: EngineCharacter.Gearbox): EngineCharacter.Gearbox {
         val lowestAfterUpshift = lowestRpmAfterUpshift(gearbox.ratios, upshiftRpm)

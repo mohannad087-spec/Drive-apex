@@ -1,20 +1,21 @@
 package com.driveapex.audio
 
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.util.Log
 import com.driveapex.diag.DriveApexLog
 
 /**
  * Real-time layered EV sound renderer.
- * The output is bound to the BYD OEM navigation stream (STREAM_NAVI, 14 on the
- * verified Overdrive/DiPlus route), not STREAM_MUSIC.
+ *
+ * The output goes to whichever of the head unit's channels the driver chose in
+ * Settings; it defaults to the BYD OEM navigation stream (STREAM_NAVI, 14 on the
+ * verified Overdrive/DiPlus route), which is the one known to play over the
+ * radio on this car.
  */
 class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) {
     companion object {
         private const val TAG = "DriveApexAudio"
-        private const val DEFAULT_NAV_STREAM = 14
         /** Public so a bank can be decoded to the rate the engine will play it at. */
         const val SAMPLE_RATE = 44_100
     }
@@ -58,6 +59,17 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
 
     @Volatile private var driveMode = DriveMode.NORMAL
     @Volatile private var baseCharacter: EngineCharacter = character
+    @Volatile private var outputChannel = AudioOutputChannel.DEFAULT
+
+    /**
+     * Which run of the render loop is the current one.
+     *
+     * Changing the output channel stops the track and starts a new one, and
+     * without this the old loop would see `running` go true again and keep
+     * writing alongside the new one -- two threads filling one track, which is
+     * heard as the engine playing twice at slightly different times.
+     */
+    @Volatile private var generation = 0
 
     fun setCharacter(value: EngineCharacter) {
         baseCharacter = value
@@ -84,14 +96,50 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             gearbox = base.gearbox?.let { mode.applyTo(it) }
         )
         renderer.setCharacter(shaped)
-        voiceRpm.retune(shaped.gearbox)
+        // A bank of recordings brings its own gear count -- six, as asked for on
+        // the uploaded voices -- rather than inheriting the eight belonging to
+        // whichever synthesised character happened to be selected before it.
+        val box = if (sampleVoice.isReady()) EngineCharacter.Gearbox.sixSpeed() else base.gearbox
+        voiceRpm.retune(box?.let { mode.applyTo(it) })
     }
+
+    /**
+     * Moves the sound to another of the head unit's channels.
+     *
+     * The channel is fixed when the AudioTrack is created, so a change while
+     * the engine is running means building a new track: stop, then start again
+     * on the new one. Nothing else about the voice is touched.
+     */
+    fun setOutputChannel(channel: AudioOutputChannel) {
+        if (channel == outputChannel) return
+        outputChannel = channel
+        DriveApexLog.i("audio", "output channel -> ${channel.name} (stream ${channel.streamType()})")
+        if (running) {
+            stop()
+            start()
+        }
+    }
+
+    fun outputChannel(): AudioOutputChannel = outputChannel
+
+    /**
+     * The gear set the voice is actually using.
+     *
+     * Not always the selected character's: a bank of recordings brings its own
+     * six. The screen prints where each drive mode shifts, and it has to print
+     * the truth about whatever is playing.
+     */
+    fun activeGearbox(): EngineCharacter.Gearbox? =
+        if (sampleVoice.isReady()) EngineCharacter.Gearbox.sixSpeed() else baseCharacter.gearbox
 
     /**
      * Plays real recordings instead of synthesising, when a playable bank is
      * given. Passing null returns the engine to synthesis.
      */
-    fun setSampleBank(bank: EngineSampleBank?) = sampleVoice.setBank(bank)
+    fun setSampleBank(bank: EngineSampleBank?) {
+        sampleVoice.setBank(bank)
+        applyVoice()
+    }
 
     fun sampleBank(): EngineSampleBank? = sampleVoice.currentBank()
 
@@ -115,16 +163,14 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             AudioFormat.ENCODING_PCM_16BIT
         ).let { if (it > 0) it else bufferSize * 4 }
 
-        val navStream = runCatching {
-            AudioManager::class.java.getField("STREAM_NAVI").getInt(null)
-        }.getOrDefault(DEFAULT_NAV_STREAM)
+        val stream = outputChannel.streamType()
 
         // Two chunks in bytes: four bytes per stereo frame, times two chunks.
         val targetBuffer = maxOf(bufferSize * 4 * 2, minBuffer)
         val created = runCatching {
             @Suppress("DEPRECATION")
             AudioTrack(
-                navStream,
+                stream,
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_STEREO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -132,28 +178,32 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
                 AudioTrack.MODE_STREAM
             )
         }.onFailure {
-            Log.e(TAG, "Unable to create navigation AudioTrack stream=$navStream", it)
-            DriveApexLog.e("audio", "AudioTrack create failed on stream $navStream", it)
+            Log.e(TAG, "Unable to create AudioTrack on ${outputChannel.name} stream=$stream", it)
+            DriveApexLog.e("audio", "AudioTrack create failed on ${outputChannel.name} stream $stream", it)
         }.getOrNull() ?: return
 
         track = created
         runCatching { created.setVolume(1f) }
         runCatching { created.play() }.onFailure {
-            Log.e(TAG, "Unable to start navigation AudioTrack stream=$navStream", it)
-            DriveApexLog.e("audio", "AudioTrack play failed on stream $navStream", it)
+            Log.e(TAG, "Unable to start AudioTrack on ${outputChannel.name} stream=$stream", it)
+            DriveApexLog.e("audio", "AudioTrack play failed on ${outputChannel.name} stream $stream", it)
             runCatching { created.release() }
             track = null
             return
         }
 
-        Log.i(TAG, "AudioTrack started on OEM navigation stream=$navStream")
-        DriveApexLog.i("audio", "AudioTrack started on stream $navStream, buffer $targetBuffer bytes")
+        Log.i(TAG, "AudioTrack started on ${outputChannel.name} stream=$stream")
+        DriveApexLog.i("audio",
+            "AudioTrack started on ${outputChannel.name} stream $stream, buffer $targetBuffer bytes")
         running = true
-        Thread(::renderLoop, "DriveApex-LayeredAudio").apply { isDaemon = true }.start()
+        val mine = ++generation
+        Thread({ renderLoop(mine) }, "DriveApex-LayeredAudio").apply { isDaemon = true }.start()
     }
 
     fun stop() {
         running = false
+        // Retires the current loop even if start() is called again immediately.
+        generation++
         track?.let {
             runCatching { it.pause() }
             runCatching { it.flush() }
@@ -191,7 +241,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         return true
     }
 
-    private fun renderLoop() {
+    private fun renderLoop(mine: Int) {
         // Ask the scheduler for audio priority. This thread has to refill the
         // track every 17ms; at default priority a head unit busy with navigation
         // or its own UI can preempt it for longer than that, and a buffer that
@@ -201,7 +251,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         }
         val pcm = ShortArray(bufferSize * 2)
         try {
-            while (running) {
+            while (running && generation == mine) {
                 if (!renderFromSamples(pcm)) {
                     renderer.render(pcm, bufferSize, rpm, load, speedKph, throttle, scene, events)
                 }
@@ -210,6 +260,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         } catch (t: Throwable) {
             Log.e(TAG, "render loop failed", t)
             DriveApexLog.e("audio", "render loop failed; sound stopped, app kept running", t)
+            if (generation != mine) return
             running = false
             runCatching { track?.let { it.pause(); it.flush(); it.stop(); it.release() } }
             track = null

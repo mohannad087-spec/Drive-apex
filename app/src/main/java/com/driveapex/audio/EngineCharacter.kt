@@ -109,7 +109,57 @@ data class EngineCharacter(
         val shiftCutMs: Int = 130,
         val shiftCutDepth: Float = 0.55f,
         val shiftLockoutMs: Int = 420
-    )
+    ) {
+        companion object {
+            /** Where a shift is asked for, and where the ratios are worked back from. */
+            private const val SHIFT_AT = 6500f
+
+            /**
+             * A gearbox whose shifts land on the motor speeds given.
+             *
+             * Virtual rpm is motor rpm times the ratio and the box shifts when
+             * that reaches upshiftRpm, so a shift at motor speed M needs the
+             * ratio upshiftRpm / M. Writing the shift points down and deriving
+             * the ratios is the way round that cannot be got wrong; choosing
+             * ratios and hoping the shifts land somewhere sensible is the way
+             * that put every shift in the wrong place the first time.
+             *
+             * The last entry is not a shift point but the motor speed top gear
+             * reaches the shift rpm at -- 10500, because this motor passes
+             * 10000 on the road and a voice pinned on a limiter for the last
+             * third of the range is the thing we were fixing.
+             */
+            private fun boxFor(shiftPoints: List<Float>) = Gearbox(
+                ratios = shiftPoints.map { SHIFT_AT / it },
+                upshiftRpm = SHIFT_AT,
+                // Below the lowest rpm any upshift drops to, so the box cannot
+                // shift up and immediately back down.
+                downshiftRpm = 2800f,
+                idleRpm = 800f,
+                limiterRpm = 7200f,
+                shiftCutMs = 130,
+                shiftCutDepth = 0.55f,
+                shiftLockoutMs = 420
+            )
+
+            /** Eight gears, a shift every 1250 motor rpm. */
+            fun eightSpeed() = boxFor(
+                listOf(1250f, 2500f, 3750f, 5000f, 6250f, 7500f, 8750f, 10500f)
+            )
+
+            /**
+             * Six gears, a shift every 1750 motor rpm.
+             *
+             * What the driver asked for on the voices built from their own
+             * recordings. Fewer gears over the same motor range means each one
+             * is held longer, which is the difference heard rather than the
+             * count itself.
+             */
+            fun sixSpeed() = boxFor(
+                listOf(1750f, 3500f, 5250f, 7000f, 8750f, 10500f)
+            )
+        }
+    }
 
     /**
      * A high tone tracking rpm: inverter switching on an EV, turbo on an ICE.
@@ -161,40 +211,9 @@ object EngineCharacters {
         whine = null,
         drive = 1.6f,
         level = 0.95f,
-        /**
-         * Eight gears, shifting every 1250 motor rpm.
-         *
-         * Ratios are chosen so the shift lands where it was asked for rather than
-         * where a ratio happens to put it: virtual rpm is motor rpm times the
-         * ratio, and the box shifts when that reaches upshiftRpm, so a shift at
-         * motor rpm M needs the ratio upshiftRpm / M. With 6500 as the shift
-         * point that puts the shifts at 1250, 2500, 3750, 5000, 6250, 7500 and
-         * 8750, and eighth reaches the same 6500 at a motor speed of 10500 --
-         * which this motor actually sees, where the old four-speed set ran out
-         * at 6000 and left the voice pinned for everything above it.
-         *
-         * downshiftRpm sits below the lowest rpm any upshift drops to (3250, in
-         * second), so the box cannot shift up and immediately back down.
-         *
-         * Nothing above this line is touched: the orders, resonances, noise bed,
-         * drive and level that make this voice are exactly as they were.
-         */
-        gearbox = EngineCharacter.Gearbox(
-            ratios = listOf(
-                6500f / 1250f, 6500f / 2500f, 6500f / 3750f, 6500f / 5000f,
-                6500f / 6250f, 6500f / 7500f, 6500f / 8750f, 6500f / 10500f
-            ),
-            upshiftRpm = 6500f,
-            downshiftRpm = 2800f,
-            idleRpm = 800f,
-            // The motor passes 10000 on the road, and top gear is geared so the
-            // voice is still climbing at 10500 rather than sitting on a limiter
-            // for the last third of the range.
-            limiterRpm = 7200f,
-            shiftCutMs = 130,
-            shiftCutDepth = 0.55f,
-            shiftLockoutMs = 420
-        )
+        // Eight gears, shifting every 1250 motor rpm. Unchanged: the same set
+        // this voice has had, now written once and shared.
+        gearbox = EngineCharacter.Gearbox.eightSpeed()
     )
 
 
@@ -254,32 +273,87 @@ object EngineCharacters {
         whine = null,
         drive = 1.6f,
         level = 0.95f,
-        // The same eight gears, shifting every 1250 motor rpm.
-        gearbox = EngineCharacter.Gearbox(
-            ratios = listOf(
-                6500f / 1250f, 6500f / 2500f, 6500f / 3750f, 6500f / 5000f,
-                6500f / 6250f, 6500f / 7500f, 6500f / 8750f, 6500f / 10500f
-            ),
-            upshiftRpm = 6500f,
-            downshiftRpm = 2800f,
-            idleRpm = 800f,
-            // The motor passes 10000 on the road, and top gear is geared so the
-            // voice is still climbing at 10500 rather than sitting on a limiter
-            // for the last third of the range.
-            limiterRpm = 7200f,
-            shiftCutMs = 130,
-            shiftCutDepth = 0.55f,
-            shiftLockoutMs = 420
-        )
+        // The same eight gears.
+        gearbox = EngineCharacter.Gearbox.eightSpeed()
     )
 
 
 
     /**
-     * The two the driver kept. Everything else that was here -- two electric
-     * voices, a V12 and two more measured characters -- was rejected on the
-     * vehicle and is gone rather than left behind a button nobody presses.
+     * Corvette V8, measured off the driver's own two recordings.
+     *
+     * The recipe is the one that produced Measured Petrol -- the voice they call
+     * excellent -- and not one number here was chosen by ear.
+     * tools/measure_engine_profile.py tracks the firing frequency by
+     * autocorrelation, keeps only the windows that are steady and loud, and
+     * reads each order's level out of those windows relative to the
+     * fundamental. Both clips were measured that way, with the lowest third of
+     * each dropped (on the '74 that is the starter motor, which is not the
+     * engine):
+     *
+     *     '74 small block  0.5:0.12  1:1.00  1.5:0.22  2:0.49  3:0.17  4:0.10  6:0.03  8:0.02
+     *     C6 big cam       0.5:0.02  1:1.00  1.5:0.21  2:0.13  3:0.15  4:0.14  6:0.04  8:0.04
+     *
+     * They agree on what makes this engine what it is -- a dominant fundamental
+     * with almost nothing on the half order, the opposite of a flat stack -- and
+     * differ on the second order, which is the difference between a close mic on
+     * a revving engine and an exhaust recording. The gains below are the
+     * geometric mean of the two, scaled so they sum to the same 1.09 as the
+     * other two characters, so all three compare at one loudness and the
+     * waveshaper sees the same headroom it already does.
+     *
+     * Its energy above 100Hz -- the part this head unit's speakers can actually
+     * reproduce -- comes out 23% under Measured Petrol's, about 1.1dB. That is
+     * small enough to leave alone; compensating for it would mean raising level
+     * into the same saturation that made the V12 sound artificial.
+     *
+     * Resonances are the fixed spectral peaks: what survives averaging a
+     * spectrum while the engine revs, since a harmonic smears across the sweep
+     * and a body does not. Measured at 371, 497 and 1128Hz. The tool also found
+     * a strong one at 3176Hz and it is deliberately not used -- that band is
+     * exactly where the hiss complaint on this app has always lived. The q
+     * figures come from the family the other measured character uses: the width
+     * measurement pinned itself at the clamp on every peak, so it was not
+     * trustworthy enough to ship, while the frequencies were unambiguous.
      */
-    val all = listOf(iceSport, measuredPetrol)
+    val corvetteV8 = EngineCharacter(
+        id = "corvette_v8",
+        name = "Corvette V8",
+        orders = listOf(
+            EngineCharacter.Order(order = 0.5f, gain = 0.031f, loadGain = 1.8f),
+            EngineCharacter.Order(order = 1f, gain = 0.584f, loadGain = 1.7f, stereo = -0.2f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.125f, loadGain = 2.0f),
+            EngineCharacter.Order(order = 2f, gain = 0.150f, loadGain = 2.0f, stereo = 0.2f),
+            EngineCharacter.Order(order = 3f, gain = 0.092f, loadGain = 2.3f),
+            EngineCharacter.Order(order = 4f, gain = 0.068f, loadGain = 2.4f, stereo = -0.3f),
+            EngineCharacter.Order(order = 6f, gain = 0.021f, loadGain = 2.5f, stereo = 0.3f),
+            EngineCharacter.Order(order = 8f, gain = 0.019f, loadGain = 2.3f, fadeInRpm = 400f)
+        ),
+        resonances = listOf(
+            EngineCharacter.Resonance(hz = 371f, q = 1.2f, gain = 0.62f),
+            EngineCharacter.Resonance(hz = 497f, q = 1.4f, gain = 0.45f),
+            EngineCharacter.Resonance(hz = 1128f, q = 1.7f, gain = 0.30f)
+        ),
+        // The cleaned-up bed from Measured Petrol, two passes and all: the hiss
+        // fix is a property of the bed, not of the character it was found on.
+        noise = EngineCharacter.NoiseBed(
+            baseGain = 0.062f, speedGain = 0.075f, loadGain = 0.12f,
+            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f, cascade = 2
+        ),
+        whine = null,
+        drive = 1.6f,
+        level = 0.95f,
+        // Six gears, as asked for on the voices built from the driver's own
+        // recordings: a shift every 1750 motor rpm instead of every 1250.
+        gearbox = EngineCharacter.Gearbox.sixSpeed()
+    )
+
+    /**
+     * The two the driver kept, and the Corvette built from their recordings.
+     * Everything else that was here -- two electric voices, a V12 and two more
+     * measured characters -- was rejected on the vehicle and is gone rather
+     * than left behind a button nobody presses.
+     */
+    val all = listOf(iceSport, measuredPetrol, corvetteV8)
     val default = iceSport
 }

@@ -14,6 +14,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.driveapex.diag.DriveApexLog
 import com.driveapex.diag.LogViewer
+import com.driveapex.audio.AudioOutputChannel
+import com.driveapex.ui.ApexButtons
 import com.driveapex.update.BydAdbSetup
 import com.driveapex.update.UpdateManager
 import com.driveapex.vehicle.BydTelemetryDiagnostics
@@ -55,14 +57,18 @@ class SettingsActivity : Activity() {
         status = sub("Ready")
         root.addView(status, margin(16))
 
+        root.addView(heading2("AUDIO OUTPUT"), margin(4))
+        root.addView(sub("Which of the car's channels the engine comes out of."), margin(10))
+        root.addView(channelPicker(), margin(20))
+
         root.addView(heading2("VEHICLE CONNECTION"), margin(8))
-        root.addView(button("BYD ADB SETUP / AUTHORIZE") { runAdbSetup() }, margin(8))
-        root.addView(button("BYD TELEMETRY DIAGNOSTICS") { showDiagnostics() }, margin(8))
-        root.addView(button("SCAN FOR DRIVE MODE") { scanDriveMode() }, margin(20))
+        root.addView(button("BYD ADB SETUP / AUTHORIZE", BLUE) { runAdbSetup() }, margin(10))
+        root.addView(button("BYD TELEMETRY DIAGNOSTICS", TEAL) { showDiagnostics() }, margin(10))
+        root.addView(button("SCAN FOR DRIVE MODE", PURPLE) { scanDriveMode() }, margin(22))
 
         root.addView(heading2("DIAGNOSTICS"), margin(8))
-        root.addView(button("APP LOG / WHY IT CLOSED") { LogViewer.show(this) }, margin(8))
-        root.addView(button("CHECK FOR UPDATE") { updateManager.checkManually() }, margin(20))
+        root.addView(button("APP LOG / WHY IT CLOSED", AMBER) { LogViewer.show(this) }, margin(10))
+        root.addView(button("CHECK FOR UPDATE", GREEN) { updateManager.checkManually() }, margin(20))
 
         setContentView(scroll)
     }
@@ -71,6 +77,58 @@ class SettingsActivity : Activity() {
         super.onResume()
         if (::updateManager.isInitialized) updateManager.onResume()
     }
+
+    /**
+     * One key per channel, the chosen one lit.
+     *
+     * The choice is written down here and picked up by the drive screen when it
+     * comes back to the front, which is also what makes it survive a restart.
+     * Changing it while the engine is running rebuilds the audio track on the
+     * new channel; nothing else about the sound changes.
+     */
+    private fun channelPicker(): LinearLayout {
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val chosen = AudioOutputChannel.load(this)
+        val colours = listOf(BLUE, GREEN, AMBER, PURPLE, TEAL)
+        AudioOutputChannel.entries.forEachIndexed { index, channel ->
+            val accent = colours[index % colours.size]
+            val key = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = ApexButtons.selectable(this@SettingsActivity, accent, PANEL, 14)
+                ApexButtons.padForTravel(this, 14)
+                isClickable = true
+                isSelected = channel == chosen
+                addView(TextView(this@SettingsActivity).apply {
+                    text = channel.label
+                    textSize = 15f
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setTextColor(stateColour(accent, Color.WHITE))
+                })
+                addView(TextView(this@SettingsActivity).apply {
+                    text = channel.detail
+                    textSize = 11f
+                    setTextColor(stateColour(accent, MUTED))
+                    setPadding(0, dp(3), 0, 0)
+                })
+                setOnClickListener {
+                    AudioOutputChannel.save(this@SettingsActivity, channel)
+                    for (i in 0 until column.childCount) {
+                        column.getChildAt(i).isSelected = column.getChildAt(i) === this
+                    }
+                    status.text = "Sound will play on the ${channel.label} channel."
+                    DriveApexLog.i("audio", "output channel set to ${channel.name} from settings")
+                }
+            }
+            column.addView(key, margin(if (index == AudioOutputChannel.entries.lastIndex) 0 else 8))
+        }
+        return column
+    }
+
+    /** Readable on the panel and on the accent the key turns when selected. */
+    private fun stateColour(accent: Int, resting: Int) = android.content.res.ColorStateList(
+        arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
+        intArrayOf(ApexButtons.textOn(accent), resting)
+    )
 
     private fun runAdbSetup() {
         status.text = "ADB: working"
@@ -160,14 +218,16 @@ class SettingsActivity : Activity() {
         textSize = 12f
     }
 
-    private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
+    private fun button(text: String, accent: Int, onClick: () -> Unit) = Button(this).apply {
         this.text = text
         isAllCaps = true
         textSize = 13f
-        setTextColor(Color.WHITE)
+        setTextColor(ApexButtons.textOn(accent))
         gravity = Gravity.CENTER
-        minHeight = dp(52)
-        setBackgroundColor(PANEL)
+        minHeight = dp(58)
+        background = ApexButtons.raised(this@SettingsActivity, accent, 12)
+        stateListAnimator = null
+        ApexButtons.padForTravel(this, 12)
         setOnClickListener { onClick() }
     }
 
@@ -181,6 +241,10 @@ class SettingsActivity : Activity() {
         const val BG = 0xFF07090C.toInt()
         const val PANEL = 0xFF10151B.toInt()
         const val BLUE = 0xFF1D9BF0.toInt()
+        const val GREEN = 0xFF35D07F.toInt()
+        const val PURPLE = 0xFFA778FF.toInt()
+        const val AMBER = 0xFFFFB74D.toInt()
+        const val TEAL = 0xFF22B8CF.toInt()
         const val MUTED = 0xFF7B8794.toInt()
     }
 }

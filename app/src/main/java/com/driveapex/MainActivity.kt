@@ -29,6 +29,8 @@ import com.driveapex.audio.tunedWith
 import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
+import com.driveapex.audio.AudioOutputChannel
+import com.driveapex.ui.ApexButtons
 import com.driveapex.update.BydAdbSetup
 import com.driveapex.update.UpdateManager
 import com.driveapex.vehicle.LiveTelemetry
@@ -58,6 +60,9 @@ class MainActivity : Activity() {
 
     /** The SOUND DNA row, kept so recorded voices can be appended once decoded. */
     private var profileRow: LinearLayout? = null
+
+    /** The DRIVE MODE row, kept so its subtitles can follow the chosen voice. */
+    private var driveModeRow: LinearLayout? = null
 
     private lateinit var rpmValue: TextView
     private lateinit var telemetry: TextView
@@ -124,11 +129,11 @@ class MainActivity : Activity() {
 
         root.addView(section("QUICK SCENES", "Instant driving states for acoustic tuning."), margin(8))
         root.addView(chips(
-            "IDLE" to { setControls(900, 5, 0, 0, 0) },
-            "PULL" to { setControls(3000, 65, 45, 0, 0) },
-            "BOOST" to { setControls(5200, 95, 120, 0, 0) },
-            "COAST" to { setControls(2200, 0, 80, 0, 0) },
-            "REGEN" to { setControls(1600, 0, 40, 15, 100) }
+            Triple("IDLE", SLATE, { setControls(900, 5, 0, 0, 0) }),
+            Triple("PULL", BLUE, { setControls(3000, 65, 45, 0, 0) }),
+            Triple("BOOST", AMBER, { setControls(5200, 95, 120, 0, 0) }),
+            Triple("COAST", TEAL, { setControls(2200, 0, 80, 0, 0) }),
+            Triple("REGEN", GREEN, { setControls(1600, 0, 40, 15, 100) })
         ), margin(16))
 
         root.addView(section("SOUND DNA", "Choose the acoustic character."), margin(8))
@@ -161,12 +166,12 @@ class MainActivity : Activity() {
         // the app moved to Settings.
         root.addView(section("SERVICE", "Sound tuning here; everything else in Settings."), margin(8))
         val service = card(12)
-        service.addView(serviceButton("SOUND TUNING") { showSoundTuning() }, margin(6))
-        service.addView(serviceButton("RESET SONIC GENOME") {
+        service.addView(serviceButton("SOUND TUNING", PURPLE) { showSoundTuning() }, margin(8))
+        service.addView(serviceButton("RESET SONIC GENOME", TEAL) {
             genomeSession.reset()
             if (!liveMode) syncSimulator()
-        }, margin(6))
-        service.addView(serviceButton("SETTINGS") {
+        }, margin(8))
+        service.addView(serviceButton("SETTINGS", SLATE) {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         })
         root.addView(service)
@@ -186,6 +191,9 @@ class MainActivity : Activity() {
         speedBar.setOnSeekBarChangeListener(listener)
 
         setContentView(scroll)
+        // The channel the driver chose in Settings, applied before anything can
+        // ask for sound.
+        engine.setOutputChannel(AudioOutputChannel.load(this))
         syncSimulator()
         // Never on the main thread: prepare() -> VehicleAdbConnection.connect() blocks
         // for up to 7s on the ADB handshake and then runs one shell round-trip per BYD
@@ -214,9 +222,9 @@ class MainActivity : Activity() {
             setPadding(0, dp(2), 0, 0)
         })
         row.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        modeButton = action("TEST", 0xFF102E26.toInt(), GREEN)
+        modeButton = action("TEST", SLATE, ApexButtons.textOn(SLATE))
         modeButton.setOnClickListener { toggleTelemetryMode() }
-        row.addView(modeButton, LinearLayout.LayoutParams(dp(86), dp(44)))
+        row.addView(modeButton, LinearLayout.LayoutParams(dp(92), dp(52)))
         return row
     }
 
@@ -307,12 +315,17 @@ class MainActivity : Activity() {
         addView(row)
     }
 
-    private fun chips(vararg items: Pair<String, () -> Unit>): HorizontalScrollView {
+    private fun chips(vararg items: Triple<String, Int, () -> Unit>): HorizontalScrollView {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        items.forEach { (text, click) ->
-            row.addView(action(text, PANEL, SOFT).apply { setOnClickListener { click() } },
-                LinearLayout.LayoutParams(dp(94), dp(52)).apply { marginEnd = dp(8) })
+        items.forEach { (text, accent, click) ->
+            row.addView(
+                action(text, accent, ApexButtons.textOn(accent)).apply {
+                    textSize = 12f
+                    setOnClickListener { click() }
+                },
+                LinearLayout.LayoutParams(dp(98), dp(58)).apply { marginEnd = dp(8) }
+            )
         }
         scroll.addView(row)
         return scroll
@@ -322,16 +335,26 @@ class MainActivity : Activity() {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         profileRow = row
-        row.addView(profile("COMBUSTION", "Petrol Sport · 4 gears", AMBER) {
+        val combustion = profile("COMBUSTION", "Petrol Sport · 8 gears", AMBER) {
             selectCharacter(EngineCharacters.iceSport)
-        }, LinearLayout.LayoutParams(dp(190), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("MEASURED", "Real engine profile", GREEN) {
+        }
+        row.addView(combustion, profileParams())
+        row.addView(profile("MEASURED", "Real engine profile · 8 gears", GREEN) {
             selectCharacter(EngineCharacters.measuredPetrol)
-        }, LinearLayout.LayoutParams(dp(190), dp(92)))
+        }, profileParams())
+        row.addView(profile("CORVETTE", "Measured V8 · 6 gears", RED) {
+            selectCharacter(EngineCharacters.corvetteV8)
+        }, profileParams())
         scroll.addView(row)
+        // The voice the app starts on, lit from the beginning rather than after
+        // the driver first touches something.
+        combustion.isSelected = true
         loadSampleBanks()
         return scroll
     }
+
+    private fun profileParams() =
+        LinearLayout.LayoutParams(dp(186), dp(96)).apply { marginEnd = dp(10) }
 
     /**
      * Adds a button for each bank of real recordings found in the APK.
@@ -350,8 +373,8 @@ class MainActivity : Activity() {
                 val row = profileRow ?: return@post
                 banks.forEach { bank ->
                     row.addView(
-                        profile(bank.name.uppercase(Locale.US), "Recorded", PURPLE) { selectBank(bank) },
-                        LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginStart = dp(10) }
+                        profile(bank.name.uppercase(Locale.US), "Recorded · 6 gears", PURPLE) { selectBank(bank) },
+                        profileParams()
                     )
                 }
                 DriveApexLog.i("samples", "added ${banks.size} recorded voices to the profile row")
@@ -360,24 +383,62 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Switches to real recordings. The gears and the standstill rev come from
-     * whichever character is selected, so a bank inherits the gearbox rather
-     * than carrying one of its own for now.
+     * Switches to real recordings.
+     *
+     * A bank plays through its own six-speed box rather than inheriting the
+     * eight belonging to whichever synthesised character was selected before
+     * it -- six gears on the uploaded voices is what the driver asked for. The
+     * standstill rev is still shared, because that is behaviour rather than
+     * gearing.
      */
     private fun selectBank(bank: EngineSampleBank) {
         engine.setSampleBank(bank)
         sceneValue.text = bank.name.uppercase(Locale.US)
+        refreshDriveModeLabels()
     }
 
+    /**
+     * One choosable card -- a voice or a drive mode -- as a raised key.
+     *
+     * It carries its selected state rather than only its pressed one, because
+     * these are not actions: the driver needs to see at a glance which voice and
+     * which mode the car is currently in. Selecting one clears the rest of its
+     * own row, whichever row that turns out to be, so the same card works for
+     * both without either knowing about the other.
+     *
+     * The label colours are state lists for the same reason the background is:
+     * the face turns bright accent when selected, and fixed white text vanishes
+     * on amber.
+     */
     private fun profile(name: String, subtitle: String, accent: Int, click: () -> Unit): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(14), dp(10), dp(14), dp(10))
-        background = rounded(PANEL, dp(14), STROKE)
-        setOnClickListener { click() }
-        addView(label(name, 18f, Color.WHITE, true))
-        addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
-        addView(label("●  READY", 10f, accent, true).apply { setPadding(0, dp(8), 0, 0) })
+        background = ApexButtons.selectable(this@MainActivity, accent, PANEL, 16)
+        ApexButtons.padForTravel(this, 14)
+        isClickable = true
+        setOnClickListener {
+            selectOnly(parent as? LinearLayout, this)
+            click()
+        }
+        addView(label(name, 18f, Color.WHITE, true).apply {
+            setTextColor(onAccent(accent, Color.WHITE))
+        })
+        addView(label(subtitle, 11f, MUTED, false).apply {
+            setTextColor(onAccent(accent, MUTED))
+            setPadding(0, dp(3), 0, 0)
+        })
+    }
+
+    /** Text that stays readable when the card lights up in its accent colour. */
+    private fun onAccent(accent: Int, resting: Int) = ColorStateList(
+        arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
+        intArrayOf(ApexButtons.textOn(accent), resting)
+    )
+
+    /** Exactly one card in a row is selected; this is the one. */
+    private fun selectOnly(row: LinearLayout?, chosen: View) {
+        val r = row ?: return
+        for (i in 0 until r.childCount) r.getChildAt(i).isSelected = r.getChildAt(i) === chosen
     }
 
 
@@ -394,21 +455,42 @@ class MainActivity : Activity() {
         val colours = mapOf(
             DriveMode.ECO to GREEN, DriveMode.NORMAL to BLUE, DriveMode.SPORT to AMBER
         )
+        driveModeRow = row
         DriveMode.entries.forEachIndexed { index, mode ->
-            val firstRatio = activeCharacter.gearbox?.ratios?.firstOrNull()
-            val shifts = firstRatio
-                ?.takeIf { it > 0f }
-                ?.let { "shifts at ${(mode.upshiftRpm / it).roundToInt()} motor rpm" }
-                ?: "no gearbox"
             row.addView(
-                profile(mode.label, shifts, colours[mode] ?: BLUE) { selectDriveMode(mode) },
-                LinearLayout.LayoutParams(dp(128), dp(84)).apply {
+                profile(mode.label, shiftLabel(mode), colours[mode] ?: BLUE) { selectDriveMode(mode) }
+                    .apply { isSelected = mode == engine.driveMode() },
+                LinearLayout.LayoutParams(dp(132), dp(88)).apply {
                     if (index < DriveMode.entries.lastIndex) marginEnd = dp(10)
                 }
             )
         }
         scroll.addView(row)
         return scroll
+    }
+
+    /**
+     * Where this mode's first upshift lands, in motor rpm.
+     *
+     * Derived from the box that is actually playing rather than written down: a
+     * six-speed voice shifts in a different place from an eight-speed one at the
+     * same mode, and a label that says otherwise is worse than no label.
+     */
+    private fun shiftLabel(mode: DriveMode): String {
+        val firstRatio = engine.activeGearbox()?.ratios?.firstOrNull()
+        return firstRatio?.takeIf { it > 0f }
+            ?.let { "shifts at ${(mode.upshiftRpm / it).roundToInt()} motor rpm" }
+            ?: "no gearbox"
+    }
+
+    /** Re-prints the shift points after a change of voice. */
+    private fun refreshDriveModeLabels() {
+        val row = driveModeRow ?: return
+        DriveMode.entries.forEachIndexed { index, mode ->
+            val card = row.getChildAt(index) as? LinearLayout ?: return@forEachIndexed
+            // Child 1 is the subtitle; profile() builds name then subtitle.
+            (card.getChildAt(1) as? TextView)?.text = shiftLabel(mode)
+        }
     }
 
     private fun selectDriveMode(mode: DriveMode) {
@@ -424,6 +506,7 @@ class MainActivity : Activity() {
         // do nothing.
         engine.setSampleBank(null)
         engine.setCharacter(character.tunedWith(tuningStore.load(character.id)))
+        refreshDriveModeLabels()
     }
 
     private fun showSoundTuning() {
@@ -437,6 +520,10 @@ class MainActivity : Activity() {
         liveMode = !liveMode
         if (liveMode) {
             telemetryReceiver.start()
+            // Green while it is reading the car, slate while it is not: the one
+            // button whose colour is the answer to a question the driver asks
+            // constantly.
+            paintModeButton(GREEN)
             modeButton.text = "LIVE"
             sourceValue.text = "LIVE VEHICLE"
             sourceValue.setTextColor(GREEN)
@@ -448,6 +535,7 @@ class MainActivity : Activity() {
         } else {
             telemetryReceiver.stop()
             handler.removeCallbacks(livePoller)
+            paintModeButton(SLATE)
             modeButton.text = "TEST"
             sourceValue.text = "SIMULATOR"
             sourceValue.setTextColor(MUTED)
@@ -462,6 +550,12 @@ class MainActivity : Activity() {
             speedBar.isEnabled = true
             syncSimulator()
         }
+    }
+
+    private fun paintModeButton(accent: Int) {
+        modeButton.background = ApexButtons.raised(this, accent, 12)
+        modeButton.setTextColor(ApexButtons.textOn(accent))
+        ApexButtons.padForTravel(modeButton, 10)
     }
 
     private fun updateLiveStatus() {
@@ -542,22 +636,36 @@ class MainActivity : Activity() {
         typeface = Typeface.create("sans", if (bold) Typeface.BOLD else Typeface.NORMAL)
     }
 
+    /**
+     * Every button on this screen: coloured, raised, and it moves when pressed.
+     *
+     * stateListAnimator is cleared because the platform's own elevation
+     * animation fights the drawable that does the moving here, and its shadow is
+     * clipped away by the scrolling parents anyway.
+     */
     private fun action(text: String, fill: Int, color: Int) = Button(this).apply {
         this.text = text
         textSize = 11f
         setTextColor(color)
         isAllCaps = false
-        background = rounded(fill, dp(12), STROKE)
+        background = ApexButtons.raised(this@MainActivity, fill, 12)
         stateListAnimator = null
-        setPadding(dp(8), 0, dp(8), 0)
+        ApexButtons.padForTravel(this, 10)
     }
 
-    private fun primary(text: String) = action(text, BLUE, Color.WHITE).apply { textSize = 14f; minHeight = dp(56) }
-    private fun secondary(text: String) = action(text, PANEL, SOFT).apply { textSize = 12f; minHeight = dp(50) }
-    private fun serviceButton(text: String, click: () -> Unit) = action(text, PANEL_2, MUTED).apply {
-        setOnClickListener { click() }
-        minHeight = dp(46)
-    }
+    private fun primary(text: String) =
+        action(text, BLUE, ApexButtons.textOn(BLUE)).apply { textSize = 15f; minHeight = dp(60) }
+
+    /** Red, because stopping is the one button that must never be hunted for. */
+    private fun secondary(text: String) =
+        action(text, RED, ApexButtons.textOn(RED)).apply { textSize = 13f; minHeight = dp(54) }
+
+    private fun serviceButton(text: String, accent: Int, click: () -> Unit) =
+        action(text, accent, ApexButtons.textOn(accent)).apply {
+            setOnClickListener { click() }
+            textSize = 12f
+            minHeight = dp(50)
+        }
 
     private fun card(padding: Int) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -601,6 +709,9 @@ class MainActivity : Activity() {
      * after onCreate.
      */
     private fun resumeLivePipeline() {
+        // Coming back from Settings is how the output channel changes, and the
+        // engine rebuilds its track only when the choice actually differs.
+        engine.setOutputChannel(AudioOutputChannel.load(this))
         if (!::telemetryReceiver.isInitialized) return
         if (liveMode) {
             telemetryReceiver.start()
@@ -651,6 +762,9 @@ class MainActivity : Activity() {
         private const val GREEN = 0xFF35D07F.toInt()
         private const val PURPLE = 0xFFA778FF.toInt()
         private const val AMBER = 0xFFFFB74D.toInt()
+        private const val RED = 0xFFE04B4B.toInt()
+        private const val TEAL = 0xFF22B8CF.toInt()
+        private const val SLATE = 0xFF4A5C6E.toInt()
         private const val SOFT = 0xFFE5EAF0.toInt()
         private const val MUTED = 0xFF8995A3.toInt()
     }
