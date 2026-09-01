@@ -291,8 +291,19 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         diPlusHelperStarts++;
         try {
             String url = "http://127.0.0.1:" + DIPLUS_API_PORT + DIPLUS_API_PATH;
-            Process process = new ProcessBuilder("sh", "-c",
-                    "while true; do curl -s --max-time 2 '" + url + "'; echo; sleep 0.05; done")
+            // The loop must give up. An unconditional `while true; do curl` forks
+            // a process every 50ms for as long as the daemon lives when curl is
+            // missing or the service is refusing -- twenty a second, which is the
+            // exact load this whole design exists to avoid. So: on a failure it
+            // slows to one a second, and after fifteen it exits, which the pump
+            // below sees as end of stream and reports.
+            String script =
+                    "f=0; while true; do "
+                    + "v=$(curl -s --max-time 2 '" + url + "'); "
+                    + "if [ -n \"$v\" ]; then printf '%s\\n' \"$v\"; f=0; sleep 0.05; "
+                    + "else f=$((f+1)); if [ $f -ge 15 ]; then exit 1; fi; sleep 1; fi; "
+                    + "done";
+            Process process = new ProcessBuilder("sh", "-c", script)
                     .redirectErrorStream(true)
                     .start();
             diPlusHelper = process;
