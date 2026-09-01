@@ -168,10 +168,17 @@ object BydTelemetryDiagnostics {
         val diPlusInstall = if (adbConnection != null) inspectDiPlus(adbConnection)
         else listOf("ADB not authorized -- cannot inspect DiPlus")
 
-        // The same value over the path measured to work: the shell UID.
-        val adbBridge = runCatching { DiPlusAdbBridge(activity) }.getOrNull()
-        val diPlusAdbRpm = runCatching { adbBridge?.readOnce() }.getOrNull()
-        val diPlusAdbStatus = runCatching { adbBridge?.status() }.getOrNull() ?: "unavailable"
+        // The daemon reads the DiPlus API under the shell UID and streams the
+        // result; ask it rather than opening a second reader of our own.
+        val daemonRpmValue = runCatching {
+            BydHalTelemetryBridge(activity).let { b ->
+                if (b.isAvailable()) b.latest()?.rpm?.toInt() else null
+            }
+        }.getOrNull()
+        val diPlusAdbRpm = daemonRpmValue
+        val diPlusAdbStatus =
+            if (daemonRpmValue != null) "ok ($daemonRpmValue RPM from shell-UID daemon)"
+            else "daemon has no reading yet"
 
         val scan = if (adbConnection != null) runSensorScan() else listOf("SENSOR SCAN: ADB not authorized")
         val scanError = scan.firstOrNull { it.startsWith("SENSOR SCAN ERROR:") }

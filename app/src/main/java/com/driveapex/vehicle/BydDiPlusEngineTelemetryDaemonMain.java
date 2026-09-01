@@ -7,18 +7,24 @@ import android.hardware.bydauto.BYDAutoEventValue;
 import android.hardware.bydauto.engine.AbsBYDAutoEngineListener;
 import android.os.Looper;
 
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * DiPlus-compatible BYD engine telemetry daemon.
@@ -42,6 +48,11 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 18765;
     private static final int SCAN_PORT = 18766;
+    private static final int DIPLUS_API_PORT = 8988;
+    private static final String DIPLUS_API_PATH =
+            "/api/getVal?name=%E5%89%8D%E7%94%B5%E6%9C%BA%E8%BD%AC%E9%80%9F&status=true";
+    private static final Pattern DIPLUS_VALUE =
+            Pattern.compile("\"val\"\\s*:\\s*\"?([-+]?\\d+(?:\\.\\d+)?)\"?");
     private static final String ENGINE_DEVICE = "android.hardware.bydauto.engine.BYDAutoEngineDevice";
     private static final String FEATURE_IDS = "android.hardware.bydauto.BYDAutoFeatureIds";
     private static final String FEATURE_MAP = "android.hardware.bydauto.BYDAutoDeviceFeaturesMap";
@@ -62,6 +73,7 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         volatile int featureId = FALLBACK_FRONT_MOTOR_SPEED;
         volatile String registration = "NOT_REGISTERED";
         volatile long eventCount;
+        volatile boolean diPlusApiOk;
 
         /**
          * Every distinct event type this listener has actually been handed, with its last
@@ -136,6 +148,8 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
             });
             ready.await(3, TimeUnit.SECONDS);
 
+            startDiPlusApiReader(snapshot);
+
             scanServer = new ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST));
             ServerSocket finalScanServer = scanServer;
             Thread scanThread = new Thread(() -> {
@@ -168,6 +182,100 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         } finally {
             if (scanServer != null) try { scanServer.close(); } catch (Throwable ignored) {}
             if (thread != null) thread.quitSafely();
+        }
+    }
+
+    /**
+     * Reads front motor speed from the DiPlus local API, from inside this
+     * process.
+     *
+     * This daemon runs under the shell UID, and the shell UID is the identity
+     * whose request to 127.0.0.1:8988 the service answers -- the app's own UID
+     * gets a TCP reset for the identical request. So the read belongs here.
+     *
+     * It also removes the reason the app degraded over time. Reading the same
+     * value from the app meant an ADB shell command per sample, which is a new
+     * process on the head unit per sample; at twenty samples a second, with a
+     * curl loop of its own alongside it, that is roughly forty process launches
+     * every second for as long as the app runs. Here the value costs one socket
+     * per sample inside a process that is already running, and reaches the app
+     * over the single connection this daemon already serves. DiPlus stays smooth
+     * with far more live sensors precisely because it does nothing like the
+     * former arrangement.
+     */
+    private static void startDiPlusApiReader(Snapshot snapshot) {
+        Thread reader = new Thread(() -> {
+            int consecutiveFailures = 0;
+            while (true) {
+                Integer rpm = readDiPlusFrontMotorRpm();
+                if (rpm != null) {
+                    consecutiveFailures = 0;
+                    snapshot.frontRpm = rpm;
+                    snapshot.timestamp = System.currentTimeMillis();
+                    snapshot.valid = true;
+                    snapshot.diPlusApiOk = true;
+                } else if (++consecutiveFailures == 1 || consecutiveFailures % 100 == 0) {
+                    snapshot.diPlusApiOk = false;
+                    System.out.println("DIPLUS API read failed x" + consecutiveFailures);
+                }
+                try {
+                    // Back off when the service is not answering rather than
+                    // spinning on a socket that is refusing us.
+                    Thread.sleep(consecutiveFailures > 5 ? 1000L : 50L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }, "driveapex-diplus-api");
+        reader.setDaemon(true);
+        reader.start();
+        System.out.println("DIPLUS API reader started (shell UID, in-process)");
+    }
+
+    /** One request. Returns null on any failure, including a response without a value. */
+    private static Integer readDiPlusFrontMotorRpm() {
+        Socket socket = null;
+        try {
+            socket = new Socket();
+            socket.connect(new InetSocketAddress("127.0.0.1", DIPLUS_API_PORT), 500);
+            socket.setSoTimeout(1500);
+            OutputStream out = socket.getOutputStream();
+            String request = "GET " + DIPLUS_API_PATH + " HTTP/1.1\r\n"
+                    + "Host: 127.0.0.1:" + DIPLUS_API_PORT + "\r\n"
+                    + "User-Agent: DriveApex\r\n"
+                    + "Accept: */*\r\n"
+                    + "Connection: close\r\n\r\n";
+            out.write(request.getBytes("US-ASCII"));
+            out.flush();
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), "UTF-8"));
+            StringBuilder received = new StringBuilder();
+            String line;
+            // Match as it arrives: a server that answers and then resets instead
+            // of closing cleanly would otherwise have its response discarded.
+            while (received.length() < 8192 && (line = reader.readLine()) != null) {
+                received.append(line).append('\n');
+                Matcher match = DIPLUS_VALUE.matcher(received);
+                if (match.find()) return parseRpm(match.group(1));
+            }
+            Matcher match = DIPLUS_VALUE.matcher(received);
+            return match.find() ? parseRpm(match.group(1)) : null;
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (socket != null) try { socket.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private static Integer parseRpm(String text) {
+        try {
+            double raw = Math.abs(Double.parseDouble(text));
+            if (!(raw >= 0) || raw > 25000) return null;
+            return (int) raw;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
