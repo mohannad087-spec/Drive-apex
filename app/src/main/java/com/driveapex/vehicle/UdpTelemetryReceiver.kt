@@ -134,14 +134,15 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
             // the shell UID returns the value. The daemon runs under that UID and
             // now reads the API itself, streaming the result over one long-lived
             // socket, so a sample costs nothing on the head unit.
+            val daemonFrame = byd?.latest()
+            useByd = daemonFrame != null
+
             val directRpm = if (frame != null && frame.motorSpeedAvailable) frame.motorSpeed else null
             val daemonRpm =
                 if (directRpm == null) daemonFrame?.rpm?.takeIf { it.isFinite() && it > 0f } else null
             val socketRpm = if (directRpm == null && daemonRpm == null) diPlusRpm() else null
             val listenerRpm =
                 if (directRpm == null && daemonRpm == null && socketRpm == null) inProcessRpm() else null
-            val daemonFrame = byd?.latest()
-            useByd = daemonFrame != null
 
             val rawRpm = directRpm
                 ?: daemonRpm
