@@ -211,7 +211,33 @@ object EngineCharacters {
         ),
         whine = null,
         drive = 1.6f,
-        level = 0.95f
+        level = 0.95f,
+        /**
+         * Four gears, shifting every 1500 motor rpm.
+         *
+         * Ratios are chosen so the shift lands where it was asked for rather than
+         * where a ratio happens to put it: virtual rpm is motor rpm times the
+         * ratio, and the box shifts when that reaches upshiftRpm, so a shift at
+         * motor rpm M needs the ratio upshiftRpm / M. With 6500 as the shift
+         * point that gives 1500, 3000 and 4500 exactly, and fourth carries on
+         * without shifting again.
+         *
+         * downshiftRpm sits below the lowest rpm any upshift drops to (3250, in
+         * second), so the box cannot shift up and immediately back down.
+         *
+         * Nothing above this line is touched: the orders, resonances, noise bed,
+         * drive and level that make this voice are exactly as they were.
+         */
+        gearbox = EngineCharacter.Gearbox(
+            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
+            upshiftRpm = 6500f,
+            downshiftRpm = 2800f,
+            idleRpm = 800f,
+            limiterRpm = 7000f,
+            shiftCutMs = 130,
+            shiftCutDepth = 0.55f,
+            shiftLockoutMs = 420
+        )
     )
 
     /**

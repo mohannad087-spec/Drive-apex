@@ -2,6 +2,7 @@ package com.driveapex.audio
 
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.sin
 import kotlin.math.tanh
 
@@ -53,6 +54,11 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
     @Volatile private var voice: Voice = newVoice(EngineCharacters.default, null)
 
     private var whinePhase = 0.0
+
+    // Free-rev state and its shape. 260ms to pick up and 700ms to fall back is
+    // roughly a light flywheel; equal rates in both directions is what makes a
+    // synthesised blip sound like a slider being dragged.
+    private var neutralRev = 800f
     private var noiseState = 0x4D595DF4L
 
     private val noiseFilter = Biquad()
@@ -116,6 +122,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         rpmTarget: Float,
         loadTarget: Float,
         speedTarget: Float,
+        throttleTarget: Float,
         scene: AudioScene,
         events: AcousticEventComposer.Events
     ) {
@@ -138,6 +145,27 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
             val state = box.update(rpmTarget, elapsedMs)
             voiceRpm = state.virtualRpm
             gear = state.gear
+
+            // Free rev at a standstill. The car is stopped, so the motor is not
+            // turning and the geared voice sits at idle no matter what the driver
+            // does with the pedal -- which is the one moment a real engine is at
+            // its most expressive. Here the throttle drives the note directly.
+            //
+            // Asymmetric, because an engine is: it picks up far faster than it
+            // falls back, and equal rates in both directions is most of what
+            // makes a synthesised rev sound fake.
+            val idle = box.idleRpm()
+            val revTarget = idle + throttleTarget.coerceIn(0f, 1f) * (box.revCeiling() - idle)
+            val bufferMs = frames * 1000f / sampleRate
+            val tau = if (revTarget > neutralRev) REV_RISE_MS else REV_FALL_MS
+            neutralRev += (revTarget - neutralRev) * (1f - exp(-bufferMs / tau))
+
+            // Hand over to the gearbox as the car starts moving, rather than
+            // switching at a threshold: at rest the two agree at idle, and by
+            // walking pace the geared voice has it entirely.
+            val geared = voiceRpm
+            val handover = ((speedTarget - ROLLING_KPH) / HANDOVER_KPH).coerceIn(0f, 1f)
+            voiceRpm = neutralRev * (1f - handover) + geared * handover
             if (state.shifted != 0) {
                 // Jump rather than glide: the pitch change belongs inside the
                 // torque cut, where it is covered, not smeared across it.
@@ -267,6 +295,15 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
             pcm[i * 2] = clip(outL, c.drive)
             pcm[i * 2 + 1] = clip(outR, c.drive)
         }
+    }
+
+    private companion object {
+        const val REV_RISE_MS = 260f
+        const val REV_FALL_MS = 700f
+        /** Below this the car counts as stopped and the pedal owns the note. */
+        const val ROLLING_KPH = 1.5f
+        /** Over this much more speed, the gearbox takes it back completely. */
+        const val HANDOVER_KPH = 6f
     }
 
     private fun clip(value: Double, drive: Float): Short {

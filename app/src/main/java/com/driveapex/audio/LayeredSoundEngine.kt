@@ -34,6 +34,12 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     @Volatile private var running = false
     @Volatile private var rpm = 700f
     @Volatile private var load = 0.10f
+
+    // Kept apart from load on purpose: load mixes throttle with brake, regen and
+    // road speed, which is right for how hard the engine is working but wrong for
+    // a free rev at a standstill, where the pedal is the only thing that should
+    // move the note.
+    @Volatile private var throttle = 0f
     @Volatile private var speedKph = 0f
     @Volatile private var scene = AudioScene.IDLE
     @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
@@ -46,6 +52,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     fun currentGear(): Int = renderer.currentGear()
     fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
+    fun setThrottle(value: Float) { throttle = value.coerceIn(0f, 1f) }
     fun setSpeed(value: Float) { speedKph = value.coerceAtLeast(0f) }
     fun setScene(value: AudioScene) { scene = value }
     fun setEvents(value: AcousticEventComposer.Events) { events = value }
@@ -126,7 +133,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         val pcm = ShortArray(bufferSize * 2)
         try {
             while (running) {
-                renderer.render(pcm, bufferSize, rpm, load, speedKph, scene, events)
+                renderer.render(pcm, bufferSize, rpm, load, speedKph, throttle, scene, events)
                 runCatching { track?.write(pcm, 0, pcm.size) }
             }
         } catch (t: Throwable) {

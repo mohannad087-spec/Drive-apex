@@ -87,4 +87,10 @@ class VirtualGearbox(spec: EngineCharacter.Gearbox) {
     }
 
     fun currentGear(): Int = gear
+
+    /** Where the voice sits with the throttle closed. */
+    fun idleRpm(): Float = spec.idleRpm
+
+    /** Where a free rev tops out: the shift point, not the limiter. */
+    fun revCeiling(): Float = spec.upshiftRpm
 }

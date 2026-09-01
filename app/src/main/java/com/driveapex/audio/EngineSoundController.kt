@@ -23,6 +23,7 @@ class EngineSoundController(private val engine: LayeredSoundEngine) {
 
         engine.setRpm(rpm)
         engine.setLoad(load.coerceIn(0.10f, 1.5f))
+        engine.setThrottle(throttle)
         engine.setSpeed(conditioned.speedKph)
         engine.setScene(scene)
         engine.setEvents(lastEvents)
