@@ -390,6 +390,115 @@ object EngineCharacters {
         )
     )
 
-    val all = listOf(evRealistic, evSport, iceSport, mercedesV12, measuredPetrol)
+    /**
+     * A four cylinder with an open exhaust, measured off the rally idle clip.
+     *
+     * Built exactly as measured_petrol was, because that is the one that
+     * worked: the harmonic balance is taken from a recording rather than chosen,
+     * mapped straight onto these orders, and scaled so the sum is 1.150 and it
+     * sits at the same loudness as its neighbours.
+     *
+     * Worth recording against my own earlier reasoning: measured_petrol, the
+     * character the driver calls excellent, has a strongest-to-weakest order
+     * ratio of 8.4, while mercedesV12 -- which I raised to 31.8 on the argument
+     * that a real AMG measures 31.4 -- came back as only slightly better. So
+     * that ratio is not what decides whether a voice convinces. What both good
+     * results have in common is simply that their balance was measured off a
+     * recording instead of chosen, and that is the part being repeated here.
+     *
+     * What makes it a different engine and not a variation: the measurement is
+     * dominated by order 2 with a strong 3 underneath, where the petrol clip
+     * peaked at its fundamental. That is the even-order bark of a four with a
+     * loose exhaust, and it is audible immediately against the others.
+     */
+    val measuredRally = EngineCharacter(
+        id = "measured_rally",
+        name = "Measured Rally",
+        orders = listOf(
+            EngineCharacter.Order(order = 0.5f, gain = 0.022f, loadGain = 1.9f),
+            EngineCharacter.Order(order = 1f, gain = 0.095f, loadGain = 1.8f, stereo = -0.2f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.065f, loadGain = 2.0f),
+            EngineCharacter.Order(order = 2f, gain = 0.434f, loadGain = 2.2f, stereo = 0.15f),
+            EngineCharacter.Order(order = 3f, gain = 0.351f, loadGain = 2.4f),
+            EngineCharacter.Order(order = 4f, gain = 0.152f, loadGain = 2.5f, stereo = -0.25f),
+            EngineCharacter.Order(order = 6f, gain = 0.014f, loadGain = 2.4f, stereo = 0.3f),
+            EngineCharacter.Order(order = 8f, gain = 0.017f, loadGain = 2.2f, fadeInRpm = 400f)
+        ),
+        // The broad spectral peaks of the same clip, less the one at its own
+        // fundamental.
+        resonances = listOf(
+            EngineCharacter.Resonance(hz = 229f, q = 1.0f, gain = 0.72f),
+            EngineCharacter.Resonance(hz = 520f, q = 1.4f, gain = 0.48f),
+            EngineCharacter.Resonance(hz = 1250f, q = 1.9f, gain = 0.30f)
+        ),
+        // Two passes through the bandpass and a quiet bed, the treatment that
+        // took the hiss out of measured_petrol.
+        noise = EngineCharacter.NoiseBed(
+            baseGain = 0.062f, speedGain = 0.075f, loadGain = 0.12f,
+            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f, cascade = 2
+        ),
+        whine = null,
+        drive = 1.7f,
+        level = 0.95f,
+        // The same four gears, shifting every 1500 motor rpm.
+        gearbox = EngineCharacter.Gearbox(
+            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
+            upshiftRpm = 6500f, downshiftRpm = 2800f,
+            idleRpm = 800f, limiterRpm = 7000f,
+            shiftCutMs = 130, shiftCutDepth = 0.55f, shiftLockoutMs = 420
+        )
+    )
+
+    /**
+     * The AMG clips again, but read as the V8 they are.
+     *
+     * mercedesV12 maps the same measurement onto a twelve's order axis, which
+     * puts the engine's own firing on order 6. This puts it on order 4, where a
+     * V8 actually fires -- and the AMG in those recordings is a V8. Same
+     * recording, same method, the right number of cylinders at the other end.
+     *
+     * If this lands better than mercedesV12 does, the cylinder count was the
+     * error rather than anything about the balance, which is worth knowing
+     * before anything else is tuned.
+     */
+    val measuredV8 = EngineCharacter(
+        id = "measured_v8",
+        name = "Measured V8",
+        orders = listOf(
+            EngineCharacter.Order(order = 1f, gain = 0.019f, loadGain = 1.7f),
+            EngineCharacter.Order(order = 2f, gain = 0.029f, loadGain = 1.8f, stereo = -0.15f),
+            EngineCharacter.Order(order = 3f, gain = 0.038f, loadGain = 2.0f),
+            EngineCharacter.Order(order = 4f, gain = 0.479f, loadGain = 2.6f),
+            EngineCharacter.Order(order = 6f, gain = 0.268f, loadGain = 2.5f, stereo = -0.25f),
+            EngineCharacter.Order(order = 8f, gain = 0.139f, loadGain = 2.6f, stereo = 0.25f),
+            EngineCharacter.Order(order = 12f, gain = 0.086f, loadGain = 2.4f, fadeInRpm = 900f),
+            EngineCharacter.Order(order = 16f, gain = 0.091f, loadGain = 2.2f, fadeInRpm = 1400f, stereo = -0.3f)
+        ),
+        resonances = listOf(
+            EngineCharacter.Resonance(hz = 230f, q = 1.1f, gain = 0.70f),
+            EngineCharacter.Resonance(hz = 390f, q = 1.3f, gain = 0.55f),
+            EngineCharacter.Resonance(hz = 900f, q = 1.7f, gain = 0.34f),
+            EngineCharacter.Resonance(hz = 1050f, q = 2.0f, gain = 0.26f)
+        ),
+        // Two passes through the bandpass and a quiet bed, the treatment that
+        // took the hiss out of measured_petrol.
+        noise = EngineCharacter.NoiseBed(
+            baseGain = 0.062f, speedGain = 0.075f, loadGain = 0.12f,
+            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f, cascade = 2
+        ),
+        whine = null,
+        drive = 1.8f,
+        level = 0.95f,
+        // The same four gears, shifting every 1500 motor rpm.
+        gearbox = EngineCharacter.Gearbox(
+            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
+            upshiftRpm = 6500f, downshiftRpm = 2800f,
+            idleRpm = 800f, limiterRpm = 7000f,
+            shiftCutMs = 130, shiftCutDepth = 0.55f, shiftLockoutMs = 420
+        )
+    )
+
+    val all = listOf(evRealistic, evSport, iceSport, mercedesV12, measuredPetrol,
+                     measuredRally, measuredV8)
     val default = evRealistic
 }

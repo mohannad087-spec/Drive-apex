@@ -25,7 +25,6 @@ import com.driveapex.audio.EngineCharacter
 import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.EngineSampleBank
 import com.driveapex.audio.EngineSampleBankLoader
-import com.driveapex.audio.WaveguideEngine
 import com.driveapex.audio.TuningStore
 import com.driveapex.audio.tunedWith
 import com.driveapex.audio.EngineSoundController
@@ -336,11 +335,11 @@ class MainActivity : Activity() {
         row.addView(profile("MEASURED", "Real engine profile", AMBER) {
             selectCharacter(EngineCharacters.measuredPetrol)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("V8 PHYSICAL", "Modelled, not mixed", GREEN) {
-            selectWaveguide(WaveguideEngine.v8, "V8 PHYSICAL")
+        row.addView(profile("MEASURED V8", "AMG, on a V8 axis", GREEN) {
+            selectCharacter(EngineCharacters.measuredV8)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("4-CYL PHYSICAL", "Modelled, not mixed", BLUE) {
-            selectWaveguide(WaveguideEngine.four, "4-CYL PHYSICAL")
+        row.addView(profile("MEASURED RALLY", "Four, open exhaust", PURPLE) {
+            selectCharacter(EngineCharacters.measuredRally)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         loadSampleBanks()
@@ -379,7 +378,6 @@ class MainActivity : Activity() {
      * than carrying one of its own for now.
      */
     private fun selectBank(bank: EngineSampleBank) {
-        engine.setWaveguide(null)
         engine.setSampleBank(bank)
         sceneValue.text = bank.name.uppercase(Locale.US)
     }
@@ -422,18 +420,7 @@ class MainActivity : Activity() {
         // either would otherwise keep the output and the button would appear to
         // do nothing.
         engine.setSampleBank(null)
-        engine.setWaveguide(null)
         engine.setCharacter(character.tunedWith(tuningStore.load(character.id)))
-    }
-
-    /**
-     * Switches to the physical model. It keeps whichever character is selected
-     * for its gearbox, so the gears and the standstill rev carry over unchanged.
-     */
-    private fun selectWaveguide(spec: WaveguideEngine.Spec, label: String) {
-        engine.setSampleBank(null)
-        engine.setWaveguide(spec)
-        sceneValue.text = label
     }
 
     private fun showSoundTuning() {

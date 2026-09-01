@@ -36,12 +36,6 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     // APK with no samples in it behaves exactly as before.
     private val sampleVoice = SampleVoiceRenderer(SAMPLE_RATE)
 
-    // The physically modelled voice, and a mono buffer for it. Both are null and
-    // idle until something selects them, so an untouched app synthesises exactly
-    // as before.
-    @Volatile private var waveguide: WaveguideEngine? = null
-    private val waveguideBuffer = FloatArray(bufferSize)
-
     // Shared by both non-additive voices: gears and the standstill rev are the
     // same behaviour whichever of them is producing the note.
     private val voiceRpm = VoiceRpmMapper().apply { retune(character.gearbox) }
@@ -68,19 +62,6 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     }
 
     /**
-     * Switches to the physical model, or back to synthesis with null.
-     *
-     * It replaces the voice rather than layering with it: the model produces the
-     * whole engine, intake and tailpipe included, so adding an additive voice on
-     * top would be two engines at once.
-     */
-    fun setWaveguide(spec: WaveguideEngine.Spec?) {
-        waveguide = spec?.let { WaveguideEngine(SAMPLE_RATE, it) }
-    }
-
-    fun waveguideActive(): Boolean = waveguide != null
-
-    /**
      * Plays real recordings instead of synthesising, when a playable bank is
      * given. Passing null returns the engine to synthesis.
      */
@@ -92,8 +73,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
 
     /** Virtual gear, 1-based; 0 when the current character has no gearbox. */
     fun currentGear(): Int =
-        if (sampleVoice.isReady() || waveguide != null) voiceRpm.currentGear()
-        else renderer.currentGear()
+        if (sampleVoice.isReady()) voiceRpm.currentGear() else renderer.currentGear()
     fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setThrottle(value: Float) { throttle = value.coerceIn(0f, 1f) }
@@ -173,28 +153,6 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * recording of a steady rpm has no torque interruption in it, so without
      * this an upshift would be a bare pitch jump.
      */
-    /**
-     * One buffer from the physical model.
-     *
-     * The model is mono -- it is one engine in one place -- so both channels get
-     * the same signal. Width in this app comes from the mix, and a physically
-     * modelled pipe has no second channel to give.
-     */
-    private fun renderFromWaveguide(pcm: ShortArray): Boolean {
-        val engine = waveguide ?: return false
-        voiceClock += (bufferSize * 1000L) / sampleRate
-        val mapped = voiceRpm.map(rpm, throttle, speedKph, bufferSize, sampleRate, voiceClock)
-        engine.render(waveguideBuffer, bufferSize, mapped.rpm)
-        val cut = mapped.cutGain
-        for (i in 0 until bufferSize) {
-            val v = (waveguideBuffer[i] * cut * 32_600f)
-                .coerceIn(-32_768f, 32_767f).toInt().toShort()
-            pcm[i * 2] = v
-            pcm[i * 2 + 1] = v
-        }
-        return true
-    }
-
     private fun renderFromSamples(pcm: ShortArray): Boolean {
         if (!sampleVoice.isReady()) return false
         voiceClock += (bufferSize * 1000L) / sampleRate
@@ -218,7 +176,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         val pcm = ShortArray(bufferSize * 2)
         try {
             while (running) {
-                if (!renderFromWaveguide(pcm) && !renderFromSamples(pcm)) {
+                if (!renderFromSamples(pcm)) {
                     renderer.render(pcm, bufferSize, rpm, load, speedKph, throttle, scene, events)
                 }
                 runCatching { track?.write(pcm, 0, pcm.size) }
