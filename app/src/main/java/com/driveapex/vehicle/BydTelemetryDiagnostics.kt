@@ -25,7 +25,9 @@ object BydTelemetryDiagnostics {
         val heldPermissions: List<String> = emptyList(), val missingPermissions: List<String> = emptyList(),
         val inProcessReport: String = "", val inProcessRpm: Int? = null,
         val diPlusInstall: List<String> = emptyList(),
-        val diPlusAdbRpm: Int? = null, val diPlusAdbStatus: String = ""
+        val diPlusAdbRpm: Int? = null, val diPlusAdbStatus: String = "",
+        val directMotorRpm: Int? = null, val directMotorAvailable: Boolean = false,
+        val liveSource: String = "unknown"
     )
 
     /** Same endpoint DiPlusMotorSpeedReader uses, for the shell-side comparison. */
@@ -39,7 +41,13 @@ object BydTelemetryDiagnostics {
         "android.permission.BYDAUTO_GEARBOX_GET", "android.permission.BYDAUTO_VEHICLE_DATA_GET"
     )
 
-    fun probe(activity: Activity): Report {
+    /**
+     * @param liveSource what the running receiver says is feeding the screen right
+     *   now. The probe builds its own short-lived readers, so it cannot see which
+     *   source the live pipeline settled on -- and that is the one thing worth
+     *   knowing when the screen is working and every probe line says it is not.
+     */
+    fun probe(activity: Activity, liveSource: String = "unknown"): Report {
         val notes = mutableListOf<String>()
 
         // Read this first and report it at the top. It is the only path that has
@@ -185,8 +193,18 @@ object BydTelemetryDiagnostics {
         if (scanError != null) notes += scanError
         else notes += "DiPlus listener scan: ${scan.size} diagnostic entries returned."
 
+        // The direct HAL getter, reported on its own. It is first in the live
+        // pipeline's precedence and the probe never named it, so a session where
+        // it was the only working source still read "everything failed".
+        // Bound to a local val: directFrame is a var, so the compiler will not
+        // smart-cast it inside a lambda.
+        val direct = directFrame
+        val directMotorRpm =
+            if (direct != null && direct.motorSpeedAvailable)
+                direct.motorSpeed.takeIf { it.isFinite() && it > 0f }?.toInt()
+            else null
         val anyRead = readable || diPlusRpm != null || inProcessRpm != null || diPlusAdbRpm != null
-        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm ?: diPlusAdbRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm, diPlusInstall, diPlusAdbRpm, diPlusAdbStatus)
+        return Report(adbStatus, VehicleAdbConnection.lastError(), engineApiPresent, anyRead, anyRead, rpm ?: diPlusRpm ?: diPlusAdbRpm, speedApiPresent, anyRead, speed, accelerator, brake, directFrame != null, if (anyRead) null else (daemonError ?: "No readable live drivetrain frame"), declared, grantedPermissions, failedPermissionGrants, notes, scan, diPlusRpm, diPlusHost, diPlusError, held, missing, inProcessReport, inProcessRpm, diPlusInstall, diPlusAdbRpm, diPlusAdbStatus, directMotorRpm, direct?.motorSpeedAvailable == true, liveSource)
     }
 
     /** The name this process actually reports, to confirm android:process took effect. */
@@ -318,6 +336,11 @@ object BydTelemetryDiagnostics {
         // daemon's own listener result used to sit below the fold, so a probe
         // that had the answer in it still could not be read off the head unit.
         appendLine("=== ANSWER ===")
+        appendLine("direct HAL getter: " + when {
+            report.directMotorRpm != null -> "OK ${report.directMotorRpm} RPM"
+            report.directMotorAvailable -> "reads 0"
+            else -> "no value"
+        })
         appendLine("app HAL events   : ${halVerdict(report.inProcessReport)}")
         appendLine("daemon HAL events: ${daemonVerdict(report.sensorScan)}")
         appendLine("DiPlus API       : ${if (report.diPlusRpm != null) "OK ${report.diPlusRpm}" else "refused"}")
@@ -325,6 +348,7 @@ object BydTelemetryDiagnostics {
             .joinToString(", ") { it.removePrefix("android.permission.BYDAUTO_") }
         appendLine("we hold          : ${held.ifBlank { "nothing" }}")
         appendLine("DiPlus holds     : ${diPlusPermissionLine(report.diPlusInstall)}")
+        appendLine("live source      : ${report.liveSource}")
         appendLine()
         appendLine("=== FRONT MOTOR (BYD HAL, in-process like DiPlus) ===")
         appendLine(if (report.inProcessRpm != null) "OK: ${report.inProcessRpm} RPM" else "no value")

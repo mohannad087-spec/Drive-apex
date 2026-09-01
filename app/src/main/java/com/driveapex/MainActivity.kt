@@ -375,7 +375,11 @@ class MainActivity : Activity() {
 
     private fun showBydDiagnostics() {
         Thread {
-            val report = BydTelemetryDiagnostics.probe(this)
+            val live = if (::telemetryReceiver.isInitialized) {
+                val d = telemetryReceiver.diagnostics()
+                "${d.source} (packets ${d.packetCount})"
+            } else "receiver not started"
+            val report = BydTelemetryDiagnostics.probe(this, live)
             val message = BydTelemetryDiagnostics.format(report)
             handler.post {
                 if (!isFinishing && !isDestroyed) {
