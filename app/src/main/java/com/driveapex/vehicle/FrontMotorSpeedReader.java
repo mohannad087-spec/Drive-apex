@@ -284,7 +284,32 @@ public final class FrontMotorSpeedReader {
             }
         }
         out.append(String.format("\nlooking for: 0x%08x", FRONT_MOTOR_FEATURE_ID));
+        out.append("\ndevice methods: ").append(deviceMethodNames());
         return out.toString();
+    }
+
+    /**
+     * Every method the real engine device class exposes.
+     *
+     * DiPlus calls something on the device with the listener BEFORE registering
+     * it -- in its bytecode, C() runs `selector.e(device, listener)` over an
+     * array of selectors and only then calls registerListener. The class that
+     * implements e() is not in the disassembly we have, so what it calls is
+     * unknown; the device's own method list is the one place on the vehicle that
+     * can say what is even available to call. Registration succeeds for us and
+     * no event of any type ever arrives, so a missing enable or subscribe step
+     * is what is left, and this is how to find its name rather than guess it.
+     */
+    private String deviceMethodNames() {
+        if (device == null) return "no device";
+        java.util.TreeSet<String> names = new java.util.TreeSet<>();
+        for (Class<?> c = device.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().startsWith("access$")) continue;
+                names.add(m.getName() + "/" + m.getParameterTypes().length);
+            }
+        }
+        return names.isEmpty() ? "none" : String.join(" ", names);
     }
 
     private static boolean isPlausible(int value) {
