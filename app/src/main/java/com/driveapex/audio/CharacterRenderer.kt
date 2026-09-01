@@ -216,6 +216,15 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
                 right += wave * (1.0 + pan * 0.5)
             }
 
+            // Undo the level rise that loadGain brings with it, keeping the
+            // change it makes to the balance between partials. Without this the
+            // sum is loadNormalisation times louder at full throttle and the
+            // waveshaper below squares it off instead of warming it.
+            val loadNorm = 1.0 /
+                (1.0 + (c.loadNormalisation - 1.0) * loadNow.coerceIn(0.0, 1.0))
+            left *= loadNorm
+            right *= loadNorm
+
             // Body: the tonal sum through peaking resonances is the difference
             // between a tone and something with a shape around it.
             var bodyL = left

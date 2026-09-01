@@ -34,6 +34,23 @@ data class EngineCharacter(
     val gearbox: Gearbox? = null
 ) {
     /**
+     * How much louder the tonal sum gets at full load, weighted by each order's
+     * share of it.
+     *
+     * loadGain is meant to change the balance between partials under throttle --
+     * that is what makes an engine open up. But it multiplies their level too,
+     * and with these values the sum is 2.28x louder at full load, which drove
+     * the waveshaper from a musical saturation into a squared-off one. Measured
+     * on the V12 at 3000 rpm: 33% of samples pinned at full load against 0.6%
+     * at rest, which is the "excellent parked, artificial once moving" the
+     * driver reported. The renderer divides by this so load changes the timbre
+     * and leaves the level where it was.
+     */
+    val loadNormalisation: Float = orders.sumOf { it.gain.toDouble() }
+        .let { total -> if (total <= 0.0) 1f
+            else (orders.sumOf { it.gain.toDouble() * it.loadGain } / total).toFloat() }
+
+    /**
      * One partial. `order` is relative to shaft rotation: 1.0 is one cycle per
      * revolution, 0.5 is the half-order of a four-stroke's firing, 24.0 is a
      * typical magnetic order of a permanent-magnet motor.
@@ -231,8 +248,12 @@ object EngineCharacters {
             EngineCharacter.Resonance(hz = 2600f, q = 2.4f, gain = 0.20f)
         ),
         noise = EngineCharacter.NoiseBed(
-            baseGain = 0.050f, speedGain = 0.15f, loadGain = 0.16f,
-            baseHz = 280f, hzPerKph = 5.5f, q = 0.6f
+            // The bed rises with road speed, and at 0.15 with a centre sweeping
+            // 5.5Hz per km/h it became a wash of high bandpassed noise -- heard
+            // as hiss growing with speed rather than as a cabin. Halved, swept
+            // less far, and narrowed so it reads as road rather than as static.
+            baseGain = 0.050f, speedGain = 0.075f, loadGain = 0.16f,
+            baseHz = 280f, hzPerKph = 3.0f, q = 0.9f
         ),
         whine = null,
         drive = 1.9f,

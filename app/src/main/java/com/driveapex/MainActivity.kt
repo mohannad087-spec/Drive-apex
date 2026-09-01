@@ -373,18 +373,31 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * The probe itself is slow and cannot easily be made fast: it opens an ADB
+     * connection, launches or verifies the daemon, tries the DiPlus API on
+     * several hosts with their own timeouts, and asks the OS about twenty
+     * permissions. Waiting for all of that before anything appears on screen
+     * reads as a dead button.
+     *
+     * So the dialog opens at once and fills itself in when the answer arrives.
+     */
     private fun showBydDiagnostics() {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("BYD telemetry probe")
+            .setMessage("Probing the vehicle...\n\nADB, daemon, DiPlus API and permissions.\nThis takes a few seconds.")
+            .setPositiveButton("OK", null)
+            .show()
         Thread {
             val live = if (::telemetryReceiver.isInitialized) {
                 val d = telemetryReceiver.diagnostics()
                 "${d.source} (packets ${d.packetCount})"
             } else "receiver not started"
-            val report = BydTelemetryDiagnostics.probe(this, live)
-            val message = BydTelemetryDiagnostics.format(report)
+            val message = runCatching {
+                BydTelemetryDiagnostics.format(BydTelemetryDiagnostics.probe(this, live))
+            }.getOrElse { "Probe failed: ${it.message ?: it.javaClass.simpleName}" }
             handler.post {
-                if (!isFinishing && !isDestroyed) {
-                    AlertDialog.Builder(this).setTitle("BYD telemetry probe").setMessage(message).setPositiveButton("OK", null).show()
-                }
+                if (!isFinishing && !isDestroyed && dialog.isShowing) dialog.setMessage(message)
             }
         }.start()
     }
