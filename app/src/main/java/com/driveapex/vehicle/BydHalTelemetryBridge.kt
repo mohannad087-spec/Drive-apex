@@ -27,6 +27,7 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     @Volatile private var latestFrame: TelemetryFrame? = null
     @Volatile private var lastError: String? = null
     @Volatile private var lastDiPlusStatus: String = ""
+    @Volatile private var lastHalStatus: String = ""
 
     fun isAvailable(): Boolean = adb.ensureTelemetryDaemon() || isDaemonReachable()
 
@@ -121,6 +122,13 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
             if (status.isNotEmpty() && status != lastDiPlusStatus) {
                 lastDiPlusStatus = status
                 DriveApexLog.i("daemon", "diplus: $status")
+            }
+        }
+        if (p.size >= 8) {
+            val hal = p[7].trim()
+            if (hal.isNotEmpty() && hal != lastHalStatus) {
+                lastHalStatus = hal
+                DriveApexLog.i("daemon", "hal: $hal")
             }
         }
         val rawRpm = p[1].toFloat()

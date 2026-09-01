@@ -27,14 +27,17 @@ import java.util.concurrent.TimeUnit;
  * getInstance() returns null, and {@link #diagnostics()} says so rather than
  * failing silently -- which is how this path went unmeasured for so long.
  *
- * Registration deliberately prefers the single-argument
- * registerListener(listener), which is what DiPlus uses. The two-argument form
- * filters the requested IDs through BYDAutoDeviceFeaturesMap and returns the
- * intersection with the device's declared feature set; if
- * ENGINE_FRONT_MOTOR_SPEED is not in that set the array comes back empty and
- * the listener is registered for nothing. The stub only declares the
- * two-argument form, so the preferred overload is resolved reflectively
- * against whatever class is actually loaded.
+ * Registration follows DiPlus's own order, read from its bytecode: with a
+ * feature array and SDK_INT >= 29 it calls the TWO-argument
+ * registerListener(listener, ids), having mapped the IDs through
+ * BYDAutoDeviceFeaturesMap; only with no array, or below 29, does it use the
+ * one-argument form. This class previously preferred the one-argument form,
+ * with a comment claiming that was DiPlus's, and received no events at all.
+ *
+ * The IDs registered are the device's whole declared set rather than the front
+ * motor alone. That is a superset of DiPlus's intersection, and it makes the
+ * observed-event table below able to answer whether the front motor ID is even
+ * among what this vehicle delivers.
  */
 public final class FrontMotorSpeedReader {
     private static final int MAX_RPM = 25_000;
@@ -154,26 +157,74 @@ public final class FrontMotorSpeedReader {
             registration = "no device (" + deviceOrigin + ")";
             return;
         }
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            int[] ids = declaredFeatureIds();
+            try {
+                device.registerListener(listener, ids);
+                registered = true;
+                registration = "registerListener(listener, ids) count=" + ids.length
+                        + " hasFrontMotor=" + contains(ids, FRONT_MOTOR_FEATURE_ID);
+                return;
+            } catch (Throwable t) {
+                registration = "filtered failed: " + rootCause(t);
+            }
+        }
         Method oneArg = findUnfilteredRegister();
         if (oneArg != null) {
             try {
                 oneArg.invoke(device, listener);
                 registered = true;
-                registration = "registerListener(listener) unfiltered on Looper thread";
+                registration = (registration.startsWith("filtered failed")
+                        ? registration + "; fell back to " : "")
+                        + "registerListener(listener) unfiltered on Looper thread";
                 return;
             } catch (Throwable t) {
                 registration = "unfiltered failed: " + rootCause(t);
             }
         }
+    }
+
+    /**
+     * The device's declared feature IDs, read the way DiPlus reads them:
+     * BYDAutoDeviceFeaturesMap.getFeatureIdsFromDevice(deviceType), one
+     * argument, a Set back. Falls back to the front motor ID alone.
+     */
+    private int[] declaredFeatureIds() {
         try {
-            device.registerListener(listener, new int[]{FRONT_MOTOR_FEATURE_ID});
-            registered = true;
-            registration = registration.startsWith("unfiltered failed")
-                    ? registration + "; fell back to filtered"
-                    : "registerListener(listener, ids) filtered on Looper thread";
-        } catch (Throwable t) {
-            registration = "filtered failed: " + rootCause(t);
+            int deviceType = (Integer) device.getClass()
+                    .getMethod("getDevicetype").invoke(device);
+            Class<?> map = Class.forName("android.hardware.bydauto.BYDAutoDeviceFeaturesMap");
+            for (Method m : map.getDeclaredMethods()) {
+                if (!"getFeatureIdsFromDevice".equals(m.getName())) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p.length != 1 || p[0] != int.class) continue;
+                m.setAccessible(true);
+                Object result = m.invoke(null, deviceType);
+                if (result instanceof java.util.Collection) {
+                    java.util.Collection<?> values = (java.util.Collection<?>) result;
+                    int[] ids = new int[values.size()];
+                    int n = 0;
+                    for (Object value : values) {
+                        if (value instanceof Number) ids[n++] = ((Number) value).intValue();
+                    }
+                    if (n > 0) {
+                        int[] trimmed = new int[n];
+                        System.arraycopy(ids, 0, trimmed, 0, n);
+                        return trimmed;
+                    }
+                } else if (result instanceof int[] && ((int[]) result).length > 0) {
+                    return (int[]) result;
+                }
+            }
+        } catch (Throwable ignored) {
+            // Falls through to the single requested ID below.
         }
+        return new int[]{FRONT_MOTOR_FEATURE_ID};
+    }
+
+    private static boolean contains(int[] ids, int value) {
+        for (int id : ids) if (id == value) return true;
+        return false;
     }
 
     /** The single-argument registerListener, if the loaded class declares one. */

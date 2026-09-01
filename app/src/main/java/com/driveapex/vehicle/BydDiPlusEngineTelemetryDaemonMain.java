@@ -449,6 +449,13 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 writer.write(Double.toString(snapshot.brake)); writer.write(",BYD_DIPLUS_ENGINE_FEATURE_LISTENER,");
                 // Seventh field. Older readers stop at six, so this is additive.
                 writer.write(snapshot.diPlusStatus.replace(',', ' ').replace('\n', ' '));
+                writer.write(',');
+                // Eighth field: how the HAL listener registered, and whether it has
+                // ever been called. "events" is deliberately a yes/no rather than a
+                // count -- the app logs this line when it changes, and a counter
+                // would change twenty times a second.
+                writer.write((snapshot.registration + ":events=" + (snapshot.eventCount > 0 ? "YES" : "NO"))
+                        .replace(',', ' ').replace('\n', ' '));
                 writer.newLine(); writer.flush();
                 Thread.sleep(50L);
             }
@@ -483,31 +490,60 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         }
     }
 
-    private static int[] filterFeatureIdsForDevice(int deviceType, int requestedId) {
+    /**
+     * Every feature ID this device declares, read the way DiPlus reads it.
+     *
+     * DiPlus calls getFeatureIdsFromDevice(deviceType) -- one argument, a Set
+     * back -- and intersects it with the IDs it wants. This looked for a
+     * two-argument (Set, int) overload instead, found none, and silently
+     * returned the raw requested ID as though it had filtered it.
+     *
+     * The whole declared set is registered rather than just the front motor ID.
+     * It is a superset of what DiPlus subscribes to, so nothing is lost, and it
+     * settles by observation whether the front motor ID is even among the IDs
+     * this device delivers -- which no amount of registering only that one ID
+     * could ever tell us apart from a subscription that simply never fires.
+     */
+    private static int[] deviceFeatureIds(int deviceType, int requestedId) {
         try {
             Class<?> map = Class.forName(FEATURE_MAP);
-            Method target = null;
             for (Method m : map.getDeclaredMethods()) {
                 if (!"getFeatureIdsFromDevice".equals(m.getName())) continue;
                 Class<?>[] p = m.getParameterTypes();
-                if (p.length == 2 && Set.class.isAssignableFrom(p[0]) && p[1] == int.class) {
-                    target = m;
-                    break;
-                }
-            }
-            if (target == null) return new int[]{requestedId};
-            target.setAccessible(true);
-            Set<Integer> requested = new HashSet<>();
-            requested.add(requestedId);
-            Object result = target.invoke(null, requested, deviceType);
-            if (result instanceof int[]) {
-                int[] ids = (int[]) result;
+                if (p.length != 1 || p[0] != int.class) continue;
+                m.setAccessible(true);
+                Object result = m.invoke(null, deviceType);
+                int[] ids = toIntArray(result);
                 if (ids.length > 0) return ids;
             }
+            System.err.println("feature map: no getFeatureIdsFromDevice(int)");
         } catch (Throwable t) {
-            System.err.println("feature filter failed: " + message(t));
+            System.err.println("feature map failed: " + message(t));
         }
         return new int[]{requestedId};
+    }
+
+    /** getFeatureIdsFromDevice returns a Set on this HAL; accept an int[] too. */
+    private static int[] toIntArray(Object result) {
+        if (result instanceof int[]) return (int[]) result;
+        if (result instanceof java.util.Collection) {
+            java.util.Collection<?> values = (java.util.Collection<?>) result;
+            int[] ids = new int[values.size()];
+            int n = 0;
+            for (Object value : values) {
+                if (value instanceof Number) ids[n++] = ((Number) value).intValue();
+            }
+            if (n == ids.length) return ids;
+            int[] trimmed = new int[n];
+            System.arraycopy(ids, 0, trimmed, 0, n);
+            return trimmed;
+        }
+        return new int[0];
+    }
+
+    private static boolean contains(int[] ids, int value) {
+        for (int id : ids) if (id == value) return true;
+        return false;
     }
 
     private static Context[] createContexts(String requestedPackage, int userId) throws Exception {
@@ -611,15 +647,30 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 };
                 FrontMotorListener listener = new FrontMotorListener(snapshot.featureId, sink, snapshot);
 
-                // DiPlus registers its engine listener with the SINGLE-argument
-                // registerListener(listener) -- it passes no feature IDs at all and
-                // filters by type inside onDataEventChanged. The two-argument form
-                // runs the requested IDs through BYDAutoDeviceFeaturesMap, which
-                // returns the intersection with the device's declared feature set:
-                // if ENGINE_FRONT_MOTOR_SPEED is not in that set on this vehicle the
-                // array comes back empty and the listener is subscribed to nothing,
-                // which is indistinguishable from a wrong feature ID. Prefer DiPlus's
-                // own form, and keep the filtered form only as a fallback.
+                // Match DiPlus. Its registration reads, in order: if there is a
+                // feature array and SDK_INT >= 29, map the IDs through
+                // BYDAutoDeviceFeaturesMap and call the TWO-argument
+                // registerListener(listener, ids); only with no array, or below
+                // 29, does it call the one-argument form.
+                //
+                // This did the opposite -- one-argument first, with a comment
+                // asserting that was DiPlus's own form. It is not, and the
+                // unfiltered registration is what has been delivering zero events
+                // all along. Every workaround since was built on top of that.
+                Method twoArg = findRegisterListener(d.getClass(), listener.getClass(), true);
+                if (twoArg != null && android.os.Build.VERSION.SDK_INT >= 29) {
+                    int[] featureIds = deviceFeatureIds(snapshot.deviceType, snapshot.featureId);
+                    try {
+                        twoArg.setAccessible(true);
+                        twoArg.invoke(d, listener, featureIds);
+                        snapshot.registration = "registerListener(listener,ids):count=" + featureIds.length
+                                + ":hasFrontMotor=" + contains(featureIds, snapshot.featureId);
+                        return true;
+                    } catch (Throwable t) {
+                        System.err.println("two-arg registerListener failed: " + message(t));
+                    }
+                }
+
                 Method oneArg = findRegisterListener(d.getClass(), listener.getClass(), false);
                 if (oneArg != null) {
                     oneArg.setAccessible(true);
@@ -627,20 +678,8 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                     snapshot.registration = "registerListener(listener):unfiltered";
                     return true;
                 }
-
-                Method twoArg = findRegisterListener(d.getClass(), listener.getClass(), true);
-                if (twoArg == null) {
-                    snapshot.registration = "NO_REGISTER_LISTENER_OVERLOAD";
-                    return false;
-                }
-                int[] featureIds = filterFeatureIdsForDevice(snapshot.deviceType, snapshot.featureId);
-                // An empty filter result means "subscribe to nothing" -- fall back to the
-                // raw requested ID rather than registering a listener that can never fire.
-                if (featureIds.length == 0) featureIds = new int[]{snapshot.featureId};
-                twoArg.setAccessible(true);
-                twoArg.invoke(d, listener, featureIds);
-                snapshot.registration = twoArg.getName() + ":featureCount=" + featureIds.length + ":first=" + featureIds[0];
-                return true;
+                snapshot.registration = "NO_REGISTER_LISTENER_OVERLOAD";
+                return false;
             } catch (Throwable t) {
                 snapshot.registration = "ERROR:" + message(t);
                 return false;
