@@ -51,3 +51,14 @@ When possible, capture both cabin and exterior perspectives as separate banks. D
 ## Rights
 
 Every asset must have documented permission for inclusion in DriveApex. OEM-proprietary recordings must not be copied or redistributed.
+
+## Bank manifest
+
+Prepared recordings are described by a JSON manifest under
+`app/src/main/assets/enginebanks/`. See the README there for the schema and an
+example. Each entry names the file, the rpm it was captured at, whether it is
+the closed- or open-throttle take, and its loop points.
+
+Two rpm points at one throttle end is the minimum a bank can play with; the
+grid above is what keeps any one recording from being stretched more than about
+1.4x, beyond which it stops sounding like the engine it came from.

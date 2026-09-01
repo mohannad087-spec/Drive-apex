@@ -15,7 +15,8 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     companion object {
         private const val TAG = "DriveApexAudio"
         private const val DEFAULT_NAV_STREAM = 14
-        private const val SAMPLE_RATE = 44_100
+        /** Public so a bank can be decoded to the rate the engine will play it at. */
+        const val SAMPLE_RATE = 44_100
     }
 
     private val sampleRate = SAMPLE_RATE
@@ -29,6 +30,14 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     // Declared after the sample rate on purpose: Kotlin initialises properties in
     // source order, so constructing this above would hand the renderer a zero.
     private val renderer = CharacterRenderer(SAMPLE_RATE).apply { setCharacter(character) }
+
+    // The sample voice and the rpm mapping it needs. Silent and inert until a
+    // bank of recordings is loaded; synthesis stays the voice until then, so an
+    // APK with no samples in it behaves exactly as before.
+    private val sampleVoice = SampleVoiceRenderer(SAMPLE_RATE)
+    private val sampleRpm = VoiceRpmMapper().apply { retune(character.gearbox) }
+    private var sampleClock = 0L
+
     private var track: AudioTrack? = null
 
     @Volatile private var running = false
@@ -44,12 +53,24 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     @Volatile private var scene = AudioScene.IDLE
     @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
 
-    fun setCharacter(value: EngineCharacter) { renderer.setCharacter(value) }
+    fun setCharacter(value: EngineCharacter) {
+        renderer.setCharacter(value)
+        sampleRpm.retune(value.gearbox)
+    }
+
+    /**
+     * Plays real recordings instead of synthesising, when a playable bank is
+     * given. Passing null returns the engine to synthesis.
+     */
+    fun setSampleBank(bank: EngineSampleBank?) = sampleVoice.setBank(bank)
+
+    fun sampleBank(): EngineSampleBank? = sampleVoice.currentBank()
 
     fun character(): EngineCharacter = renderer.currentCharacter()
 
     /** Virtual gear, 1-based; 0 when the current character has no gearbox. */
-    fun currentGear(): Int = renderer.currentGear()
+    fun currentGear(): Int =
+        if (sampleVoice.isReady()) sampleRpm.currentGear() else renderer.currentGear()
     fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setThrottle(value: Float) { throttle = value.coerceIn(0f, 1f) }
@@ -122,6 +143,25 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * fixed, but a renderer defect should never again be fatal: catch it, record
      * it so the log names the file and line, and stop cleanly.
      */
+    /**
+     * One buffer from the recordings, or false when there is no bank to play.
+     *
+     * The shift cut is applied here rather than inside the sample voice: a real
+     * recording of a steady rpm has no torque interruption in it, so without
+     * this an upshift would be a bare pitch jump.
+     */
+    private fun renderFromSamples(pcm: ShortArray): Boolean {
+        if (!sampleVoice.isReady()) return false
+        sampleClock += (bufferSize * 1000L) / sampleRate
+        val mapped = sampleRpm.map(rpm, throttle, speedKph, bufferSize, sampleRate, sampleClock)
+        if (!sampleVoice.render(pcm, bufferSize, mapped.rpm, throttle)) return false
+        if (mapped.cutGain < 1f) {
+            val gain = mapped.cutGain
+            for (i in pcm.indices) pcm[i] = (pcm[i] * gain).toInt().toShort()
+        }
+        return true
+    }
+
     private fun renderLoop() {
         // Ask the scheduler for audio priority. This thread has to refill the
         // track every 17ms; at default priority a head unit busy with navigation
@@ -133,7 +173,9 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         val pcm = ShortArray(bufferSize * 2)
         try {
             while (running) {
-                renderer.render(pcm, bufferSize, rpm, load, speedKph, throttle, scene, events)
+                if (!renderFromSamples(pcm)) {
+                    renderer.render(pcm, bufferSize, rpm, load, speedKph, throttle, scene, events)
+                }
                 runCatching { track?.write(pcm, 0, pcm.size) }
             }
         } catch (t: Throwable) {

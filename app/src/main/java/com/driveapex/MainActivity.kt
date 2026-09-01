@@ -23,6 +23,8 @@ import com.driveapex.diag.DriveApexLog
 import com.driveapex.diag.LogViewer
 import com.driveapex.audio.EngineCharacter
 import com.driveapex.audio.EngineCharacters
+import com.driveapex.audio.EngineSampleBank
+import com.driveapex.audio.EngineSampleBankLoader
 import com.driveapex.audio.TuningStore
 import com.driveapex.audio.tunedWith
 import com.driveapex.audio.EngineSoundController
@@ -55,6 +57,9 @@ class MainActivity : Activity() {
      * track, so this is what says to take it back on the way in.
      */
     private var soundRunning = false
+
+    /** The SOUND DNA row, kept so recorded voices can be appended once decoded. */
+    private var profileRow: LinearLayout? = null
 
     private lateinit var rpmValue: TextView
     private lateinit var telemetry: TextView
@@ -314,6 +319,7 @@ class MainActivity : Activity() {
     private fun profiles(): HorizontalScrollView {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        profileRow = row
         row.addView(profile("EV REAL", "Authentic EV", BLUE) {
             selectCharacter(EngineCharacters.evRealistic)
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
@@ -327,7 +333,44 @@ class MainActivity : Activity() {
             selectCharacter(EngineCharacters.mercedesV12)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
+        loadSampleBanks()
         return scroll
+    }
+
+    /**
+     * Adds a button for each bank of real recordings found in the APK.
+     *
+     * Decoding happens off the main thread because it is decoding: several
+     * seconds of audio per layer through the platform codec. An APK carrying no
+     * banks finds none and the row is left exactly as it was, which is the
+     * current state -- the machinery is here, the recordings are not yet.
+     */
+    private fun loadSampleBanks() {
+        Thread({
+            val banks = EngineSampleBankLoader.loadAll(this, LayeredSoundEngine.SAMPLE_RATE)
+            if (banks.isEmpty()) return@Thread
+            handler.post {
+                if (isFinishing || isDestroyed) return@post
+                val row = profileRow ?: return@post
+                banks.forEach { bank ->
+                    row.addView(
+                        profile(bank.name.uppercase(Locale.US), "Recorded", PURPLE) { selectBank(bank) },
+                        LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginStart = dp(10) }
+                    )
+                }
+                DriveApexLog.i("samples", "added ${banks.size} recorded voices to the profile row")
+            }
+        }, "DriveApex-SampleBanks").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * Switches to real recordings. The gears and the standstill rev come from
+     * whichever character is selected, so a bank inherits the gearbox rather
+     * than carrying one of its own for now.
+     */
+    private fun selectBank(bank: EngineSampleBank) {
+        engine.setSampleBank(bank)
+        sceneValue.text = bank.name.uppercase(Locale.US)
     }
 
     private fun profile(name: String, subtitle: String, accent: Int, click: () -> Unit): LinearLayout = LinearLayout(this).apply {
@@ -364,6 +407,9 @@ class MainActivity : Activity() {
     /** Applies a character together with whatever tuning was saved for it. */
     private fun selectCharacter(character: EngineCharacter) {
         activeCharacter = character
+        // Choosing a synthesised voice also leaves the recordings: otherwise the
+        // sample path keeps the output and the button appears to do nothing.
+        engine.setSampleBank(null)
         engine.setCharacter(character.tunedWith(tuningStore.load(character.id)))
     }
 
