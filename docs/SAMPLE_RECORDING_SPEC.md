@@ -62,3 +62,19 @@ the closed- or open-throttle take, and its loop points.
 Two rpm points at one throttle end is the minimum a bank can play with; the
 grid above is what keeps any one recording from being stretched more than about
 1.4x, beyond which it stops sounding like the engine it came from.
+
+## Measured characters
+
+Recordings too short or too unsteady to loop are still useful as a measurement.
+`tools/build_engine_bank.py` reports the harmonic balance and the broad
+spectral peaks of any recording; those numbers can be transcribed into an
+`EngineCharacter` directly.
+
+`measured_petrol` was built this way from a short street-car rev clip sourced
+from Freesound. No audio from it ships in the app -- only the numbers measured
+off it, which is what made a three-second clip enough.
+
+The finding worth keeping: a real engine's orders fall away steeply beneath one
+dominant partial, where a hand-tuned character tends to come out nearly flat.
+A flat harmonic stack is most of what makes a synthesised engine sound like a
+synthesiser.

@@ -331,6 +331,9 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
         row.addView(profile("MERCEDES", "AMG V12 · 7-speed", GREEN) {
             selectCharacter(EngineCharacters.mercedesV12)
+        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("MEASURED", "Real engine profile", AMBER) {
+            selectCharacter(EngineCharacters.measuredPetrol)
         }, LinearLayout.LayoutParams(dp(156), dp(92)))
         scroll.addView(row)
         loadSampleBanks()

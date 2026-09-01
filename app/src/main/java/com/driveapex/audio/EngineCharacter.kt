@@ -296,6 +296,67 @@ object EngineCharacters {
         )
     )
 
-    val all = listOf(evRealistic, evSport, iceSport, mercedesV12)
+    /**
+     * Petrol, with its harmonic balance measured off a real engine.
+     *
+     * The recordings we could get are too short and rev too fast to loop -- a
+     * slice steady enough to loop drifts 27% in pitch inside itself -- so they
+     * are used here as a measurement instead of as playback material, which two
+     * seconds is plenty for.
+     *
+     * What the measurement showed is the difference between this and
+     * Combustion Sport, and it is not subtle:
+     *
+     *     recording   0.5:0.14  1:1.00  1.5:0.88  2:0.69  3:0.35  4:0.54  6:0.35  8:0.12
+     *     ice_sport   0.5:0.20  1:0.14  1.5:0.17  2:0.12  3:0.13  4:0.16  6:0.10  8:0.07
+     *
+     * A real engine has one dominant order with the rest falling away beneath
+     * it. Ours was nearly flat -- every partial at roughly the same weight --
+     * and a flat harmonic stack is what a synthesiser sounds like rather than
+     * what an engine sounds like. The gains below are that measured shape,
+     * scaled so the sum matches ice_sport's and the two can be compared at the
+     * same loudness.
+     *
+     * Resonances are the broad spectral peaks from the same recording, less the
+     * one at 82Hz, which is the engine's own fundamental rather than a body.
+     *
+     * ice_sport itself is untouched, as asked.
+     */
+    val measuredPetrol = EngineCharacter(
+        id = "measured_petrol",
+        name = "Measured Petrol",
+        orders = listOf(
+            EngineCharacter.Order(order = 0.5f, gain = 0.038f, loadGain = 1.8f),
+            EngineCharacter.Order(order = 1f, gain = 0.268f, loadGain = 1.7f, stereo = -0.2f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.236f, loadGain = 2.0f),
+            EngineCharacter.Order(order = 2f, gain = 0.185f, loadGain = 2.0f, stereo = 0.2f),
+            EngineCharacter.Order(order = 3f, gain = 0.094f, loadGain = 2.3f),
+            EngineCharacter.Order(order = 4f, gain = 0.145f, loadGain = 2.4f, stereo = -0.3f),
+            EngineCharacter.Order(order = 6f, gain = 0.094f, loadGain = 2.5f, stereo = 0.3f),
+            EngineCharacter.Order(order = 8f, gain = 0.032f, loadGain = 2.3f, fadeInRpm = 400f)
+        ),
+        resonances = listOf(
+            EngineCharacter.Resonance(hz = 230f, q = 1.1f, gain = 0.70f),
+            EngineCharacter.Resonance(hz = 390f, q = 1.3f, gain = 0.55f),
+            EngineCharacter.Resonance(hz = 900f, q = 1.7f, gain = 0.34f),
+            EngineCharacter.Resonance(hz = 1050f, q = 2.0f, gain = 0.26f)
+        ),
+        noise = EngineCharacter.NoiseBed(
+            baseGain = 0.050f, speedGain = 0.075f, loadGain = 0.14f,
+            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f
+        ),
+        whine = null,
+        drive = 1.6f,
+        level = 0.95f,
+        // The same four gears, shifting every 1500 motor rpm.
+        gearbox = EngineCharacter.Gearbox(
+            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
+            upshiftRpm = 6500f, downshiftRpm = 2800f,
+            idleRpm = 800f, limiterRpm = 7000f,
+            shiftCutMs = 130, shiftCutDepth = 0.55f, shiftLockoutMs = 420
+        )
+    )
+
+    val all = listOf(evRealistic, evSport, iceSport, mercedesV12, measuredPetrol)
     val default = evRealistic
 }
