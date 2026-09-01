@@ -47,6 +47,10 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
             adb.close()
             if (!adb.ensureTelemetryDaemon()) {
                 lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
+                // Hand the guard back. Leaving it set marked a bridge that had
+                // already given up as running, so every later start() returned
+                // immediately and the session never got a vehicle frame again.
+                running = false
                 return@execute
             }
             while (running) {

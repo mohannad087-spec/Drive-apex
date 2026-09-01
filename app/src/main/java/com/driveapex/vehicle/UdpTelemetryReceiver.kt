@@ -48,6 +48,10 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     @Volatile private var diPlusReadAtMs = 0L
     private val diPlusCacheMs = 30_000L
 
+    // Bounded, off the live loop, and abandoned the moment a frame arrives.
+    private val DAEMON_START_ATTEMPTS = 5
+    private val DAEMON_RETRY_MS = 30_000L
+
     // dt 50ms over a ~63ms time constant. Swept against the observed sample
     // pattern: this removes the same stutter as a slower filter (1 repeated
     // frame in 9, down from 7) while settling a 300 RPM change in 150ms instead
@@ -344,22 +348,43 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
     }
 
     /**
-     * Brings up the shell-UID daemon exactly once, in the background.
+     * Brings up the shell-UID daemon in the background.
      *
      * It supplies a whole frame -- speed, throttle and brake as well as RPM -- so
      * it has to run; those three came from here and disappeared when its starter
-     * was removed. What was actually wrong was the retry: it fired from the live
-     * loop every 15s, and each attempt copies an APK and polls for a port over
-     * ADB, holding the shell lock long enough to starve the RPM poller. Once, off
-     * the loop, with no retry, keeps the frame without the starvation.
+     * was removed. What was actually wrong was the old retry: it fired from the
+     * live loop every 15s, and each attempt copies an APK and polls for a port
+     * over ADB, holding the shell lock long enough to starve the RPM poller.
+     *
+     * So the retry lives here instead, on its own thread, off the live loop, and
+     * it gives up: the head unit's ADB is not always listening in the first
+     * seconds after the car wakes, and a single failed attempt at that moment
+     * used to leave the app with no vehicle frame for the whole session with
+     * nothing anywhere to try again. It stops the moment a frame arrives, so a
+     * working daemon costs exactly one attempt, as before.
      */
     private fun startDaemonOnce() {
         val bridge = byd ?: return
         if (daemonStartAttempted) return
         daemonStartAttempted = true
         Thread({
-            runCatching {
-                if (bridge.isAvailable()) bridge.start { publish(it) }
+            var attempt = 0
+            while (running && attempt < DAEMON_START_ATTEMPTS) {
+                attempt++
+                runCatching {
+                    if (bridge.isAvailable()) bridge.start { publish(it) }
+                }
+                // bridge.start() returns as soon as its reader is on the executor,
+                // so wait out the backoff and judge it by whether a frame landed.
+                var waited = 0L
+                while (running && waited < DAEMON_RETRY_MS) {
+                    if (bridge.latest() != null) return@Thread
+                    try { Thread.sleep(500L) } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt(); return@Thread
+                    }
+                    waited += 500L
+                }
+                if (bridge.latest() != null) return@Thread
             }
         }, "DriveApex-BydDaemonStart").apply { isDaemon = true }.start()
     }

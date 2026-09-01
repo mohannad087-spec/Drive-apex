@@ -50,6 +50,12 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var liveMode = false
 
+    /**
+     * Whether the driver asked for sound. Backgrounding releases the audio
+     * track, so this is what says to take it back on the way in.
+     */
+    private var soundRunning = false
+
     private lateinit var rpmValue: TextView
     private lateinit var telemetry: TextView
     private lateinit var sceneValue: TextView
@@ -127,6 +133,7 @@ class MainActivity : Activity() {
 
         startButton = primary("START DRIVE SOUND")
         startButton.setOnClickListener {
+            soundRunning = true
             engine.start()
             if (!liveMode) syncSimulator()
             startButton.text = "DRIVE SOUND RUNNING"
@@ -135,6 +142,7 @@ class MainActivity : Activity() {
 
         val stop = secondary("STOP / SAFE")
         stop.setOnClickListener {
+            soundRunning = false
             genomeSession.finishDrive()
             engine.stop()
             startButton.text = "START DRIVE SOUND"
@@ -535,23 +543,53 @@ class MainActivity : Activity() {
         super.onResume()
         DriveApexLog.i("lifecycle", "onResume")
         if (::updateManager.isInitialized) updateManager.onResume()
+        resumeLivePipeline()
     }
 
+    /**
+     * Takes the screen poller and the audio track back after a spell in the
+     * background. Both start() calls return immediately when the thing is
+     * already running, so this is safe on every resume, including the first one
+     * after onCreate.
+     */
+    private fun resumeLivePipeline() {
+        if (!::telemetryReceiver.isInitialized) return
+        if (liveMode) {
+            telemetryReceiver.start()
+            handler.removeCallbacks(livePoller)
+            handler.post(livePoller)
+        }
+        if (soundRunning) engine.start()
+    }
+
+    /**
+     * Backgrounding is not a shutdown. This head unit sends the app to the
+     * background constantly -- a navigation prompt, the OEM launcher, the screen
+     * blanking -- and onStop used to tear down telemetry and audio with nothing
+     * anywhere to bring them back: the app came forward alive but deaf and blind,
+     * which is the "works for a while then goes crazy" the driver kept hitting.
+     *
+     * Only the poller and the audio track stop here. The telemetry receiver stays
+     * up, because restarting it re-runs the whole ADB and daemon bootstrap, and
+     * doing that on every trip through the background is its own failure.
+     */
     override fun onStop() {
-        DriveApexLog.i("lifecycle", "onStop: shutting telemetry and audio down")
+        DriveApexLog.i("lifecycle", "onStop: pausing screen poller and audio, telemetry kept alive")
         handler.removeCallbacks(livePoller)
-        genomeSession.finishDrive()
-        telemetryReceiver.stop()
         engine.stop()
         super.onStop()
     }
 
     /**
-     * The orderly-shutdown marker. Its absence on the next launch is what proves
-     * the previous run ended some other way, so it is written last and only
-     * here -- onStop also runs when the screen merely goes to the background.
+     * The real shutdown, and the orderly-shutdown marker with it. Its absence on
+     * the next launch is what proves the previous run ended some other way.
      */
     override fun onDestroy() {
+        DriveApexLog.i("lifecycle", "onDestroy: shutting telemetry and audio down")
+        handler.removeCallbacks(livePoller)
+        if (::genomeSession.isInitialized) genomeSession.finishDrive()
+        if (::telemetryReceiver.isInitialized) telemetryReceiver.stop()
+        engine.stop()
         DriveApexLog.markCleanExit()
         super.onDestroy()
     }
