@@ -18,7 +18,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
-import com.driveapex.audio.CharacterTuning
 import com.driveapex.diag.DriveApexLog
 import com.driveapex.diag.LogViewer
 import com.driveapex.audio.EngineCharacter
@@ -320,27 +319,12 @@ class MainActivity : Activity() {
         val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         profileRow = row
-        row.addView(profile("EV REAL", "Authentic EV", BLUE) {
-            selectCharacter(EngineCharacters.evRealistic)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("EV SPORT", "Electric GT", PURPLE) {
-            selectCharacter(EngineCharacters.evSport)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("COMBUSTION", "Petrol Sport", AMBER) {
+        row.addView(profile("COMBUSTION", "Petrol Sport · 4 gears", AMBER) {
             selectCharacter(EngineCharacters.iceSport)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("MERCEDES", "AMG V12 · 7-speed", GREEN) {
-            selectCharacter(EngineCharacters.mercedesV12)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("MEASURED", "Real engine profile", AMBER) {
+        }, LinearLayout.LayoutParams(dp(190), dp(92)).apply { marginEnd = dp(10) })
+        row.addView(profile("MEASURED", "Real engine profile", GREEN) {
             selectCharacter(EngineCharacters.measuredPetrol)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("MEASURED V8", "AMG, on a V8 axis", GREEN) {
-            selectCharacter(EngineCharacters.measuredV8)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)).apply { marginEnd = dp(10) })
-        row.addView(profile("MEASURED RALLY", "Four, open exhaust", PURPLE) {
-            selectCharacter(EngineCharacters.measuredRally)
-        }, LinearLayout.LayoutParams(dp(156), dp(92)))
+        }, LinearLayout.LayoutParams(dp(190), dp(92)))
         scroll.addView(row)
         loadSampleBanks()
         return scroll
