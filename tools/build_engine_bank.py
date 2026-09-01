@@ -95,7 +95,26 @@ def track_fundamental(x, rate, hop_ms=25.0, win_ms=100.0):
                 lag += 0.5 * (a - c) / denom
         freqs.append(rate / lag)
         powers.append(power)
-    return np.array(freqs), np.array(powers), hop, win
+
+    freqs = np.array(freqs)
+    # Median-smooth the track before anyone uses it.
+    #
+    # A frame-by-frame estimate on real exhaust is noisy -- a steady V8 came out
+    # as 49 48 45 54 43 46 39 55 46, jumping every frame around a flat 46Hz. That
+    # noise was being read as the recording being unsteady, which condemned
+    # material that was fine, and feeding it to the pitch flattener injected the
+    # jitter straight into the audio. A median is the right filter here: it
+    # removes the outliers without smearing a genuine sweep the way a mean does.
+    smoothed = freqs.copy()
+    k = 5
+    for i in range(len(freqs)):
+        lo = max(0, i - k // 2)
+        hi = min(len(freqs), i + k // 2 + 1)
+        window = freqs[lo:hi]
+        window = window[window > 0]
+        if window.size:
+            smoothed[i] = float(np.median(window))
+    return smoothed, np.array(powers), hop, win
 
 
 def anchor_to_rpm(freqs, powers, idle_rpm):
@@ -117,19 +136,75 @@ def anchor_to_rpm(freqs, powers, idle_rpm):
     return idle_rpm / idle_hz
 
 
-def steadiest_window(freqs, powers, hop, target_hz, window_frames):
-    """Where the recording sits closest to target_hz and moves least."""
-    best, best_cost = None, None
+def harvest(freqs, powers, hop, window_frames, scale, want, separation=0.14,
+            max_drift=0.08):
+    """The steadiest windows the recording actually offers, wherever they land.
+
+    Asking for a fixed rpm grid was the wrong question. A recording of a car
+    being driven passes through most of the grid too fast to hold, so the grid
+    rejected material that was perfectly steady a few hundred rpm to either
+    side: 59 windows on the AMG clip sit under 5% drift, and the grid found two
+    of them. Since every slice is labelled with its own measured rpm anyway, the
+    grid was never needed -- only coverage is, and that is what `separation`
+    enforces.
+    """
+    floor = max(1e-4, 0.05 * float(np.median(powers[powers > 0])))
+    candidates = []
     for i in range(0, max(1, len(freqs) - window_frames)):
         seg = freqs[i:i + window_frames]
         pw = powers[i:i + window_frames]
-        if np.any(seg <= 0) or np.mean(pw) < 1e-4:
+        if np.any(seg <= 0) or float(np.mean(pw)) < floor:
             continue
-        # Distance from the target, plus how much it drifts while it is there.
-        cost = abs(np.median(seg) - target_hz) / target_hz + 2.0 * np.std(seg) / target_hz
-        if best_cost is None or cost < best_cost:
-            best, best_cost = i * hop, cost
-    return best, best_cost
+        median = float(np.median(seg))
+        drift = float(np.std(seg)) / median
+        if drift > max_drift:
+            continue
+        candidates.append((drift, i * hop, median, median * scale))
+    candidates.sort()
+
+    kept = []
+    for drift, start, hz, rpm in candidates:
+        if all(abs(rpm - k[3]) / k[3] > separation for k in kept):
+            kept.append((drift, start, hz, rpm))
+        if len(kept) >= want:
+            break
+    kept.sort(key=lambda k: k[3])
+    return kept
+
+
+def flatten_pitch(x, rate, freqs, hop, start, length, target_hz):
+    """Resample a slice at a varying rate so its pitch comes out constant.
+
+    Recordings you can find are of a car being driven, not of an engine held at
+    a steady rpm, so every window drifts: the best on a 21-second AMG clip still
+    moves 5.6% within 0.3s, which loops as an audible warble.
+
+    But the pitch at every instant is already known -- it is the track this tool
+    computes to label the slice in the first place. Reading the input faster
+    where it is flat and slower where it is sharp cancels the drift out, and a
+    slice that was unusable becomes a steady one. This is what makes a bank
+    possible from ordinary material rather than from a recording session.
+    """
+    out = np.empty(length)
+    pos = float(start)
+    for i in range(length):
+        # Instantaneous frequency at this input position, between tracked frames.
+        f = np.interp(pos / hop, np.arange(len(freqs)), freqs)
+        if f <= 0:
+            f = target_hz
+        j = int(math.floor(pos))
+        frac = pos - j
+        a = x[max(0, j - 1)]
+        b = x[min(len(x) - 1, j)]
+        c = x[min(len(x) - 1, j + 1)]
+        d = x[min(len(x) - 1, j + 2)]
+        out[i] = 0.5 * ((2 * b) + (-a + c) * frac +
+                        (2 * a - 5 * b + 4 * c - d) * frac ** 2 +
+                        (-a + 3 * b - 3 * c + d) * frac ** 3)
+        pos += target_hz / f
+        if pos >= len(x) - 3:
+            return out[:i + 1]
+    return out
 
 
 def make_loop(x, rate, hz, seconds=0.6, fade_ms=25.0):
@@ -168,31 +243,25 @@ def build(paths, out_dir, bank_id, name, grid, idle_rpm, load, level, quiet):
         scale = anchor_to_rpm(freqs, powers, idle_rpm)
         window_frames = max(4, int(0.45 * rate / hop))
 
-        for rpm in grid:
-            target_hz = rpm / scale
-            if not (F_MIN <= target_hz <= F_MAX):
+        for drift, start, hz, rpm_f in harvest(freqs, powers, hop, window_frames,
+                                               scale, len(grid)):
+            measured = int(round(rpm_f))
+            if any(abs(measured - l["rpm"]) < 100 for l in layers):
                 continue
-            start, cost = steadiest_window(freqs, powers, hop, target_hz, window_frames)
-            if start is None or cost > 0.25:
-                report.append((rpm, "not present in the recording"))
-                continue
-            segment = x[start:start + int(1.2 * rate)]
-            hz = float(np.median(freqs[start // hop:start // hop + window_frames]))
-
-            # Label the slice with the rpm actually measured in it, not with the
-            # grid value that led us here. The grid is only a list of places to
-            # look; a sweep never sits exactly on one, and calling a 2150 rpm
-            # slice "2000" detunes it by 7% every time it is played.
-            measured = int(round(hz * scale))
-            if any(abs(measured - l["rpm"]) < 120 for l in layers):
-                report.append((rpm, f"skipped, {measured} rpm already covered"))
-                continue
-
+            # Flatten first, then slice: the loop is cut from material already at
+            # one pitch, so its length in whole firing periods is exact.
+            segment = flatten_pitch(x, rate, freqs, hop, start, int(1.2 * rate), hz)
             loop = make_loop(segment, rate, hz)
             if loop is None:
-                report.append((rpm, "too short to loop"))
+                report.append((measured, "too short to loop"))
                 continue
             step = seam_step(loop)
+            # Reject a loop whose seam is rough rather than shipping it and
+            # hearing a tick once per pass. Measured good loops come in under
+            # 0.10; 0.15 leaves room without letting an audible one through.
+            if step > 0.15:
+                report.append((measured, f"rejected, seam {step:.2f}"))
+                continue
             peak = float(np.max(np.abs(loop))) + 1e-12
             loop = loop / peak * 0.85
             rel = f"{bank_id}/rpm{measured}_load{int(load)}.ogg"
@@ -200,7 +269,7 @@ def build(paths, out_dir, bank_id, name, grid, idle_rpm, load, level, quiet):
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             sf.write(dest, loop, rate, format="OGG", subtype="VORBIS")
             layers.append({"file": rel, "rpm": measured, "load": float(load)})
-            report.append((rpm, f"ok -> {measured} rpm  {len(loop)/rate:.2f}s  seam {step:.2f}"))
+            report.append((measured, f"drift {drift*100:.1f}%  {len(loop)/rate:.2f}s  seam {step:.2f}"))
 
     if len(layers) < 2:
         print("\n".join(f"  {r:5} rpm  {m}" for r, m in report), file=sys.stderr)

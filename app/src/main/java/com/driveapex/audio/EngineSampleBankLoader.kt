@@ -66,7 +66,8 @@ object EngineSampleBankLoader {
             val layers = ArrayList<EngineSampleBank.Layer>(entries.length())
             for (i in 0 until entries.length()) {
                 val entry = entries.optJSONObject(i) ?: continue
-                val file = entry.optString("file").ifBlank { continue }
+                val file = entry.optString("file")
+                if (file.isBlank()) continue
                 val decoded = decodeMono(context, "$DIR/$file", sampleRate)
                 if (decoded == null) {
                     DriveApexLog.i("samples", "$id: could not decode $file")

@@ -1,0 +1,37 @@
+{
+  "id": "amg_v8",
+  "name": "AMG V8",
+  "level": 0.8,
+  "layers": [
+    {
+      "file": "amg_v8/rpm853_load1.ogg",
+      "rpm": 853,
+      "load": 1.0
+    },
+    {
+      "file": "amg_v8/rpm1007_load1.ogg",
+      "rpm": 1007,
+      "load": 1.0
+    },
+    {
+      "file": "amg_v8/rpm1317_load1.ogg",
+      "rpm": 1317,
+      "load": 1.0
+    },
+    {
+      "file": "amg_v8/rpm1536_load1.ogg",
+      "rpm": 1536,
+      "load": 1.0
+    },
+    {
+      "file": "amg_v8/rpm1779_load1.ogg",
+      "rpm": 1779,
+      "load": 1.0
+    },
+    {
+      "file": "amg_v8/rpm4419_load1.ogg",
+      "rpm": 4419,
+      "load": 1.0
+    }
+  ]
+}

@@ -256,16 +256,33 @@ object EngineCharacters {
     val mercedesV12 = EngineCharacter(
         id = "amg_v12",
         name = "Mercedes AMG V12",
+        // Gains taken from the AMG recordings the driver supplied as the
+        // reference for this voice.
+        //
+        // The measurement is the whole point. A real AMG's harmonics run 31.4 to
+        // 1 between its strongest and weakest; these ran 5.2 to 1 -- nearly
+        // flat, every partial at roughly the same weight. That is what makes a
+        // synthesised engine sound synthesised, and it is the "artificial once
+        // moving" reported for this character specifically.
+        //
+        // The reference is a V8, firing four times a revolution against a V12's
+        // six, so its measured multiples of the firing frequency map onto six
+        // times those multiples here. The half-orders below firing keep the
+        // small weights the measurement shows, floored at the same 31.4 contrast
+        // rather than guessed lower than the recording ever went.
+        //
+        // The sum is held at 1.150, exactly what it was, so this is a change of
+        // shape at unchanged loudness.
         orders = listOf(
-            EngineCharacter.Order(order = 0.5f, gain = 0.13f, loadGain = 1.7f),
-            EngineCharacter.Order(order = 1.5f, gain = 0.11f, loadGain = 1.8f, stereo = -0.15f),
-            EngineCharacter.Order(order = 3f, gain = 0.17f, loadGain = 2.1f),
-            EngineCharacter.Order(order = 4.5f, gain = 0.09f, loadGain = 2.2f, stereo = 0.2f),
-            EngineCharacter.Order(order = 6f, gain = 0.26f, loadGain = 2.6f),
-            EngineCharacter.Order(order = 9f, gain = 0.11f, loadGain = 2.5f, stereo = -0.25f),
-            EngineCharacter.Order(order = 12f, gain = 0.15f, loadGain = 2.6f, stereo = 0.25f),
-            EngineCharacter.Order(order = 18f, gain = 0.08f, loadGain = 2.4f, fadeInRpm = 900f),
-            EngineCharacter.Order(order = 24f, gain = 0.05f, loadGain = 2.2f, fadeInRpm = 1400f, stereo = -0.3f)
+            EngineCharacter.Order(order = 0.5f, gain = 0.015f, loadGain = 1.7f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.019f, loadGain = 1.8f, stereo = -0.15f),
+            EngineCharacter.Order(order = 3f, gain = 0.024f, loadGain = 2.1f),
+            EngineCharacter.Order(order = 4.5f, gain = 0.033f, loadGain = 2.2f, stereo = 0.2f),
+            EngineCharacter.Order(order = 6f, gain = 0.477f, loadGain = 2.6f),
+            EngineCharacter.Order(order = 9f, gain = 0.267f, loadGain = 2.5f, stereo = -0.25f),
+            EngineCharacter.Order(order = 12f, gain = 0.138f, loadGain = 2.6f, stereo = 0.25f),
+            EngineCharacter.Order(order = 18f, gain = 0.086f, loadGain = 2.4f, fadeInRpm = 900f),
+            EngineCharacter.Order(order = 24f, gain = 0.091f, loadGain = 2.2f, fadeInRpm = 1400f, stereo = -0.3f)
         ),
         resonances = listOf(
             EngineCharacter.Resonance(hz = 85f, q = 0.75f, gain = 0.90f),
