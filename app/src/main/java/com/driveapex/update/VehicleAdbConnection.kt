@@ -2,6 +2,7 @@ package com.driveapex.update
 
 import android.content.Context
 import com.driveapex.BuildConfig
+import com.driveapex.diag.DriveApexLog
 import dadb.AdbKeyPair
 import dadb.AdbShellResponse
 import dadb.Dadb
@@ -46,6 +47,7 @@ internal class VehicleAdbConnection(private val context: Context) {
         private const val TELEMETRY_DAEMON_NAME = "driveapex-byd"
         private const val TELEMETRY_DAEMON_LOG = "/data/local/tmp/driveapex-byd.log"
         private const val TELEMETRY_DAEMON_APK = "/data/local/tmp/driveapex-byd.apk"
+        private const val TELEMETRY_DAEMON_BUILD = "/data/local/tmp/driveapex-byd.build"
         private const val TELEMETRY_DAEMON_PORT = 18765
         private const val BYD_FRAMEWORK_JAR = "/system/framework/bmmcamera.jar"
         private const val BYD_NATIVE_LIB_PATH = "/system/lib64:/product/lib64"
@@ -177,10 +179,29 @@ internal class VehicleAdbConnection(private val context: Context) {
     fun ensureTelemetryDaemon(): Boolean {
         val dadb = connect() ?: return false
         return runCatching {
+            // The daemon is a separate shell-UID process: it outlives the app,
+            // and an app update does not touch it. Reusing whatever holds the
+            // port meant every new version talked to the daemon built from an
+            // older APK -- which is how a fix that moved the motor read into the
+            // daemon shipped twice and never once ran on the vehicle. So the
+            // running daemon is reused only when it was launched from this exact
+            // build; anything else is torn down and replaced below.
+            val stamp = BuildConfig.VERSION_CODE.toString()
             val listening = shell(dadb, 
                 "(nc -z $HOST $TELEMETRY_DAEMON_PORT || toybox nc -z $HOST $TELEMETRY_DAEMON_PORT) 2>/dev/null; echo \$?"
             ).output.trim() == "0"
-            if (listening) return@runCatching true
+            val runningBuild = runCatching {
+                shell(dadb, "cat $TELEMETRY_DAEMON_BUILD 2>/dev/null").output.trim()
+            }.getOrDefault("")
+            if (listening && runningBuild == stamp) {
+                DriveApexLog.i("daemon", "reusing daemon build $stamp on port $TELEMETRY_DAEMON_PORT")
+                return@runCatching true
+            }
+            DriveApexLog.i(
+                "daemon",
+                "relaunching daemon: listening=$listening running=" +
+                    (runningBuild.ifBlank { "none" }) + " expected=" + stamp
+            )
 
             val apkPath = shell(dadb, 
                 "pm path ${BuildConfig.APPLICATION_ID} | sed -n 's/^package://p' | head -n 1"
@@ -202,10 +223,12 @@ internal class VehicleAdbConnection(private val context: Context) {
 
             val launch =
                 "rm -f $TELEMETRY_DAEMON_LOG; " +
+                    "rm -f $TELEMETRY_DAEMON_BUILD; " +
                     "rm -f $TELEMETRY_DAEMON_APK; " +
                     "cp \"$apkPath\" $TELEMETRY_DAEMON_APK; " +
                     "chmod 644 $TELEMETRY_DAEMON_APK; " +
                     "killall $TELEMETRY_DAEMON_NAME 2>/dev/null || true; " +
+                    "sleep 1; " +
                     "nohup app_process -Djava.class.path=$BYD_FRAMEWORK_JAR:$TELEMETRY_DAEMON_APK " +
                     "-Djava.library.path=$BYD_NATIVE_LIB_PATH /system/bin --nice-name=$TELEMETRY_DAEMON_NAME " +
                     "$TELEMETRY_DAEMON_CLASS --package=$targetPackage --source-dir=\"$sourceDir\" " +
@@ -223,6 +246,10 @@ internal class VehicleAdbConnection(private val context: Context) {
             repeat(40) {
                 Thread.sleep(100L)
                 if (runCatching { Socket(HOST, TELEMETRY_DAEMON_PORT).use { true } }.getOrDefault(false)) {
+                    // Written only now, so a launch that never came up leaves no
+                    // stamp and the next attempt relaunches instead of trusting it.
+                    runCatching { shell(dadb, "echo $stamp > $TELEMETRY_DAEMON_BUILD") }
+                    DriveApexLog.i("daemon", "daemon build $stamp is serving")
                     lastError = null
                     return@runCatching true
                 }

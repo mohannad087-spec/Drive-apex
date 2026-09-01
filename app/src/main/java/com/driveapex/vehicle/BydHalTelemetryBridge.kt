@@ -1,6 +1,7 @@
 package com.driveapex.vehicle
 
 import android.content.Context
+import com.driveapex.diag.DriveApexLog
 import com.driveapex.update.VehicleAdbConnection
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -76,6 +77,9 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
                 while (running) {
                     val line = reader.readLine() ?: break
                     parse(line)?.let { frame ->
+                        if (latestFrame == null) {
+                            DriveApexLog.i("daemon", "first frame: rpm=${frame.rpm} speed=${frame.speedKph}")
+                        }
                         latestFrame = frame
                         lastError = null
                         onFrame(frame)

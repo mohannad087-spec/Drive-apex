@@ -150,7 +150,7 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
 
             startDiPlusApiReader(snapshot);
 
-            scanServer = new ServerSocket(SCAN_PORT, 2, InetAddress.getByName(HOST));
+            scanServer = listenOn(SCAN_PORT, 2);
             ServerSocket finalScanServer = scanServer;
             Thread scanThread = new Thread(() -> {
                 while (!finalScanServer.isClosed()) {
@@ -167,7 +167,7 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
             scanThread.setDaemon(true);
             scanThread.start();
 
-            try (ServerSocket server = new ServerSocket(PORT, 4, InetAddress.getByName(HOST))) {
+            try (ServerSocket server = listenOn(PORT, 4)) {
                 System.out.println("DriveApex DiPlus engine daemon ready on " + HOST + ":" + PORT);
                 while (!server.isClosed()) {
                     Socket client = server.accept();
@@ -183,6 +183,21 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
             if (scanServer != null) try { scanServer.close(); } catch (Throwable ignored) {}
             if (thread != null) thread.quitSafely();
         }
+    }
+
+    /**
+     * Binds a listening socket with the address reusable.
+     *
+     * The app replaces this daemon whenever it ships a new build, so a bind here
+     * follows a kill of the previous one by about a second. Without SO_REUSEADDR
+     * the old socket lingering in TIME_WAIT is enough to make that bind fail, and
+     * a daemon that cannot bind is a session with no vehicle data at all.
+     */
+    private static ServerSocket listenOn(int port, int backlog) throws Exception {
+        ServerSocket socket = new ServerSocket();
+        socket.setReuseAddress(true);
+        socket.bind(new InetSocketAddress(InetAddress.getByName(HOST), port), backlog);
+        return socket;
     }
 
     /**
