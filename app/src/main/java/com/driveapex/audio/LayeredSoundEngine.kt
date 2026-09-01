@@ -116,6 +116,13 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * it so the log names the file and line, and stop cleanly.
      */
     private fun renderLoop() {
+        // Ask the scheduler for audio priority. This thread has to refill the
+        // track every 17ms; at default priority a head unit busy with navigation
+        // or its own UI can preempt it for longer than that, and a buffer that
+        // arrives late is a gap in the output -- heard as crackle, not silence.
+        runCatching {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        }
         val pcm = ShortArray(bufferSize * 2)
         try {
             while (running) {

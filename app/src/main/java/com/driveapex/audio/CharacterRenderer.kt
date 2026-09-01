@@ -184,6 +184,18 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
 
             c.orders.forEachIndexed { index, order ->
                 val hz = rotationHz * order.order
+
+                // Advance the phase for every order on every sample, whatever its
+                // gain. A silent partial still has to keep its place in the cycle.
+                // This used to sit below the two early returns, so an order that
+                // faded out stopped advancing, and when it faded back in it
+                // re-entered at a phase unrelated to where a continuous sine would
+                // have been -- a step in the waveform, which is a click. Orders
+                // fade in and out constantly as the RPM moves, and a stream of
+                // those clicks is heard as a rasp over the engine note.
+                phases[index] += 2.0 * PI * hz / sampleRate
+                if (phases[index] >= 2.0 * PI) phases[index] -= 2.0 * PI
+
                 // Fade a partial out before it reaches Nyquist rather than
                 // letting it alias into an unrelated pitch.
                 val antiAlias = when {
@@ -195,9 +207,6 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
 
                 val band = rpmBand(rpmNow, order.fadeInRpm.toDouble(), order.fadeOutRpm.toDouble())
                 if (band <= 0.0) return@forEachIndexed
-
-                phases[index] += 2.0 * PI * hz / sampleRate
-                if (phases[index] >= 2.0 * PI) phases[index] -= 2.0 * PI
 
                 val loadFactor = 1.0 + (order.loadGain - 1.0) * loadNow.coerceIn(0.0, 1.0)
                 val amp = order.gain * loadFactor * band * antiAlias

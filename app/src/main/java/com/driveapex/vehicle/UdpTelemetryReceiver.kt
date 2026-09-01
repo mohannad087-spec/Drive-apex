@@ -160,7 +160,24 @@ class UdpTelemetryReceiver(private val port: Int = 38901, context: Context? = nu
                 controlsSpeedHint(frame, daemonFrame),
                 SystemClock.elapsedRealtime()
             )
-            val rpm = validated?.let { smoothRpm(leadCompensated(it, SystemClock.elapsedRealtime())) }
+            // Lead compensation exists to undo transport delay, and it works by
+            // projecting the reading forward at its measured rate -- which
+            // amplifies whatever noise that rate estimate carries, by up to
+            // LEAD_MAX_RPM. That trade was worth making when the value arrived
+            // through the on-vehicle writer and an ADB poll, about 150ms late.
+            // The direct read is a reflection call inside this loop: there is no
+            // delay left to undo, so the projection is pure added wobble, and it
+            // engages exactly when the reading is changing and the sound matters
+            // most. Applied only to the sources that still travel.
+            val rpm = validated?.let {
+                if (directRpm != null) {
+                    leadPreviousValue = null
+                    leadRatePerMs = 0f
+                    smoothRpm(it)
+                } else {
+                    smoothRpm(leadCompensated(it, SystemClock.elapsedRealtime()))
+                }
+            }
 
             // Speed, throttle and brake come from whichever source has them. The
             // daemon publishes a whole frame, not just RPM, and dropping its
