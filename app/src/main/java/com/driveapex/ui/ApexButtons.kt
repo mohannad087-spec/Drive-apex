@@ -26,40 +26,58 @@ import kotlin.math.roundToInt
  * its gradient, so the key visibly sinks and the light stops catching it.
  *
  * The gradient itself is what reads as three-dimensional: lighter at the top
- * where a light above the dashboard would strike it, its own colour in the
- * middle, darker at the bottom. Inverted while pressed, which is what a real
- * key does when it tilts away from the light.
+ * where a light above the dashboard would strike it, darker at the bottom.
+ * Inverted while pressed, which is what a real key does when it tilts away from
+ * the light.
+ *
+ * The colour is deliberately quiet. The first version filled each face with its
+ * accent at full saturation and the screen came out looking like a party rather
+ * than an instrument: five bright keys in a row all shouting equally. So a key
+ * is graphite with its accent mixed into it a little, an accent edge, and an
+ * accent-tinted label -- the colour identifies the key without lighting up the
+ * cabin. The chosen card in a row goes up to a third of its accent, which is
+ * plenty to spot at a glance next to four that are barely tinted at all.
  */
 object ApexButtons {
 
     /** How far a key travels, in dp. Small: this is a key, not a lift. */
     private const val TRAVEL_DP = 5
 
+    /** The graphite every key is made of, before its accent is mixed in. */
+    private const val FACE = 0xFF161C23.toInt()
+
+    /** How much accent a key carries: a tint, not a fill. */
+    private const val RESTING_TINT = 0.14f
+    private const val SELECTED_TINT = 0.34f
+
     /**
-     * A raised key in the given colour.
+     * A raised key that carries the given accent without wearing it.
      *
-     * @param accent the colour of the face. Everything else -- the lit top, the
-     *   shaded bottom, the side of the key, the pressed face -- is derived from
-     *   it, so a caller picks one colour and gets a consistent key.
+     * @param accent the colour that identifies this key. It shows in the edge,
+     *   in the label the caller draws with [textOn], and as a tint in the face.
      */
     fun raised(context: Context, accent: Int, radiusDp: Int = 14): Drawable {
         val radius = dp(context, radiusDp).toFloat()
         val travel = dp(context, TRAVEL_DP)
         val hair = dp(context, 1)
 
-        val side = solid(shade(accent, 0.40f), radius)
+        val resting = blend(FACE, accent, RESTING_TINT)
+        val side = solid(shade(resting, 0.45f), radius)
 
         val face = gradient(
-            intArrayOf(shade(accent, 1.42f), accent, shade(accent, 0.82f)), radius
-        ).apply { setStroke(hair, shade(accent, 1.7f)) }
+            intArrayOf(shade(resting, 1.35f), resting, shade(resting, 0.88f)), radius
+        ).apply { setStroke(hair, blend(accent, FACE, 0.45f)) }
 
         val pressedFace = gradient(
-            intArrayOf(shade(accent, 0.72f), shade(accent, 0.86f)), radius
-        ).apply { setStroke(hair, shade(accent, 1.0f)) }
+            intArrayOf(shade(resting, 0.78f), shade(resting, 0.92f)), radius
+        ).apply { setStroke(hair, blend(accent, FACE, 0.2f)) }
 
         val selectedFace = gradient(
-            intArrayOf(shade(accent, 1.65f), shade(accent, 1.15f), accent), radius
-        ).apply { setStroke(dp(context, 2), lighten(accent, 0.55f)) }
+            intArrayOf(
+                shade(blend(FACE, accent, SELECTED_TINT), 1.25f),
+                blend(FACE, accent, SELECTED_TINT)
+            ), radius
+        ).apply { setStroke(dp(context, 2), accent) }
 
         return StateListDrawable().apply {
             // Order matters: the first matching state wins, so pressed has to be
@@ -74,25 +92,26 @@ object ApexButtons {
     /**
      * A key the driver can leave switched on -- a chosen voice or drive mode.
      *
-     * Same key, but muted until selected: an unselected one shows the panel
-     * colour with only a hint of its accent, so a row of them reads as one
-     * choice made rather than six lit buttons competing.
+     * Identical machinery to [raised]; it exists as its own call because a card
+     * is bigger and sits on a panel rather than on the page, so it takes the
+     * panel colour as its base and rests a shade quieter.
      */
     fun selectable(context: Context, accent: Int, panel: Int, radiusDp: Int = 16): Drawable {
         val radius = dp(context, radiusDp).toFloat()
         val travel = dp(context, TRAVEL_DP)
-        val resting = blend(panel, accent, 0.16f)
+        val resting = blend(panel, accent, 0.10f)
+        val selected = blend(panel, accent, SELECTED_TINT)
 
-        val side = solid(shade(accent, 0.35f), radius)
+        val side = solid(shade(resting, 0.45f), radius)
         val face = gradient(
-            intArrayOf(shade(resting, 1.35f), resting, shade(resting, 0.85f)), radius
-        ).apply { setStroke(dp(context, 1), shade(accent, 0.9f)) }
+            intArrayOf(shade(resting, 1.3f), resting, shade(resting, 0.9f)), radius
+        ).apply { setStroke(dp(context, 1), blend(accent, panel, 0.55f)) }
         val pressedFace = gradient(
-            intArrayOf(shade(resting, 0.8f), shade(resting, 0.95f)), radius
-        ).apply { setStroke(dp(context, 1), accent) }
+            intArrayOf(shade(resting, 0.78f), shade(resting, 0.92f)), radius
+        ).apply { setStroke(dp(context, 1), blend(accent, panel, 0.35f)) }
         val selectedFace = gradient(
-            intArrayOf(shade(accent, 1.5f), accent, shade(accent, 0.9f)), radius
-        ).apply { setStroke(dp(context, 2), lighten(accent, 0.6f)) }
+            intArrayOf(shade(selected, 1.22f), selected, shade(selected, 0.92f)), radius
+        ).apply { setStroke(dp(context, 2), accent) }
 
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), key(side, pressedFace, travel, true))
@@ -141,9 +160,6 @@ object ApexButtons {
         (Color.blue(color) * factor).roundToInt().coerceIn(0, 255)
     )
 
-    /** Towards white, which is what a highlight is; shade alone cannot reach it. */
-    private fun lighten(color: Int, amount: Float) = blend(color, Color.WHITE, amount)
-
     private fun blend(from: Int, to: Int, amount: Float): Int {
         val a = amount.coerceIn(0f, 1f)
         return Color.argb(
@@ -155,15 +171,18 @@ object ApexButtons {
     }
 
     /**
-     * Black or white, whichever the eye can actually read on this colour.
+     * The label colour for a key of this accent.
      *
-     * Fixed white text disappears on the amber accent and fixed black text
-     * disappears on the panel colours, and this app has both on the same screen.
+     * Every face is dark now, so this is the accent lifted towards white far
+     * enough to read cleanly at a glance while still saying which key it is. A
+     * dark accent like the slate one would be unreadable at its own value, so
+     * the lift is larger the darker the accent starts.
      */
-    fun textOn(background: Int): Int {
-        val luminance = (0.299 * Color.red(background) + 0.587 * Color.green(background) +
-            0.114 * Color.blue(background)) / 255.0
-        return if (luminance > 0.55) 0xFF07090C.toInt() else Color.WHITE
+    fun textOn(accent: Int): Int {
+        val luminance = (0.299 * Color.red(accent) + 0.587 * Color.green(accent) +
+            0.114 * Color.blue(accent)) / 255.0
+        val lift = if (luminance < 0.35) 0.62f else 0.34f
+        return blend(accent, Color.WHITE, lift)
     }
 
     private fun dp(context: Context, value: Int) =

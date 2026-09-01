@@ -26,9 +26,9 @@ import com.driveapex.audio.EngineSampleBank
 import com.driveapex.audio.EngineSampleBankLoader
 import com.driveapex.audio.TuningStore
 import com.driveapex.audio.tunedWith
-import com.driveapex.audio.EngineSoundController
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
+import com.driveapex.audio.DriveSoundPipeline
 import com.driveapex.audio.AudioOutputChannel
 import com.driveapex.ui.ApexButtons
 import com.driveapex.update.BydAdbSetup
@@ -41,11 +41,14 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
-    private val engine = LayeredSoundEngine(EngineCharacters.default)
+    // Borrowed, not owned. The engine and the controller belong to the process
+    // now -- see DriveSoundPipeline -- because a sound that belongs to a screen
+    // dies every time the head unit puts another screen in front of it.
+    private val engine get() = DriveSoundPipeline.engine
+    private val controller get() = DriveSoundPipeline.controller
     private val tuningStore by lazy { TuningStore(this) }
     private var activeCharacter: EngineCharacter = EngineCharacters.default
     private val vehicle = SimulatorVehicleDataProvider()
-    private val controller = EngineSoundController(engine)
     private lateinit var genomeSession: SonicGenomeSession
     private lateinit var updateManager: UpdateManager
     private lateinit var telemetryReceiver: UdpTelemetryReceiver
@@ -76,6 +79,7 @@ class MainActivity : Activity() {
     private lateinit var signatureValue: TextView
     private lateinit var genomeValue: TextView
     private lateinit var eventValue: TextView
+    private lateinit var channelStatus: TextView
     private lateinit var startButton: Button
     private lateinit var modeButton: Button
     private lateinit var motorSpeedBar: SeekBar
@@ -88,7 +92,6 @@ class MainActivity : Activity() {
             updateLiveStatus()
             telemetryReceiver.latest()?.let { live ->
       applyTelemetry(live)
-      controller.apply(live.data)
       val motorSpeed = live.data.rpm.coerceIn(0f, 25000f).roundToInt()
       val gear = engine.currentGear()
       rpmValue.text = if (gear > 0) "$motorSpeed  ·  G$gear" else "${motorSpeed} MOTOR SPEED"
@@ -102,7 +105,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         genomeSession = SonicGenomeSession(this)
         updateManager = UpdateManager(this)
-        telemetryReceiver = UdpTelemetryReceiver(context = this)
+        telemetryReceiver = DriveSoundPipeline.telemetry(this)
 
         val scroll = ScrollView(this).apply {
             setBackgroundColor(BG)
@@ -144,17 +147,28 @@ class MainActivity : Activity() {
         startButton = primary("START DRIVE SOUND")
         startButton.setOnClickListener {
             soundRunning = true
-            engine.start()
+            // Through the service, so the sound survives this screen going away.
+            DriveSoundService.start(this)
             if (!liveMode) syncSimulator()
             startButton.text = "DRIVE SOUND RUNNING"
+            reportChannel()
         }
         root.addView(startButton, margin(8))
+
+        channelStatus = label("", 11f, MUTED, false).apply {
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        root.addView(channelStatus, margin(8))
 
         val stop = secondary("STOP / SAFE")
         stop.setOnClickListener {
             soundRunning = false
             genomeSession.finishDrive()
-            engine.stop()
+            DriveSoundService.stop(this)
+            // Directly as well as through the service: stopService is
+            // asynchronous, and the driver pressing STOP wants silence now.
+            DriveSoundPipeline.stopSound()
             startButton.text = "START DRIVE SOUND"
             sceneValue.text = "SAFE / STOPPED"
             eventValue.text = "EVENTS L:0 A:0 O:0 R:0 B:0 S:0"
@@ -191,6 +205,9 @@ class MainActivity : Activity() {
         speedBar.setOnSeekBarChangeListener(listener)
 
         setContentView(scroll)
+        // Audio focus and channel volumes need a context; without one the engine
+        // still plays, but only on the legacy path.
+        engine.attach(this)
         // The channel the driver chose in Settings, applied before anything can
         // ask for sound.
         engine.setOutputChannel(AudioOutputChannel.load(this))
@@ -420,19 +437,20 @@ class MainActivity : Activity() {
             selectOnly(parent as? LinearLayout, this)
             click()
         }
-        addView(label(name, 18f, Color.WHITE, true).apply {
-            setTextColor(onAccent(accent, Color.WHITE))
-        })
-        addView(label(subtitle, 11f, MUTED, false).apply {
-            setTextColor(onAccent(accent, MUTED))
-            setPadding(0, dp(3), 0, 0)
-        })
+        addView(label(name, 18f, Color.WHITE, true).apply { setTextColor(cardTitle()) })
+        addView(label(subtitle, 11f, MUTED, false).apply { setPadding(0, dp(3), 0, 0) })
     }
 
-    /** Text that stays readable when the card lights up in its accent colour. */
-    private fun onAccent(accent: Int, resting: Int) = ColorStateList(
+    /**
+     * The chosen card's title in white, the rest in grey.
+     *
+     * The card's own face and edge already carry its accent; putting the accent
+     * in the text as well was part of what made the screen shout. One step of
+     * brightness is enough to say which one is on.
+     */
+    private fun cardTitle() = ColorStateList(
         arrayOf(intArrayOf(android.R.attr.state_selected), intArrayOf()),
-        intArrayOf(ApexButtons.textOn(accent), resting)
+        intArrayOf(Color.WHITE, 0xFFAAB4BF.toInt())
     )
 
     /** Exactly one card in a row is selected; this is the one. */
@@ -518,6 +536,10 @@ class MainActivity : Activity() {
 
     private fun toggleTelemetryMode() {
         liveMode = !liveMode
+        // The feed loop only drives the engine from the car; in TEST mode the
+        // sliders on this screen are the source, and both applying at once
+        // would have them fighting over every value.
+        DriveSoundPipeline.liveMode = liveMode
         if (liveMode) {
             telemetryReceiver.start()
             // Green while it is reading the car, slate while it is not: the one
@@ -552,6 +574,26 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Prints what the chosen output channel actually did.
+     *
+     * The engine settles that after about a quarter of a second of writing, so
+     * this asks a little later rather than immediately -- and it is the only
+     * honest way to tell a driver that a channel they picked is one the car
+     * routes nowhere, instead of leaving them pressing a silent button.
+     */
+    private fun reportChannel() {
+        handler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            val report = engine.lastChannelReport() ?: return@postDelayed
+            channelStatus.text = report.summary()
+            channelStatus.setTextColor(
+                if (report.playing && report.advanced && report.volume != 0) MUTED else AMBER
+            )
+            channelStatus.visibility = View.VISIBLE
+        }, 700L)
+    }
+
     private fun paintModeButton(accent: Int) {
         modeButton.background = ApexButtons.raised(this, accent, 12)
         modeButton.setTextColor(ApexButtons.textOn(accent))
@@ -579,7 +621,10 @@ class MainActivity : Activity() {
 
     private fun applyTelemetry(packet: LiveTelemetry) {
         val data = packet.data
-        val scene = controller.apply(data)
+        // In LIVE mode the feed loop is already applying this frame; asking the
+        // controller again from here would put two threads on one set of
+        // smoothing filters. It decides, this reads.
+        val scene = if (liveMode) DriveSoundPipeline.scene else controller.apply(data)
         val genome = genomeSession.update(data)
         val signature = genome.toSignature()
         val events = controller.events()
@@ -711,6 +756,7 @@ class MainActivity : Activity() {
     private fun resumeLivePipeline() {
         // Coming back from Settings is how the output channel changes, and the
         // engine rebuilds its track only when the choice actually differs.
+        engine.attach(this)
         engine.setOutputChannel(AudioOutputChannel.load(this))
         if (!::telemetryReceiver.isInitialized) return
         if (liveMode) {
@@ -718,24 +764,24 @@ class MainActivity : Activity() {
             handler.removeCallbacks(livePoller)
             handler.post(livePoller)
         }
-        if (soundRunning) engine.start()
+        // No engine.start() here any more: the service kept it running while the
+        // screen was away, and starting it again would be a second track.
+        soundRunning = DriveSoundPipeline.soundRequested
+        startButton.text = if (soundRunning) "DRIVE SOUND RUNNING" else "START DRIVE SOUND"
     }
 
     /**
-     * Backgrounding is not a shutdown. This head unit sends the app to the
-     * background constantly -- a navigation prompt, the OEM launcher, the screen
-     * blanking -- and onStop used to tear down telemetry and audio with nothing
-     * anywhere to bring them back: the app came forward alive but deaf and blind,
-     * which is the "works for a while then goes crazy" the driver kept hitting.
+     * Backgrounding is not a shutdown, and now it is not a silence either.
      *
-     * Only the poller and the audio track stop here. The telemetry receiver stays
-     * up, because restarting it re-runs the whole ADB and daemon bootstrap, and
-     * doing that on every trip through the background is its own failure.
+     * This head unit sends the app to the background constantly -- a navigation
+     * prompt, the OEM launcher, the screen blanking. Only the screen's own
+     * poller stops here. The engine keeps playing, held up by the foreground
+     * service, and the telemetry receiver stays up because restarting it re-runs
+     * the whole ADB and daemon bootstrap.
      */
     override fun onStop() {
-        DriveApexLog.i("lifecycle", "onStop: pausing screen poller and audio, telemetry kept alive")
+        DriveApexLog.i("lifecycle", "onStop: screen poller paused, engine left running")
         handler.removeCallbacks(livePoller)
-        engine.stop()
         super.onStop()
     }
 
@@ -744,11 +790,17 @@ class MainActivity : Activity() {
      * the next launch is what proves the previous run ended some other way.
      */
     override fun onDestroy() {
-        DriveApexLog.i("lifecycle", "onDestroy: shutting telemetry and audio down")
         handler.removeCallbacks(livePoller)
         if (::genomeSession.isInitialized) genomeSession.finishDrive()
-        if (::telemetryReceiver.isInitialized) telemetryReceiver.stop()
-        engine.stop()
+        // Only shut the pipeline down if nobody asked for sound. When the driver
+        // did, the service is holding it up on purpose and closing the screen is
+        // not a reason to stop the car sounding like a car.
+        if (!DriveSoundPipeline.soundRequested) {
+            DriveApexLog.i("lifecycle", "onDestroy: no sound requested, shutting the pipeline down")
+            DriveSoundPipeline.shutdown()
+        } else {
+            DriveApexLog.i("lifecycle", "onDestroy: sound still requested, service keeps it running")
+        }
         DriveApexLog.markCleanExit()
         super.onDestroy()
     }

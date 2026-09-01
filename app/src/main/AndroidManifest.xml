@@ -6,6 +6,19 @@
         android:required="false" />
 
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!--
+      The engine has to keep playing when the head unit puts the app behind a
+      navigation prompt or its own launcher, and a foreground service is the only
+      thing the platform treats as a reason to keep a process alive and audible.
+      From API 34 the service must also declare what kind it is; mediaPlayback is
+      what this is. POST_NOTIFICATIONS only affects whether its notification is
+      visible -- the service runs either way -- and it is granted over the ADB
+      channel the app already uses.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -80,6 +93,10 @@
             android:label="DriveApex Settings"
             android:screenOrientation="unspecified"
             android:exported="false" />
+        <service
+            android:name=".DriveSoundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

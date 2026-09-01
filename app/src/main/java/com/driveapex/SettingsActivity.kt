@@ -105,7 +105,12 @@ class SettingsActivity : Activity() {
                     setTextColor(stateColour(accent, Color.WHITE))
                 })
                 addView(TextView(this@SettingsActivity).apply {
-                    text = channel.detail
+                    // The car's own volume for this channel, printed because a
+                    // channel set to zero is silent however correctly the track
+                    // is built, and there is no way to tell from inside the app
+                    // unless it asks.
+                    val (level, max) = channel.volume(this@SettingsActivity)
+                    text = if (max > 0) "${channel.detail}  ·  volume $level/$max" else channel.detail
                     textSize = 11f
                     setTextColor(stateColour(accent, MUTED))
                     setPadding(0, dp(3), 0, 0)
@@ -115,7 +120,11 @@ class SettingsActivity : Activity() {
                     for (i in 0 until column.childCount) {
                         column.getChildAt(i).isSelected = column.getChildAt(i) === this
                     }
-                    status.text = "Sound will play on the ${channel.label} channel."
+                    val (level, max) = channel.volume(this@SettingsActivity)
+                    status.text = if (level == 0)
+                        "${channel.label} chosen, but the car has this channel at volume 0."
+                    else
+                        "${channel.label} chosen. Go back and start the sound to hear it."
                     DriveApexLog.i("audio", "output channel set to ${channel.name} from settings")
                 }
             }

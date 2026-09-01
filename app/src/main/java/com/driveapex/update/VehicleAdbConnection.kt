@@ -131,6 +131,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                         // every time anything asked for the connection.
                         if (!permissionsGranted) {
                             lastPermissionResults = grantBydReadPermissions(existing)
+                            allowBackgroundExecution(existing)
                             permissionsGranted = true
                         }
                         return existing
@@ -164,6 +165,7 @@ internal class VehicleAdbConnection(private val context: Context) {
                 pollingStarted.set(false)
                 state = State.AUTHORIZED
                 lastPermissionResults = grantBydReadPermissions(connected)
+                allowBackgroundExecution(connected)
                 permissionsGranted = true
                 lastError = null
                 authCallback?.invoke()
@@ -327,6 +329,48 @@ internal class VehicleAdbConnection(private val context: Context) {
                 val granted = result.exitCode == 0 || permissionCheck(dadb, userId, permission)
                 PermissionResult(permission, granted, if (detail.isBlank()) "exit=${result.exitCode}" else detail)
             }.getOrElse { PermissionResult(permission, false, it.message ?: it.javaClass.simpleName) }
+        }
+    }
+
+    /**
+     * Uses the ADB channel we already hold to let this app keep running.
+     *
+     * The engine has to keep playing with the app behind a navigation prompt or
+     * the OEM launcher, and a foreground service alone is not always enough on a
+     * head unit: OEM builds park background apps in restricted app-standby
+     * buckets and revoke their background execution, which is a process that
+     * simply stops making sound with nothing in the log to say why.
+     *
+     * All of these are scoped to this package and reversible, and none of them
+     * touches the vehicle: they are the same kind of thing as the `pm grant`
+     * above. Nothing here is a _SET permission or a command to the car.
+     *
+     * Failures are logged rather than reported: several of these commands do not
+     * exist on every Android version, and an app that works without them should
+     * not act as though something is broken.
+     */
+    private fun allowBackgroundExecution(dadb: Dadb) {
+        val pkg = BuildConfig.APPLICATION_ID
+        val userId = currentUserId(dadb)
+        val commands = listOf(
+            // Background execution, in the two spellings Android has used.
+            "cmd appops set $pkg RUN_IN_BACKGROUND allow",
+            "cmd appops set $pkg RUN_ANY_IN_BACKGROUND allow",
+            // Permission to be a foreground service at all.
+            "cmd appops set $pkg START_FOREGROUND allow",
+            // Out of doze's reach, so a parked car does not silence the engine.
+            "dumpsys deviceidle whitelist +$pkg",
+            // Out of the restricted standby bucket the OEM launcher puts
+            // backgrounded apps in.
+            "cmd package set-standby-bucket $pkg active",
+            // Only affects whether the service's notification is visible; the
+            // service runs either way. Not grantable before API 33, which fails
+            // harmlessly here.
+            "pm grant --user $userId $pkg android.permission.POST_NOTIFICATIONS"
+        )
+        commands.forEach { command ->
+            val outcome = runCatching { shell(dadb, command).exitCode }.getOrElse { -1 }
+            DriveApexLog.i("adb", "background allowance: $command -> exit $outcome")
         }
     }
 
