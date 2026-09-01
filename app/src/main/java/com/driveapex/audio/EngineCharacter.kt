@@ -80,7 +80,19 @@ data class EngineCharacter(
         val loadGain: Float,
         val baseHz: Float,
         val hzPerKph: Float,
-        val q: Float
+        val q: Float,
+        /**
+         * How many times the bed passes through its bandpass.
+         *
+         * One biquad rolls off at 6dB per octave, which leaves a great deal of
+         * the white noise above the band still audible: measured at a 300Hz
+         * centre with q 0.9, 8.33% of the bed's energy sits above 2kHz, and
+         * that is heard as hiss over the engine rather than as road. A second
+         * pass takes it to 0.18%.
+         *
+         * Default 1, so every character tuned before this is unchanged.
+         */
+        val cascade: Int = 1
     )
 
     /**
@@ -358,9 +370,13 @@ object EngineCharacters {
             EngineCharacter.Resonance(hz = 900f, q = 1.7f, gain = 0.34f),
             EngineCharacter.Resonance(hz = 1050f, q = 2.0f, gain = 0.26f)
         ),
+        // Two passes, and only partly compensated for the level the second one
+        // costs: 0.062 against the 0.070 that would match. The hiss reported on
+        // this character was the bed's high end, and it is wanted quieter as
+        // well as cleaner.
         noise = EngineCharacter.NoiseBed(
-            baseGain = 0.050f, speedGain = 0.075f, loadGain = 0.14f,
-            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f
+            baseGain = 0.062f, speedGain = 0.075f, loadGain = 0.12f,
+            baseHz = 300f, hzPerKph = 3.0f, q = 0.9f, cascade = 2
         ),
         whine = null,
         drive = 1.6f,

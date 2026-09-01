@@ -62,6 +62,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
     private var noiseState = 0x4D595DF4L
 
     private val noiseFilter = Biquad()
+    private val noiseFilter2 = Biquad()
     private val hitFilter = Biquad()
 
     // Smoothed control values. The renderer glides toward the latest telemetry
@@ -195,6 +196,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
         val noiseHz = (c.noise.baseHz + c.noise.hzPerKph * speedNow)
             .coerceIn(80.0, nyquist * 0.85)
         noiseFilter.bandpass(noiseHz, c.noise.q.toDouble(), sampleRate)
+        noiseFilter2.bandpass(noiseHz, c.noise.q.toDouble(), sampleRate)
         hitFilter.bandpass(hitTone.coerceIn(90.0, nyquist * 0.8), 1.4, sampleRate)
 
         val rpmStep = (voiceRpm - rpmNow) / frames
@@ -265,7 +267,13 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
 
             noiseState = noiseStep(noiseState)
             val white = (noiseState and 0xFFFFL) / 32767.5 - 1.0
-            val bed = noiseFilter.processL(white) *
+            // A second pass where the character asks for one. One biquad leaves
+            // 8.33% of the bed above 2kHz; two leave 0.18%, which is the
+            // difference between road noise and hiss.
+            val filtered = noiseFilter.processL(white).let {
+                if (c.noise.cascade >= 2) noiseFilter2.processL(it) else it
+            }
+            val bed = filtered *
                 (c.noise.baseGain + c.noise.speedGain * (speedNow / 160.0) +
                     c.noise.loadGain * loadNow)
 
