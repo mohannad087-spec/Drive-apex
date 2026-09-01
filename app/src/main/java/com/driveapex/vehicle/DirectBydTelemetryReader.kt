@@ -71,6 +71,19 @@ class DirectBydTelemetryReader(context: Context) {
      */
     private fun readFrontMotorSpeed(): Int? {
         val device = engineDevice ?: return null
+
+        // The dedicated getter first. The engine device declares getEngineSpeed()
+        // with no arguments -- read off the vehicle's own class, and the same name
+        // DiPlus's listener callback carries (onEngineSpeedChanged). Everything
+        // below it goes through get(int[], Class), a generic feature-array call
+        // that has been returning a value only intermittently; a purpose-built
+        // accessor is the one to try before that.
+        runCatching {
+            val method = findNoArgMethod(device.javaClass, "getEngineSpeed") ?: return@runCatching null
+            method.isAccessible = true
+            extractNumeric(method.invoke(device), 0)
+        }.getOrNull()?.let { if (isPlausibleRaw(it)) return it.toInt() }
+
         val primitiveTypes = arrayOf(
             Int::class.javaPrimitiveType!!,
             Long::class.javaPrimitiveType!!,

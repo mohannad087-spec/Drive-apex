@@ -284,8 +284,61 @@ public final class FrontMotorSpeedReader {
             }
         }
         out.append(String.format("\nlooking for: 0x%08x", FRONT_MOTOR_FEATURE_ID));
+        out.append("\ngetters: ").append(readableGetters());
         out.append("\ndevice methods: ").append(deviceMethodNames());
         return out.toString();
+    }
+
+    /**
+     * Calls every no-argument getter on the engine device and reports what each
+     * returns.
+     *
+     * The device declares getEngineSpeed(), getEnginePower(), getEngineState()
+     * and others -- purpose-built accessors we had never called, because the
+     * reading was going through the generic get(int[], Class) instead. Which of
+     * them actually carries the front motor speed on this vehicle is a question
+     * only the vehicle can answer, and one screenshot of this line answers it.
+     *
+     * Read-only by construction: getInstance is skipped as it takes an argument,
+     * and nothing outside the get* prefix is invoked -- no setter, no postEvent,
+     * no registration. The app writes nothing to the car.
+     */
+    private String readableGetters() {
+        if (device == null) return "no device";
+        StringBuilder out = new StringBuilder();
+        java.util.TreeSet<String> seen = new java.util.TreeSet<>();
+        for (Class<?> c = device.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (Method m : c.getDeclaredMethods()) {
+                String name = m.getName();
+                if (!name.startsWith("get") || m.getParameterTypes().length != 0) continue;
+                if (!seen.add(name)) continue;
+                String value;
+                try {
+                    m.setAccessible(true);
+                    Object result = m.invoke(device);
+                    value = result == null ? "null" : describe(result);
+                } catch (Throwable t) {
+                    Throwable cause = t.getCause() != null ? t.getCause() : t;
+                    value = "!" + cause.getClass().getSimpleName();
+                }
+                out.append(' ').append(name).append('=').append(value);
+            }
+        }
+        return out.length() == 0 ? "none" : out.toString().trim();
+    }
+
+    private static String describe(Object value) {
+        if (value.getClass().isArray()) {
+            int n = java.lang.reflect.Array.getLength(value);
+            StringBuilder b = new StringBuilder("[");
+            for (int i = 0; i < n && i < 6; i++) {
+                if (i > 0) b.append('|');
+                b.append(java.lang.reflect.Array.get(value, i));
+            }
+            return b.append(n > 6 ? "|..." : "").append(']').toString();
+        }
+        String text = String.valueOf(value);
+        return text.length() > 40 ? text.substring(0, 40) : text;
     }
 
     /**
