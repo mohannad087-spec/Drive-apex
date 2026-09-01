@@ -12,8 +12,12 @@
       thing the platform treats as a reason to keep a process alive and audible.
       From API 34 the service must also declare what kind it is; mediaPlayback is
       what this is. POST_NOTIFICATIONS only affects whether its notification is
-      visible -- the service runs either way -- and it is granted over the ADB
+      visible, not whether the service runs, and it is granted over the ADB
       channel the app already uses.
+
+      No double hyphen anywhere in here: XML forbids one inside a comment, and
+      the em-dash style used in the Kotlin sources took this whole build down at
+      the manifest merger.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
