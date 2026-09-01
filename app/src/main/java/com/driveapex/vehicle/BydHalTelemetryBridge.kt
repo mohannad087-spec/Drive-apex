@@ -26,6 +26,7 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     @Volatile private var running = false
     @Volatile private var latestFrame: TelemetryFrame? = null
     @Volatile private var lastError: String? = null
+    @Volatile private var lastDiPlusStatus: String = ""
 
     fun isAvailable(): Boolean = adb.ensureTelemetryDaemon() || isDaemonReachable()
 
@@ -35,6 +36,7 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
     }.getOrDefault(false)
 
     fun error(): String? = lastError ?: VehicleAdbConnection.lastError()
+    fun diPlusStatus(): String = lastDiPlusStatus
     fun latest(): TelemetryFrame? = latestFrame
     fun adbState(): String = VehicleAdbConnection.state().name
 
@@ -43,8 +45,9 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         running = true
         executor.execute {
             // The daemon binary is copied from the installed DriveApex APK.
-            // Always terminate our previous daemon first so an OTA update cannot
-            // leave an older telemetry implementation bound to port 18765.
+            // ensureTelemetryDaemon() replaces any daemon not stamped with this
+            // build, so an app update cannot leave an older telemetry
+            // implementation serving port 18765.
             adb.close()
             if (!adb.ensureTelemetryDaemon()) {
                 lastError = VehicleAdbConnection.lastError() ?: "ADB telemetry daemon unavailable"
@@ -54,11 +57,25 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
                 running = false
                 return@execute
             }
+            var failures = 0
             while (running) {
                 try {
-                    consumeStream(onFrame)
+                    // A stream that opens and ends without delivering anything is
+                    // a fault, not a completed read; counting it as success here
+                    // would spin this loop with no backoff at all.
+                    if (consumeStream(onFrame) > 0) failures = 0 else failures++
+                    if (running) Thread.sleep(500L)
                 } catch (e: Exception) {
                     lastError = e.message ?: e.javaClass.simpleName
+                    failures++
+                    // The daemon is a process on the head unit and it can die --
+                    // the log showed one stamped as serving and then gone. Simply
+                    // reconnecting forever to a port nothing holds is a session
+                    // stuck at zero, so after a few seconds of that, put it back.
+                    if (failures % 10 == 0 && failures <= 60) {
+                        DriveApexLog.i("daemon", "stream down x$failures, relaunching daemon")
+                        runCatching { adb.ensureTelemetryDaemon() }
+                    }
                     if (running) Thread.sleep(500L)
                 }
             }
@@ -70,7 +87,9 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         latestFrame = null
     }
 
-    private fun consumeStream(onFrame: (TelemetryFrame) -> Unit) {
+    /** Returns how many frames this connection delivered. */
+    private fun consumeStream(onFrame: (TelemetryFrame) -> Unit): Int {
+        var delivered = 0
         Socket("127.0.0.1", 18765).use { socket ->
             socket.soTimeout = 5_000
             BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).use { reader ->
@@ -82,16 +101,28 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
                         }
                         latestFrame = frame
                         lastError = null
+                        delivered++
                         onFrame(frame)
                     }
                 }
             }
         }
+        return delivered
     }
 
     private fun parse(line: String): TelemetryFrame? = runCatching {
         val p = line.split(',')
         if (p.size < 6) return null
+        // The daemon's own account of the DiPlus read. Reading zero because the
+        // service refused us and reading zero because the motor is stopped look
+        // identical in the number; here they do not.
+        if (p.size >= 7) {
+            val status = p[6].trim()
+            if (status.isNotEmpty() && status != lastDiPlusStatus) {
+                lastDiPlusStatus = status
+                DriveApexLog.i("daemon", "diplus: $status")
+            }
+        }
         val rawRpm = p[1].toFloat()
         val rpm = when {
             !rawRpm.isFinite() -> return null

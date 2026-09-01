@@ -202,6 +202,18 @@ internal class VehicleAdbConnection(private val context: Context) {
                 "relaunching daemon: listening=$listening running=" +
                     (runningBuild.ifBlank { "none" }) + " expected=" + stamp
             )
+            // A daemon that carried a stamp and is no longer listening did not
+            // fail to start -- it died while serving, and its own output is the
+            // only account of why. Read it before the launch below rotates it.
+            if (!listening && runningBuild.isNotBlank()) {
+                val dying = runCatching {
+                    shell(dadb, "tail -n 6 $TELEMETRY_DAEMON_LOG 2>/dev/null").output.trim()
+                }.getOrDefault("")
+                if (dying.isNotBlank()) {
+                    DriveApexLog.i("daemon", "previous daemon ended with: " +
+                        dying.replace('\n', ' ').take(400))
+                }
+            }
 
             val apkPath = shell(dadb, 
                 "pm path ${BuildConfig.APPLICATION_ID} | sed -n 's/^package://p' | head -n 1"
@@ -222,7 +234,7 @@ internal class VehicleAdbConnection(private val context: Context) {
             val sessionId = System.currentTimeMillis().toString()
 
             val launch =
-                "rm -f $TELEMETRY_DAEMON_LOG; " +
+                "mv -f $TELEMETRY_DAEMON_LOG ${TELEMETRY_DAEMON_LOG}.prev 2>/dev/null; " +
                     "rm -f $TELEMETRY_DAEMON_BUILD; " +
                     "rm -f $TELEMETRY_DAEMON_APK; " +
                     "cp \"$apkPath\" $TELEMETRY_DAEMON_APK; " +

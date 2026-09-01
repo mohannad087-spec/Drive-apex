@@ -74,6 +74,8 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         volatile String registration = "NOT_REGISTERED";
         volatile long eventCount;
         volatile boolean diPlusApiOk;
+        /** Why the DiPlus read is or is not working, in a form the app can log. */
+        volatile String diPlusStatus = "STARTING";
 
         /**
          * Every distinct event type this listener has actually been handed, with its last
@@ -222,6 +224,16 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         Thread reader = new Thread(() -> {
             int consecutiveFailures = 0;
             while (true) {
+                // Once the helper is delivering, stand down. Left running, this
+                // loop would keep failing, keep overwriting the status the helper
+                // just set, and flap the app log between the two every 50ms.
+                if (diPlusHelperOk) {
+                    try { Thread.sleep(5000L); } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    continue;
+                }
                 Integer rpm = readDiPlusFrontMotorRpm();
                 if (rpm != null) {
                     consecutiveFailures = 0;
@@ -229,9 +241,22 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                     snapshot.timestamp = System.currentTimeMillis();
                     snapshot.valid = true;
                     snapshot.diPlusApiOk = true;
-                } else if (++consecutiveFailures == 1 || consecutiveFailures % 100 == 0) {
+                    snapshot.diPlusStatus = "OK via " + diPlusHost;
+                } else {
+                    consecutiveFailures++;
                     snapshot.diPlusApiOk = false;
-                    System.out.println("DIPLUS API read failed x" + consecutiveFailures);
+                    snapshot.diPlusStatus = "FAIL " + diPlusLastError;
+                    if (consecutiveFailures == 1 || consecutiveFailures % 100 == 0) {
+                        System.out.println("DIPLUS API read failed x" + consecutiveFailures
+                                + ": " + diPlusLastError);
+                    }
+                    // A socket this process opens and a socket curl opens are the
+                    // same UID but not necessarily the same SELinux domain, and a
+                    // shell curl to this service is known to work on this unit. So
+                    // if the direct read stays refused, fall back to one long-lived
+                    // helper that polls and prints. One process for the life of the
+                    // daemon -- not the one-per-sample that made the unit stutter.
+                    if (consecutiveFailures == 20) startDiPlusHelper(snapshot);
                 }
                 try {
                     // Back off when the service is not answering rather than
@@ -248,16 +273,104 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
         System.out.println("DIPLUS API reader started (shell UID, in-process)");
     }
 
-    /** One request. Returns null on any failure, including a response without a value. */
+    private static volatile Process diPlusHelper;
+    private static volatile boolean diPlusHelperOk;
+    private static volatile int diPlusHelperStarts;
+
+    /**
+     * Starts the fallback reader: a single shell loop that fetches the value and
+     * prints it, whose stdout this daemon consumes.
+     *
+     * Bounded to a few attempts. A helper that cannot run at all -- no curl on
+     * the unit, for one -- must not be respawned forever.
+     */
+    private static synchronized void startDiPlusHelper(Snapshot snapshot) {
+        Process existing = diPlusHelper;
+        if (existing != null && existing.isAlive()) return;
+        if (diPlusHelperStarts >= 3) return;
+        diPlusHelperStarts++;
+        try {
+            String url = "http://127.0.0.1:" + DIPLUS_API_PORT + DIPLUS_API_PATH;
+            Process process = new ProcessBuilder("sh", "-c",
+                    "while true; do curl -s --max-time 2 '" + url + "'; echo; sleep 0.05; done")
+                    .redirectErrorStream(true)
+                    .start();
+            diPlusHelper = process;
+            snapshot.diPlusStatus = "HELPER started (attempt " + diPlusHelperStarts + ")";
+            System.out.println("DIPLUS helper started, attempt " + diPlusHelperStarts);
+
+            Thread pump = new Thread(() -> {
+                boolean produced = false;
+                try (BufferedReader out = new BufferedReader(
+                        new InputStreamReader(process.getInputStream(), "UTF-8"))) {
+                    String line;
+                    while ((line = out.readLine()) != null) {
+                        Matcher match = DIPLUS_VALUE.matcher(line);
+                        if (!match.find()) continue;
+                        Integer rpm = parseRpm(match.group(1));
+                        if (rpm == null) continue;
+                        produced = true;
+                        diPlusHelperOk = true;
+                        snapshot.frontRpm = rpm;
+                        snapshot.timestamp = System.currentTimeMillis();
+                        snapshot.valid = true;
+                        snapshot.diPlusApiOk = true;
+                        snapshot.diPlusStatus = "OK via helper";
+                    }
+                } catch (Throwable t) {
+                    System.err.println("DIPLUS helper pump: " + message(t));
+                }
+                diPlusHelperOk = false;
+                if (!produced) snapshot.diPlusStatus = "HELPER produced nothing";
+                System.out.println("DIPLUS helper ended, produced=" + produced);
+            }, "driveapex-diplus-helper");
+            pump.setDaemon(true);
+            pump.start();
+        } catch (Throwable t) {
+            snapshot.diPlusStatus = "HELPER failed " + message(t);
+            System.out.println("DIPLUS helper failed: " + message(t));
+        }
+    }
+
+    /**
+     * The host that last answered, tried first from then on.
+     *
+     * The service listens on tcp6 :::8988. On a kernel with bindv6only set, an
+     * IPv4 connect to that never lands, so a single hardcoded 127.0.0.1 can fail
+     * on a unit where the service is running perfectly. Both families are tried.
+     */
+    private static final String[] DIPLUS_HOSTS = { "127.0.0.1", "::1" };
+    private static volatile String diPlusHost = null;
+    private static volatile String diPlusLastError = "none";
+
+    /** Returns null on any failure, recording why in diPlusLastError. */
     private static Integer readDiPlusFrontMotorRpm() {
+        String preferred = diPlusHost;
+        if (preferred != null) {
+            Integer value = readDiPlusFrom(preferred);
+            if (value != null) return value;
+            diPlusHost = null;
+        }
+        for (String host : DIPLUS_HOSTS) {
+            if (host.equals(preferred)) continue;
+            Integer value = readDiPlusFrom(host);
+            if (value != null) {
+                diPlusHost = host;
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private static Integer readDiPlusFrom(String host) {
         Socket socket = null;
         try {
             socket = new Socket();
-            socket.connect(new InetSocketAddress("127.0.0.1", DIPLUS_API_PORT), 500);
+            socket.connect(new InetSocketAddress(host, DIPLUS_API_PORT), 500);
             socket.setSoTimeout(1500);
             OutputStream out = socket.getOutputStream();
             String request = "GET " + DIPLUS_API_PATH + " HTTP/1.1\r\n"
-                    + "Host: 127.0.0.1:" + DIPLUS_API_PORT + "\r\n"
+                    + "Host: " + host + ":" + DIPLUS_API_PORT + "\r\n"
                     + "User-Agent: DriveApex\r\n"
                     + "Accept: */*\r\n"
                     + "Connection: close\r\n\r\n";
@@ -276,8 +389,16 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 if (match.find()) return parseRpm(match.group(1));
             }
             Matcher match = DIPLUS_VALUE.matcher(received);
-            return match.find() ? parseRpm(match.group(1)) : null;
+            if (match.find()) return parseRpm(match.group(1));
+            // An answer with no value in it is a different fault from no answer,
+            // and saying which is the whole point of keeping this text.
+            diPlusLastError = received.length() == 0
+                    ? host + " EMPTY_RESPONSE"
+                    : host + " NO_VALUE_IN_RESPONSE";
+            return null;
         } catch (Throwable t) {
+            diPlusLastError = host + " " + t.getClass().getSimpleName()
+                    + (t.getMessage() == null ? "" : " " + t.getMessage());
             return null;
         } finally {
             if (socket != null) try { socket.close(); } catch (Throwable ignored) {}
@@ -314,7 +435,9 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 writer.write(Integer.toString(snapshot.frontRpm)); writer.write(',');
                 writer.write(Double.toString(snapshot.speed)); writer.write(',');
                 writer.write(Double.toString(snapshot.throttle)); writer.write(',');
-                writer.write(Double.toString(snapshot.brake)); writer.write(",BYD_DIPLUS_ENGINE_FEATURE_LISTENER");
+                writer.write(Double.toString(snapshot.brake)); writer.write(",BYD_DIPLUS_ENGINE_FEATURE_LISTENER,");
+                // Seventh field. Older readers stop at six, so this is additive.
+                writer.write(snapshot.diPlusStatus.replace(',', ' ').replace('\n', ' '));
                 writer.newLine(); writer.flush();
                 Thread.sleep(50L);
             }
