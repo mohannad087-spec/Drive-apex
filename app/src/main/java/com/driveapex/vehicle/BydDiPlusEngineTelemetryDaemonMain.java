@@ -647,16 +647,31 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                 };
                 FrontMotorListener listener = new FrontMotorListener(snapshot.featureId, sink, snapshot);
 
-                // Match DiPlus. Its registration reads, in order: if there is a
-                // feature array and SDK_INT >= 29, map the IDs through
-                // BYDAutoDeviceFeaturesMap and call the TWO-argument
-                // registerListener(listener, ids); only with no array, or below
-                // 29, does it call the one-argument form.
+                // DiPlus's generic registration helper can do either form, but its
+                // ENGINE call site passes a null feature array:
                 //
-                // This did the opposite -- one-argument first, with a comment
-                // asserting that was DiPlus's own form. It is not, and the
-                // unfiltered registration is what has been delivering zero events
-                // all along. Every workaround since was built on top of that.
+                //   005e: const/4 v8, 0
+                //   0148: invoke-static {v3, v8, v6, v7}, C   // v8 -> C's array arg
+                //   0018: if-eqz v4, 002d  -> registerListener(listener)
+                //
+                // so the engine listener is registered with the ONE-argument form.
+                // That is what this uses. The two-argument form stays as a fallback,
+                // and both have now been measured on the vehicle: one-argument and
+                // two-argument with all 30 declared IDs, front motor among them,
+                // each deliver zero events. The registration form is not the
+                // blocker -- the permissions are.
+                Method oneArg = findRegisterListener(d.getClass(), listener.getClass(), false);
+                if (oneArg != null) {
+                    try {
+                        oneArg.setAccessible(true);
+                        oneArg.invoke(d, listener);
+                        snapshot.registration = "registerListener(listener):unfiltered";
+                        return true;
+                    } catch (Throwable t) {
+                        System.err.println("one-arg registerListener failed: " + message(t));
+                    }
+                }
+
                 Method twoArg = findRegisterListener(d.getClass(), listener.getClass(), true);
                 if (twoArg != null && android.os.Build.VERSION.SDK_INT >= 29) {
                     int[] featureIds = deviceFeatureIds(snapshot.deviceType, snapshot.featureId);
@@ -671,13 +686,6 @@ public final class BydDiPlusEngineTelemetryDaemonMain {
                     }
                 }
 
-                Method oneArg = findRegisterListener(d.getClass(), listener.getClass(), false);
-                if (oneArg != null) {
-                    oneArg.setAccessible(true);
-                    oneArg.invoke(d, listener);
-                    snapshot.registration = "registerListener(listener):unfiltered";
-                    return true;
-                }
                 snapshot.registration = "NO_REGISTER_LISTENER_OVERLOAD";
                 return false;
             } catch (Throwable t) {

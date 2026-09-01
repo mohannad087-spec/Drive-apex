@@ -27,17 +27,15 @@ import java.util.concurrent.TimeUnit;
  * getInstance() returns null, and {@link #diagnostics()} says so rather than
  * failing silently -- which is how this path went unmeasured for so long.
  *
- * Registration follows DiPlus's own order, read from its bytecode: with a
- * feature array and SDK_INT >= 29 it calls the TWO-argument
- * registerListener(listener, ids), having mapped the IDs through
- * BYDAutoDeviceFeaturesMap; only with no array, or below 29, does it use the
- * one-argument form. This class previously preferred the one-argument form,
- * with a comment claiming that was DiPlus's, and received no events at all.
+ * Registration uses the one-argument registerListener(listener). DiPlus's
+ * generic helper can do either form, but its engine call site passes a null
+ * feature array, which selects that one -- read from its bytecode rather than
+ * assumed. The two-argument form, with the device's whole declared feature set,
+ * stays as a fallback.
  *
- * The IDs registered are the device's whole declared set rather than the front
- * motor alone. That is a superset of DiPlus's intersection, and it makes the
- * observed-event table below able to answer whether the front motor ID is even
- * among what this vehicle delivers.
+ * Both have now been measured on the vehicle: one-argument, and two-argument
+ * with all 30 declared IDs and the front motor among them, each deliver zero
+ * events. The registration form is not what is blocking this path.
  */
 public final class FrontMotorSpeedReader {
     private static final int MAX_RPM = 25_000;
@@ -157,6 +155,17 @@ public final class FrontMotorSpeedReader {
             registration = "no device (" + deviceOrigin + ")";
             return;
         }
+        Method oneArg = findUnfilteredRegister();
+        if (oneArg != null) {
+            try {
+                oneArg.invoke(device, listener);
+                registered = true;
+                registration = "registerListener(listener) unfiltered on Looper thread";
+                return;
+            } catch (Throwable t) {
+                registration = "unfiltered failed: " + rootCause(t);
+            }
+        }
         if (android.os.Build.VERSION.SDK_INT >= 29) {
             int[] ids = declaredFeatureIds();
             try {
@@ -164,22 +173,8 @@ public final class FrontMotorSpeedReader {
                 registered = true;
                 registration = "registerListener(listener, ids) count=" + ids.length
                         + " hasFrontMotor=" + contains(ids, FRONT_MOTOR_FEATURE_ID);
-                return;
             } catch (Throwable t) {
                 registration = "filtered failed: " + rootCause(t);
-            }
-        }
-        Method oneArg = findUnfilteredRegister();
-        if (oneArg != null) {
-            try {
-                oneArg.invoke(device, listener);
-                registered = true;
-                registration = (registration.startsWith("filtered failed")
-                        ? registration + "; fell back to " : "")
-                        + "registerListener(listener) unfiltered on Looper thread";
-                return;
-            } catch (Throwable t) {
-                registration = "unfiltered failed: " + rootCause(t);
             }
         }
     }

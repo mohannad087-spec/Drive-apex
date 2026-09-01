@@ -289,8 +289,47 @@ object BydTelemetryDiagnostics {
         }
     }.getOrElse { listOf("SENSOR SCAN ERROR: ${it.message ?: it.javaClass.simpleName}") }
 
+    /** "YES"/"NO" from the reader's own registration text, or why it could not say. */
+    private fun halVerdict(inProcessReport: String): String = when {
+        inProcessReport.isBlank() -> "no report"
+        Regex("events:\\s*([1-9]\\d*)").find(inProcessReport) != null ->
+            "YES (" + Regex("events:\\s*(\\d+)").find(inProcessReport)!!.groupValues[1] + ")"
+        inProcessReport.contains("events:") -> "NO"
+        else -> "no count"
+    }
+
+    private fun daemonVerdict(scan: List<String>): String {
+        val events = scan.firstOrNull { it.contains("EVENTS") } ?: return "no daemon answer"
+        val count = Regex("count=(\\d+)").find(events)?.groupValues?.get(1) ?: return events
+        return if (count == "0") "NO" else "YES ($count)"
+    }
+
+    private fun diPlusPermissionLine(install: List<String>): String {
+        val line = install.firstOrNull { it.contains("BYDAUTO", ignoreCase = true) } ?: return "unknown"
+        return Regex("BYDAUTO_[A-Z_]+").findAll(line)
+            .joinToString(", ") { it.value.removePrefix("BYDAUTO_") }
+            .ifBlank { "none listed" }
+    }
+
     fun format(report: Report): String = buildString {
         appendLine("BYD TELEMETRY DIAGNOSTICS ${BuildConfig.VERSION_NAME}"); appendLine()
+
+        // The three facts that decide the next step, on the first screen. The
+        // daemon's own listener result used to sit below the fold, so a probe
+        // that had the answer in it still could not be read off the head unit.
+        appendLine("=== ANSWER ===")
+        appendLine("app HAL events   : ${halVerdict(report.inProcessReport)}")
+        appendLine("daemon HAL events: ${daemonVerdict(report.sensorScan)}")
+        appendLine("DiPlus API       : ${if (report.diPlusRpm != null) "OK ${report.diPlusRpm}" else "refused"}")
+        val held = report.heldPermissions
+            .joinToString(", ") { it.removePrefix("android.permission.BYDAUTO_") }
+        appendLine("we hold          : ${held.ifBlank { "nothing" }}")
+        appendLine("DiPlus holds     : ${diPlusPermissionLine(report.diPlusInstall)}")
+        appendLine()
+        appendLine("=== DAEMON LISTENER (shell UID) ===")
+        if (report.sensorScan.isEmpty()) appendLine("no daemon answer")
+        else report.sensorScan.forEach { appendLine(it) }
+        appendLine()
         appendLine("=== FRONT MOTOR (DiPlus API) ===")
         when {
             report.diPlusRpm != null -> appendLine("OK: ${report.diPlusRpm} RPM  (via ${report.diPlusHost})")
@@ -319,9 +358,6 @@ object BydTelemetryDiagnostics {
         appendLine("Live telemetry read: ${if (report.engineReadable || report.speedReadable) "OK" else "FAILED"}")
         report.engineRpm?.let { appendLine("MOTOR RPM: $it RPM") }; report.currentSpeedKph?.let { appendLine(String.format(Locale.US, "Speed: %.1f km/h", it)) }
         report.acceleratorPercent?.let { appendLine("Accelerator: $it%") }; report.brakePercent?.let { appendLine("Brake: $it%") }; appendLine()
-        appendLine("DIPLUS FRONT MOTOR SPEED LISTENER")
-        if (report.sensorScan.isEmpty()) appendLine("No listener diagnostics returned.") else report.sensorScan.forEach { appendLine(it) }
-        appendLine()
         appendLine("BYD permissions declared: ${report.declaredPermissions.size}/${REQUIRED_PERMISSIONS.size}")
         appendLine("BYD permissions reported granted: ${report.grantedPermissions.size}/${REQUIRED_PERMISSIONS.size}")
         report.grantedPermissions.forEach { appendLine("✓ $it") }; report.failedPermissionGrants.forEach { appendLine("✗ $it") }; appendLine()
