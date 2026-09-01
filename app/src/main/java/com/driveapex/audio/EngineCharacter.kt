@@ -162,14 +162,16 @@ object EngineCharacters {
         drive = 1.6f,
         level = 0.95f,
         /**
-         * Four gears, shifting every 1500 motor rpm.
+         * Eight gears, shifting every 1250 motor rpm.
          *
          * Ratios are chosen so the shift lands where it was asked for rather than
          * where a ratio happens to put it: virtual rpm is motor rpm times the
          * ratio, and the box shifts when that reaches upshiftRpm, so a shift at
          * motor rpm M needs the ratio upshiftRpm / M. With 6500 as the shift
-         * point that gives 1500, 3000 and 4500 exactly, and fourth carries on
-         * without shifting again.
+         * point that puts the shifts at 1250, 2500, 3750, 5000, 6250, 7500 and
+         * 8750, and eighth reaches the same 6500 at a motor speed of 10500 --
+         * which this motor actually sees, where the old four-speed set ran out
+         * at 6000 and left the voice pinned for everything above it.
          *
          * downshiftRpm sits below the lowest rpm any upshift drops to (3250, in
          * second), so the box cannot shift up and immediately back down.
@@ -178,11 +180,17 @@ object EngineCharacters {
          * drive and level that make this voice are exactly as they were.
          */
         gearbox = EngineCharacter.Gearbox(
-            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
+            ratios = listOf(
+                6500f / 1250f, 6500f / 2500f, 6500f / 3750f, 6500f / 5000f,
+                6500f / 6250f, 6500f / 7500f, 6500f / 8750f, 6500f / 10500f
+            ),
             upshiftRpm = 6500f,
             downshiftRpm = 2800f,
             idleRpm = 800f,
-            limiterRpm = 7000f,
+            // The motor passes 10000 on the road, and top gear is geared so the
+            // voice is still climbing at 10500 rather than sitting on a limiter
+            // for the last third of the range.
+            limiterRpm = 7200f,
             shiftCutMs = 130,
             shiftCutDepth = 0.55f,
             shiftLockoutMs = 420
@@ -246,12 +254,22 @@ object EngineCharacters {
         whine = null,
         drive = 1.6f,
         level = 0.95f,
-        // The same four gears, shifting every 1500 motor rpm.
+        // The same eight gears, shifting every 1250 motor rpm.
         gearbox = EngineCharacter.Gearbox(
-            ratios = listOf(6500f / 1500f, 6500f / 3000f, 6500f / 4500f, 6500f / 6000f),
-            upshiftRpm = 6500f, downshiftRpm = 2800f,
-            idleRpm = 800f, limiterRpm = 7000f,
-            shiftCutMs = 130, shiftCutDepth = 0.55f, shiftLockoutMs = 420
+            ratios = listOf(
+                6500f / 1250f, 6500f / 2500f, 6500f / 3750f, 6500f / 5000f,
+                6500f / 6250f, 6500f / 7500f, 6500f / 8750f, 6500f / 10500f
+            ),
+            upshiftRpm = 6500f,
+            downshiftRpm = 2800f,
+            idleRpm = 800f,
+            // The motor passes 10000 on the road, and top gear is geared so the
+            // voice is still climbing at 10500 rather than sitting on a limiter
+            // for the last third of the range.
+            limiterRpm = 7200f,
+            shiftCutMs = 130,
+            shiftCutDepth = 0.55f,
+            shiftLockoutMs = 420
         )
     )
 

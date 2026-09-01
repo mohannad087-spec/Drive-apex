@@ -135,7 +135,11 @@ class BydHalTelemetryBridge(context: Context) : VehicleTelemetryBridge {
         val rpm = when {
             !rawRpm.isFinite() -> return null
             rawRpm == 8191f || rawRpm == -8191f || rawRpm == 32767f || rawRpm == -32768f || rawRpm == 65535f -> 0f
-            else -> rawRpm.coerceIn(0f, 7000f)
+            // 7000 was a combustion engine's redline, and this is a motor that
+            // passes 10000 on the road. Everything downstream already works in
+            // motor rpm and clamps at 25000; this line was throwing the top
+            // third of the range away before any of it was reached.
+            else -> rawRpm.coerceIn(0f, 25_000f)
         }
         val frame = TelemetryFrame(
             timestampMs = p[0].toLong(),

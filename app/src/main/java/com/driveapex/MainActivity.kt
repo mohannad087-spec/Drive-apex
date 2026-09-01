@@ -19,8 +19,8 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import com.driveapex.diag.DriveApexLog
-import com.driveapex.diag.LogViewer
 import com.driveapex.audio.EngineCharacter
+import com.driveapex.audio.DriveMode
 import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.EngineSampleBank
 import com.driveapex.audio.EngineSampleBankLoader
@@ -31,7 +31,6 @@ import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
 import com.driveapex.update.BydAdbSetup
 import com.driveapex.update.UpdateManager
-import com.driveapex.vehicle.BydTelemetryDiagnostics
 import com.driveapex.vehicle.LiveTelemetry
 import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
@@ -133,7 +132,9 @@ class MainActivity : Activity() {
         ), margin(16))
 
         root.addView(section("SOUND DNA", "Choose the acoustic character."), margin(8))
-        root.addView(profiles(), margin(16))
+        root.addView(profiles(), margin(12))
+        root.addView(section("DRIVE MODE", "When the box shifts, and how hard."), margin(8))
+        root.addView(driveModes(), margin(16))
 
         startButton = primary("START DRIVE SOUND")
         startButton.setOnClickListener {
@@ -155,17 +156,19 @@ class MainActivity : Activity() {
         }
         root.addView(stop, margin(16))
 
-        root.addView(section("SERVICE", "Diagnostics and maintenance."), margin(8))
+        // Sound tuning stays here: it is adjusted by ear against the engine, so
+        // it belongs beside the thing making the noise. Everything else about
+        // the app moved to Settings.
+        root.addView(section("SERVICE", "Sound tuning here; everything else in Settings."), margin(8))
         val service = card(12)
-        service.addView(serviceButton("BYD ADB SETUP / AUTHORIZE") { runAdbSetup(true) }, margin(6))
-        service.addView(serviceButton("BYD TELEMETRY DIAGNOSTICS") { showBydDiagnostics() }, margin(6))
+        service.addView(serviceButton("SOUND TUNING") { showSoundTuning() }, margin(6))
         service.addView(serviceButton("RESET SONIC GENOME") {
             genomeSession.reset()
             if (!liveMode) syncSimulator()
         }, margin(6))
-        service.addView(serviceButton("SOUND TUNING") { showSoundTuning() }, margin(6))
-        service.addView(serviceButton("APP LOG / WHY IT CLOSED") { LogViewer.show(this) }, margin(6))
-        service.addView(serviceButton("CHECK FOR UPDATE") { updateManager.checkManually() })
+        service.addView(serviceButton("SETTINGS") {
+            startActivity(android.content.Intent(this, SettingsActivity::class.java))
+        })
         root.addView(service)
 
         eventValue = label("EVENTS", 1f, Color.TRANSPARENT, false)
@@ -377,27 +380,43 @@ class MainActivity : Activity() {
         addView(label("●  READY", 10f, accent, true).apply { setPadding(0, dp(8), 0, 0) })
     }
 
-    private fun runAdbSetup(forceOpen: Boolean) {
-        // Same reason as the launch bootstrap: prepare() blocks on ADB for seconds.
-        liveStatus.text = "ADB: WORKING"
-        Thread({
-            val result = runCatching { BydAdbSetup.prepare(this, forceOpen) }
-                .getOrDefault(BydAdbSetup.Result.SETTINGS_UNAVAILABLE)
-            val message = when (result) {
-                BydAdbSetup.Result.ALREADY_AVAILABLE -> "ADB port 5555 is available."
-                BydAdbSetup.Result.SETTINGS_OPENED -> "BYD ADB settings opened. Enable wireless ADB."
-                BydAdbSetup.Result.SETTINGS_UNAVAILABLE -> "BYD ADB settings activity was not found."
-            }
-            handler.post {
-                if (isFinishing) return@post
-                liveStatus.text = "ADB: ${result.name}"
-                AlertDialog.Builder(this).setTitle("BYD ADB setup").setMessage(message)
-                    .setPositiveButton("OK", null).show()
-            }
-        }, "DriveApex-AdbSetup").apply { isDaemon = true }.start()
-    }
 
     /** Applies a character together with whatever tuning was saved for it. */
+    /**
+     * Eco, Normal, Sport. The ratios are the same in every mode -- a car does
+     * not grow different gears -- so what changes is when the box uses them:
+     * Eco upshifts at motor 808, Normal at 1000, Sport at 1250, and so on up
+     * the set.
+     */
+    private fun driveModes(): HorizontalScrollView {
+        val scroll = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val colours = mapOf(
+            DriveMode.ECO to GREEN, DriveMode.NORMAL to BLUE, DriveMode.SPORT to AMBER
+        )
+        DriveMode.entries.forEachIndexed { index, mode ->
+            val firstRatio = activeCharacter.gearbox?.ratios?.firstOrNull()
+            val shifts = firstRatio
+                ?.takeIf { it > 0f }
+                ?.let { "shifts at ${(mode.upshiftRpm / it).roundToInt()} motor rpm" }
+                ?: "no gearbox"
+            row.addView(
+                profile(mode.label, shifts, colours[mode] ?: BLUE) { selectDriveMode(mode) },
+                LinearLayout.LayoutParams(dp(128), dp(84)).apply {
+                    if (index < DriveMode.entries.lastIndex) marginEnd = dp(10)
+                }
+            )
+        }
+        scroll.addView(row)
+        return scroll
+    }
+
+    private fun selectDriveMode(mode: DriveMode) {
+        engine.setDriveMode(mode)
+        sceneValue.text = "${mode.label}  •  ${activeCharacter.name.uppercase(Locale.US)}"
+        DriveApexLog.i("drivemode", "selected ${mode.name}")
+    }
+
     private fun selectCharacter(character: EngineCharacter) {
         activeCharacter = character
         // Choosing a synthesised voice also leaves the recordings and the model:
@@ -413,34 +432,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /**
-     * The probe itself is slow and cannot easily be made fast: it opens an ADB
-     * connection, launches or verifies the daemon, tries the DiPlus API on
-     * several hosts with their own timeouts, and asks the OS about twenty
-     * permissions. Waiting for all of that before anything appears on screen
-     * reads as a dead button.
-     *
-     * So the dialog opens at once and fills itself in when the answer arrives.
-     */
-    private fun showBydDiagnostics() {
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("BYD telemetry probe")
-            .setMessage("Probing the vehicle...\n\nADB, daemon, DiPlus API and permissions.\nThis takes a few seconds.")
-            .setPositiveButton("OK", null)
-            .show()
-        Thread {
-            val live = if (::telemetryReceiver.isInitialized) {
-                val d = telemetryReceiver.diagnostics()
-                "${d.source} (packets ${d.packetCount})"
-            } else "receiver not started"
-            val message = runCatching {
-                BydTelemetryDiagnostics.format(BydTelemetryDiagnostics.probe(this, live))
-            }.getOrElse { "Probe failed: ${it.message ?: it.javaClass.simpleName}" }
-            handler.post {
-                if (!isFinishing && !isDestroyed && dialog.isShowing) dialog.setMessage(message)
-            }
-        }.start()
-    }
 
     private fun toggleTelemetryMode() {
         liveMode = !liveMode

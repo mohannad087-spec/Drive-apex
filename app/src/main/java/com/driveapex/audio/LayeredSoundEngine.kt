@@ -56,9 +56,35 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     @Volatile private var scene = AudioScene.IDLE
     @Volatile private var events = AcousticEventComposer.Events(0f, 0f, 0f, 0f, 0f, 0f)
 
+    @Volatile private var driveMode = DriveMode.NORMAL
+    @Volatile private var baseCharacter: EngineCharacter = character
+
     fun setCharacter(value: EngineCharacter) {
-        renderer.setCharacter(value)
-        voiceRpm.retune(value.gearbox)
+        baseCharacter = value
+        applyVoice()
+    }
+
+    /**
+     * Eco, Normal or Sport. Changes when the box shifts and how hard, not what
+     * the engine is: the character keeps its own timbre in every mode.
+     */
+    fun setDriveMode(mode: DriveMode) {
+        if (mode == driveMode) return
+        driveMode = mode
+        applyVoice()
+    }
+
+    fun driveMode(): DriveMode = driveMode
+
+    private fun applyVoice() {
+        val mode = driveMode
+        val base = baseCharacter
+        val shaped = base.copy(
+            level = base.level * mode.levelScale,
+            gearbox = base.gearbox?.let { mode.applyTo(it) }
+        )
+        renderer.setCharacter(shaped)
+        voiceRpm.retune(shaped.gearbox)
     }
 
     /**
