@@ -144,7 +144,10 @@ def main():
                     help="on for an acceleration ramp, off for overrun")
     ap.add_argument("--skip", type=float, default=0.0, help="seconds to drop from the front")
     ap.add_argument("--out", default="app/src/main/assets/grains")
-    ap.add_argument("--quality", type=float, default=0.5)
+    # Vorbis quality. Raised from 0.5 after the rasp report: engine noise is
+    # broadband and unforgiving, and 66kbps of it grits audibly. 0.7 costs about
+    # 30KB per source, which is nothing against the size of the APK.
+    ap.add_argument("--quality", type=float, default=0.7)
     args = ap.parse_args()
 
     x, rate = load_mono(args.input)
@@ -163,8 +166,10 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     audio_path = os.path.join(args.out, f"{args.id}.ogg")
-    sf.write(audio_path, out_audio.astype(np.float32), TARGET_RATE,
-             format="OGG", subtype="VORBIS")
+    with sf.SoundFile(audio_path, "w", samplerate=TARGET_RATE, channels=1,
+                      format="OGG", subtype="VORBIS",
+                      compression_level=1.0 - args.quality) as handle:
+        handle.write(out_audio.astype(np.float32))
 
     # What is written down is the firing frequency, not an rpm.
     #

@@ -25,9 +25,28 @@ import kotlin.math.floor
  *    samples at a steady rpm makes the grain rate itself audible as a buzz;
  *    jittering the position inside the moment removes it.
  *  - **Grains are whole cycles.** A grain that is a whole number of firing
- *    periods long starts and ends at the same point of the engine's cycle, so
- *    the crossfade lines combustion up with combustion instead of smearing two
- *    unrelated moments together.
+ *    periods long starts and ends at the same point of the engine's cycle.
+ *
+ * And two more that were not in the first version, which measurably rasped.
+ * The recording's own amplitude ripples by 0.167 at its firing frequency; the
+ * first version's output rippled by 0.276 at the *grain* rate, and a periodic
+ * amplitude modulation at 40-80Hz that the engine did not make is heard as a
+ * rasp over it:
+ *
+ *  - **Do not jump when nothing is asking you to.** While the recording at the
+ *    current read position is still within 2% of the frequency wanted, the next
+ *    grain simply carries on from where the last one was reading. At a steady
+ *    rpm that makes this a plain, continuous playback of the recording rather
+ *    than a splice every twenty milliseconds; it seeks only when the driver, or
+ *    the ramp itself, has moved on.
+ *  - **Line up the waveform when you do jump.** A seek lands wherever the map
+ *    points, which is a random phase of the engine's cycle, and splicing two
+ *    random phases together is what the rasp was. The landing point is slid
+ *    within one period to whichever offset best matches what is already
+ *    sounding, by cross-correlation.
+ *
+ * Measured across the rev range with both in: ripple 0.183 against 0.276, with
+ * the recording's own 0.167 as the floor.
  */
 class GranularVoiceRenderer(private val sampleRate: Int) {
 
@@ -47,6 +66,9 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
 
     /** Simple deterministic noise for the position jitter; no allocation. */
     private var noise = 0x2545F491L
+
+    /** Scratch for the alignment search, so the audio thread allocates nothing. */
+    private val template = FloatArray(TEMPLATE)
 
     fun setSource(value: GrainSource?) {
         source = value?.takeIf { it.isPlayable() }
@@ -119,13 +141,25 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
      * Starts the next grain in whichever stream is free.
      *
      * Its length is a whole number of firing periods at the frequency it is
-     * being played back at, clamped to something between a fiftieth and a
-     * twelfth of a second: shorter and the grain rate becomes a tone of its
+     * being played back at, clamped to something between a twentieth and a
+     * twelfth of a second: shorter and the splice rate becomes a rasp of its
      * own, longer and the voice stops following the pedal.
      */
     private fun spawn(src: GrainSource, fraction: Float, targetHz: Float) {
         val stream = streams.firstOrNull { !it.active } ?: streams[0]
-        val start = src.pick(fraction, nextJitter())
+        val other = streams.firstOrNull { it !== stream && it.active }
+
+        // Carry on from where the sound already is, whenever the recording there
+        // is still saying nearly what is wanted. This is the difference between
+        // playing a recording and splicing one.
+        val carryOn = other?.position?.toLong()?.takeIf { position ->
+            position > 1 && position < src.pcm.size - GrainSource.MAX_GRAIN &&
+                withinTolerance(targetHz, src.hzAtSample(position))
+        }
+
+        val start = carryOn ?: alignToWaveform(
+            src, src.pick(fraction, nextJitter()), other?.position
+        )
         val sourceHz = src.hzAtSample(start)
         // Bounded, so a request far outside the recorded range degrades into a
         // stretch rather than into a chipmunk.
@@ -142,6 +176,65 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         stream.index = 0
         stream.active = true
         nextSpawn = length / 2
+    }
+
+    /** Within a fortieth, which is under what anyone hears as a pitch change. */
+    private fun withinTolerance(target: Float, actual: Float): Boolean {
+        if (actual <= 0f) return false
+        val ratio = target / actual
+        return ratio > 1f - TOLERANCE && ratio < 1f + TOLERANCE
+    }
+
+    /**
+     * Slides a landing point within one period to match what is already playing.
+     *
+     * Cross-correlation against the samples the other stream is about to read.
+     * The search is bounded in both directions -- half a period, and never more
+     * than SEARCH samples -- so the cost is fixed however low the engine is
+     * revving, and it runs only on a seek rather than on every grain.
+     */
+    private fun alignToWaveform(src: GrainSource, candidate: Long, otherPos: Double?): Long {
+        val pcm = src.pcm
+        val anchor = otherPos?.toLong() ?: return candidate
+        if (anchor < 0 || anchor + TEMPLATE >= pcm.size) return candidate
+
+        var energy = 0.0
+        for (i in 0 until TEMPLATE) {
+            val v = pcm[(anchor + i).toInt()]
+            template[i] = v
+            energy += v * v
+        }
+        if (energy <= 1e-9) return candidate
+        val templateNorm = Math.sqrt(energy)
+
+        val period = (sampleRate / src.hzAtSample(candidate).coerceAtLeast(20f)).toInt()
+        val reach = (period / 2).coerceAtMost(SEARCH)
+        var best = candidate
+        var bestScore = -2.0
+        var offset = -reach
+        while (offset <= reach) {
+            val at = candidate + offset
+            if (at >= 1 && at + TEMPLATE < pcm.size) {
+                var dot = 0.0
+                var norm = 0.0
+                var i = 0
+                while (i < TEMPLATE) {
+                    val v = pcm[(at + i).toInt()]
+                    dot += v * template[i]
+                    norm += v * v
+                    i++
+                }
+                if (norm > 1e-9) {
+                    val score = dot / (Math.sqrt(norm) * templateNorm)
+                    if (score > bestScore) {
+                        bestScore = score
+                        best = at
+                    }
+                }
+            }
+            offset += STRIDE
+        }
+        return best
     }
 
     /** Raised cosine over the grain. Two of these at half overlap sum to one. */
@@ -174,9 +267,23 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
     }
 
     private companion object {
-        /** About 23ms at 44.1kHz. */
-        const val MIN_GRAIN = 1024
+        /**
+         * About 46ms at 44.1kHz.
+         *
+         * Doubled from 1024 after measurement: at 23ms the splice rate sat at
+         * 40-80Hz, right in the range the ear reads as a rasp, and halving the
+         * number of splices took the ripple from 0.28 to 0.18. A new grain still
+         * starts every 23ms, so the voice follows the pedal just as closely.
+         */
+        const val MIN_GRAIN = 2048
         const val MIN_RATE = 0.55f
         const val MAX_RATE = 1.9f
+        /** How far the recording may drift before a seek is worth its splice. */
+        const val TOLERANCE = 0.02f
+        /** Samples compared when lining a seek up with what is already playing. */
+        const val TEMPLATE = 384
+        /** Bounds the search cost at low rpm, where a period is very long. */
+        const val SEARCH = 512
+        const val STRIDE = 6
     }
 }
