@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The DriveApex mark: a rev counter with a sound in it.
+
+  Drawn as a vector rather than shipped as PNGs so it stays sharp on a head unit
+  whose launcher icon size nobody can predict. Everything sits inside the inner
+  72dp of the 108dp canvas, which is the safe zone an adaptive icon guarantees
+  will survive whatever mask the launcher applies.
+
+  The arc is the same 270 degrees as the dial on the cockpit screen, starting at
+  the lower left and sweeping over the top, so the icon and the app read as one
+  thing. The five bars are the sound intensity display in miniature.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- The dial: 270 degrees, lower left round to lower right. -->
+    <path
+        android:pathData="M34.2,73.8 A28,28 0 1 1 73.8,73.8"
+        android:strokeColor="#1D9BF0"
+        android:strokeWidth="7"
+        android:strokeLineCap="round" />
+
+    <!-- Redline: the last stretch of the same arc, laid over it. -->
+    <path
+        android:pathData="M73.8,34.2 A28,28 0 0 1 73.8,73.8"
+        android:strokeColor="#FF5252"
+        android:strokeWidth="7"
+        android:strokeLineCap="round" />
+
+    <!-- The sound, five bars across the middle. -->
+    <path
+        android:pathData="M40,60 L40,48"
+        android:strokeColor="#22B8CF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M47,66 L47,42"
+        android:strokeColor="#1D9BF0"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,72 L54,36"
+        android:strokeColor="#7C5CFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M61,66 L61,42"
+        android:strokeColor="#1D9BF0"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M68,60 L68,48"
+        android:strokeColor="#22B8CF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round" />
+</vector>
