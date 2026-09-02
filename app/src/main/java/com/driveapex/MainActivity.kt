@@ -31,6 +31,7 @@ import com.driveapex.audio.TuningStore
 import com.driveapex.audio.tunedWith
 import com.driveapex.diag.DriveApexLog
 import com.driveapex.ui.ApexButtons
+import com.driveapex.ui.CarView
 import com.driveapex.ui.GaugeView
 import com.driveapex.ui.IconView
 import com.driveapex.ui.WaveformView
@@ -87,14 +88,13 @@ class MainActivity : Activity() {
     private lateinit var content: FrameLayout
     private lateinit var gauge: GaugeView
     private lateinit var waveform: WaveformView
-    private lateinit var rpmText: TextView
+    private lateinit var motorText: TextView
     private lateinit var gearText: TextView
-    private lateinit var speedChip: TextView
     private lateinit var sourceChip: TextView
+    private lateinit var modeLabel: TextView
     private lateinit var linkText: TextView
     private lateinit var clockText: TextView
     private lateinit var channelStatus: TextView
-    private lateinit var signatureText: TextView
     private lateinit var startButton: Button
     private lateinit var modeChip: Button
     private lateinit var throttleMeter: Meter
@@ -107,6 +107,8 @@ class MainActivity : Activity() {
     private var soundsList: LinearLayout? = null
     private var modesList: LinearLayout? = null
     private val tabIcons = mutableMapOf<Tab, IconView>()
+    private val tabCells = mutableMapOf<Tab, LinearLayout>()
+    private val railHolders = mutableMapOf<Tab, FrameLayout>()
     private val tabLabels = mutableMapOf<Tab, TextView>()
     private val railIcons = mutableMapOf<Tab, IconView>()
     private val sections = mutableMapOf<Tab, View>()
@@ -137,16 +139,28 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(BG)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
         }
-        root.addView(topBar(), LinearLayout.LayoutParams(MATCH, dp(56)))
+
+        // One card holds the whole cockpit -- bar, rail, screen and tabs -- the
+        // way the design draws it. The rail and the tab bar are inside it, not
+        // chrome around it.
+        val cockpit = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(PANEL, dp(20), STROKE)
+            clipToPadding = false
+        }
+        cockpit.addView(topBar(), LinearLayout.LayoutParams(MATCH, dp(54)))
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        body.addView(rail(), LinearLayout.LayoutParams(dp(62), MATCH))
+        body.addView(rail(), LinearLayout.LayoutParams(dp(58), MATCH))
         content = FrameLayout(this)
         body.addView(content, LinearLayout.LayoutParams(0, MATCH, 1f))
-        root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        cockpit.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
-        root.addView(tabBar(), LinearLayout.LayoutParams(MATCH, dp(64)))
+        cockpit.addView(tabBar(), LinearLayout.LayoutParams(MATCH, dp(62)))
+        root.addView(cockpit, LinearLayout.LayoutParams(MATCH, MATCH))
+
         setContentView(root)
 
         engine.attach(this)
@@ -173,34 +187,34 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), 0, dp(16), 0)
-            setBackgroundColor(BAR)
+            setPadding(dp(14), dp(10), dp(16), dp(4))
         }
         bar.addView(IconView(this, IconView.Glyph.POWER).apply { tint = BLUE },
-            LinearLayout.LayoutParams(dp(26), dp(26)).apply { marginEnd = dp(10) })
+            LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(10) })
 
         bar.addView(TextView(this).apply {
             text = "COCKPIT"
-            textSize = 12f
-            letterSpacing = 0.14f
+            textSize = 11f
+            letterSpacing = 0.16f
             setTextColor(Color.WHITE)
             typeface = Typeface.create("sans", Typeface.BOLD)
-            background = rounded(PANEL_2, dp(14), STROKE)
-            setPadding(dp(16), dp(7), dp(16), dp(7))
+            background = rounded(PANEL_2, dp(13), STROKE)
+            setPadding(dp(16), dp(6), dp(16), dp(6))
         })
 
         bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
 
         linkText = TextView(this).apply {
             text = "LINK  --"
-            textSize = 11f
+            textSize = 10f
+            letterSpacing = 0.06f
             setTextColor(MUTED)
             typeface = Typeface.create("sans", Typeface.BOLD)
         }
         bar.addView(linkText, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(12) })
 
         modeChip = chip("TEST", SLATE) { toggleTelemetryMode() }
-        bar.addView(modeChip, LinearLayout.LayoutParams(dp(92), dp(38)).apply { marginEnd = dp(12) })
+        bar.addView(modeChip, LinearLayout.LayoutParams(dp(86), dp(34)).apply { marginEnd = dp(14) })
 
         clockText = TextView(this).apply {
             textSize = 14f
@@ -211,24 +225,29 @@ class MainActivity : Activity() {
         return bar
     }
 
-    /** The section rail. Same five places as the tab bar, for a wide screen. */
+    /**
+     * The rail down the left of the cockpit.
+     *
+     * Same five places as the tab bar. The design lights the current one as a
+     * filled square rather than only tinting its icon, so that is what the
+     * holder's background does.
+     */
     private fun rail(): View {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(14), 0, dp(14))
-            setBackgroundColor(BAR)
+            setPadding(0, dp(10), 0, dp(10))
         }
         Tab.entries.forEach { entry ->
             val icon = IconView(this, entry.glyph)
             railIcons[entry] = icon
             val holder = FrameLayout(this).apply {
-                background = rounded(Color.TRANSPARENT, dp(14), Color.TRANSPARENT)
                 setOnClickListener { select(entry) }
-                addView(icon, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+                addView(icon, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
             }
-            column.addView(holder, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
-                bottomMargin = dp(10)
+            railHolders[entry] = holder
+            column.addView(holder, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+                bottomMargin = dp(8)
             })
         }
         return column
@@ -237,27 +256,33 @@ class MainActivity : Activity() {
     private fun tabBar(): View {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(BAR)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(6), dp(10), dp(10))
         }
         Tab.entries.forEach { entry ->
             val cell = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
+                orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
                 isClickable = true
                 setOnClickListener { select(entry) }
             }
             val icon = IconView(this, entry.glyph)
             tabIcons[entry] = icon
-            cell.addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)))
+            cell.addView(icon, LinearLayout.LayoutParams(dp(19), dp(19)).apply {
+                marginEnd = dp(8)
+            })
             val label = TextView(this).apply {
                 text = entry.title
-                textSize = 10f
+                textSize = 12f
                 setTextColor(MUTED)
-                setPadding(0, dp(4), 0, 0)
+                typeface = Typeface.create("sans", Typeface.BOLD)
             }
             tabLabels[entry] = label
             cell.addView(label)
-            bar.addView(cell, LinearLayout.LayoutParams(0, MATCH, 1f))
+            tabCells[entry] = cell
+            bar.addView(cell, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                marginEnd = dp(6)
+            })
         }
         return bar
     }
@@ -269,9 +294,13 @@ class MainActivity : Activity() {
         content.addView(view, FrameLayout.LayoutParams(MATCH, MATCH))
         Tab.entries.forEach { other ->
             val on = other == entry
-            tabIcons[other]?.tint = if (on) BLUE else MUTED
+            tabIcons[other]?.tint = if (on) Color.WHITE else MUTED
             tabLabels[other]?.setTextColor(if (on) Color.WHITE else MUTED)
-            railIcons[other]?.tint = if (on) BLUE else MUTED
+            tabCells[other]?.background =
+                if (on) rounded(BLUE, dp(12), Color.TRANSPARENT) else null
+            railIcons[other]?.tint = if (on) Color.WHITE else MUTED
+            railHolders[other]?.background =
+                if (on) rounded(BLUE, dp(12), Color.TRANSPARENT) else null
         }
     }
 
@@ -286,131 +315,136 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ home
 
     private fun homeSection(): View {
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        val column = LinearLayout(this).apply {
+        val home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(18))
+            setPadding(dp(6), dp(2), dp(14), dp(6))
         }
-        scroll.addView(column)
 
-        // --- the dial, with the car's own readings either side of it ---------
-        val dialCard = card()
-        val dialRow = LinearLayout(this).apply {
+        val mainRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        speedChip = statTile(left, "SPEED", "--", "km/h")
-        gearText = statTile(left, "GEAR", "--", "virtual")
-        sourceChip = statTile(left, "SOURCE", "TEST", "telemetry")
-        dialRow.addView(left, LinearLayout.LayoutParams(dp(104), WRAP))
+        // --- left: the small readings, then start and stop -------------------
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        motorText = statTile(left, "--", "Motor rpm", BLUE)
+        gearText = statTile(left, "--", "Virtual gear", PURPLE)
+        sourceChip = statTile(left, "TEST", "Telemetry", GREEN)
 
+        startButton = keyButton("START", BLUE, 12f, dp(44)) {
+            soundRunning = true
+            DriveSoundService.start(this)
+            if (!liveMode) syncSimulator()
+            startButton.text = "RUNNING"
+            reportChannel()
+        }
+        left.addView(startButton, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            topMargin = dp(4); bottomMargin = dp(6)
+        })
+        left.addView(keyButton("STOP", RED, 12f, dp(40)) {
+            soundRunning = false
+            genomeSession.finishDrive()
+            DriveSoundService.stop(this)
+            // Directly as well: stopService is asynchronous and STOP means now.
+            DriveSoundPipeline.stopSound()
+            startButton.text = "START"
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        mainRow.addView(left, LinearLayout.LayoutParams(dp(120), MATCH))
+
+        // --- middle: the drive mode over the dial ----------------------------
         val centre = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        gauge = GaugeView(this)
-        gauge.setRange(11_000f, 8_000f)
-        centre.addView(gauge, LinearLayout.LayoutParams(MATCH, dp(240)))
-        rpmText = TextView(this).apply {
-            text = "0 RPM"
+        modeLabel = TextView(this).apply {
+            text = DriveMode.NORMAL.label
             textSize = 15f
-            setTextColor(SOFT)
-            gravity = Gravity.CENTER
+            letterSpacing = 0.18f
+            setTextColor(BLUE)
             typeface = Typeface.create("sans", Typeface.BOLD)
         }
-        centre.addView(rpmText, LinearLayout.LayoutParams(MATCH, WRAP))
-        dialRow.addView(centre, LinearLayout.LayoutParams(0, WRAP, 1f))
+        centre.addView(modeLabel, LinearLayout.LayoutParams(WRAP, WRAP))
+        gauge = GaugeView(this)
+        // The dial reads the engine the driver hears, after the gearbox, so it
+        // fits the 0-8 face in the design instead of the motor's own 0-11.
+        gauge.setRange(8_000f, 7_200f)
+        centre.addView(gauge, LinearLayout.LayoutParams(MATCH, 0, 1f))
+        mainRow.addView(centre, LinearLayout.LayoutParams(0, MATCH, 1.35f))
 
+        // --- right: the car, and the sound it is making ----------------------
         val right = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.END
         }
         right.addView(TextView(this).apply {
             text = "BYD"
-            textSize = 22f
-            letterSpacing = 0.3f
+            textSize = 20f
+            letterSpacing = 0.34f
             setTextColor(Color.WHITE)
             typeface = Typeface.create("sans", Typeface.BOLD)
         })
         right.addView(TextView(this).apply {
             text = "YUAN PLUS 2023"
-            textSize = 11f
-            letterSpacing = 0.12f
+            textSize = 10f
+            letterSpacing = 0.14f
             setTextColor(MUTED)
         })
-        signatureText = TextView(this).apply {
-            text = "BALANCED"
-            textSize = 11f
-            setTextColor(PURPLE)
-            setPadding(0, dp(12), 0, 0)
-            typeface = Typeface.create("sans", Typeface.BOLD)
+        right.addView(CarView(this), LinearLayout.LayoutParams(MATCH, 0, 1f).apply {
+            topMargin = dp(4)
+        })
+
+        val waveCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(PANEL_2, dp(12), STROKE)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
         }
-        right.addView(signatureText)
-        dialRow.addView(right, LinearLayout.LayoutParams(dp(140), WRAP))
+        waveform = WaveformView(this)
+        waveCard.addView(waveform, LinearLayout.LayoutParams(MATCH, dp(34)))
+        waveCard.addView(TextView(this).apply {
+            text = "SOUND INTENSITY"
+            textSize = 8f
+            letterSpacing = 0.14f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, 0)
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        right.addView(waveCard, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
+        mainRow.addView(right, LinearLayout.LayoutParams(dp(210), MATCH))
 
-        dialCard.addView(dialRow)
-        column.addView(dialCard, stack(10))
+        home.addView(mainRow, LinearLayout.LayoutParams(MATCH, 0, 1f))
 
-        // --- the three meters ------------------------------------------------
+        // --- the meter row across the bottom ---------------------------------
         val meters = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         throttleMeter = meter(meters, "THROTTLE", BLUE)
         brakeMeter = meter(meters, "BRAKE", AMBER)
         regenMeter = meter(meters, "REGEN", GREEN)
-        column.addView(meters, stack(10))
-
-        // --- sound intensity -------------------------------------------------
-        val waveCard = card()
-        waveCard.addView(caption("SOUND INTENSITY"))
-        waveform = WaveformView(this)
-        waveCard.addView(waveform, LinearLayout.LayoutParams(MATCH, dp(64)).apply {
-            topMargin = dp(8)
-        })
-        column.addView(waveCard, stack(10))
-
-        // --- start / stop ----------------------------------------------------
-        startButton = keyButton("START DRIVE SOUND", BLUE, 15f, dp(58)) {
-            soundRunning = true
-            DriveSoundService.start(this)
-            if (!liveMode) syncSimulator()
-            startButton.text = "DRIVE SOUND RUNNING"
-            reportChannel()
-        }
-        column.addView(startButton, stack(8))
+        home.addView(meters, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
 
         channelStatus = TextView(this).apply {
-            textSize = 11f
+            textSize = 10f
             setTextColor(MUTED)
             gravity = Gravity.CENTER
             visibility = View.GONE
         }
-        column.addView(channelStatus, stack(8))
-
-        column.addView(keyButton("STOP / SAFE", RED, 13f, dp(52)) {
-            soundRunning = false
-            genomeSession.finishDrive()
-            DriveSoundService.stop(this)
-            // Directly as well: stopService is asynchronous and STOP means now.
-            DriveSoundPipeline.stopSound()
-            startButton.text = "START DRIVE SOUND"
-        }, stack(12))
-
-        // --- manual controls, for when there is no car -----------------------
-        val test = card()
-        test.addView(caption("TEST CONTROLS"))
-        test.addView(TextView(this).apply {
-            text = "Hidden automatically once the car is feeding live telemetry."
-            textSize = 10f
-            setTextColor(MUTED)
-            setPadding(0, dp(3), 0, dp(6))
+        home.addView(channelStatus, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            topMargin = dp(4)
         })
+
+        // --- manual controls, only while there is no car ---------------------
+        val test = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(PANEL_2, dp(12), STROKE)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+        }
         motorSpeedBar = seek(11_000, 0)
         throttleBar = seek(100, 10)
         speedBar = seek(240, 0)
-        test.addView(sliderRow("MOTOR RPM", motorSpeedBar))
-        test.addView(sliderRow("THROTTLE", throttleBar))
-        test.addView(sliderRow("SPEED", speedBar))
+        test.addView(sliderCell("RPM", motorSpeedBar))
+        test.addView(sliderCell("THR", throttleBar))
+        test.addView(sliderCell("KPH", speedBar))
         val listener = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser && !liveMode) syncSimulator()
@@ -423,9 +457,21 @@ class MainActivity : Activity() {
         speedBar.setOnSeekBarChangeListener(listener)
         testCard = test
         test.visibility = if (liveMode) View.GONE else View.VISIBLE
-        column.addView(test)
+        home.addView(test, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
 
-        return scroll
+        return home
+    }
+
+    private fun sliderCell(title: String, bar: SeekBar): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(TextView(this@MainActivity).apply {
+            text = title
+            textSize = 9f
+            setTextColor(MUTED)
+        }, LinearLayout.LayoutParams(dp(30), WRAP))
+        addView(bar, LinearLayout.LayoutParams(0, dp(32), 1f))
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
     }
 
     // ---------------------------------------------------------------- sounds
@@ -605,6 +651,7 @@ class MainActivity : Activity() {
 
     private fun selectDriveMode(mode: DriveMode) {
         engine.setDriveMode(mode)
+        if (::modeLabel.isInitialized) modeLabel.text = mode.label
         DriveApexLog.i("drivemode", "selected ${mode.name}")
     }
 
@@ -699,8 +746,7 @@ class MainActivity : Activity() {
         // In LIVE mode the feed loop already applied this frame; asking again
         // from here would put two threads on one set of smoothing filters.
         val scene = if (liveMode) DriveSoundPipeline.scene else controller.apply(data)
-        val genome = genomeSession.update(data)
-        val signature = genome.toSignature()
+        genomeSession.update(data)
 
         if (liveMode && ::motorSpeedBar.isInitialized) {
             motorSpeedBar.progress = data.rpm.roundToInt().coerceIn(0, motorSpeedBar.max)
@@ -708,24 +754,29 @@ class MainActivity : Activity() {
             speedBar.progress = data.speedKph.roundToInt().coerceIn(0, speedBar.max)
         }
 
-        gauge.setValues(data.rpm, data.speedKph, scene.name.replace('_', ' '))
-        rpmText.text = String.format(Locale.US, "%,.0f RPM", data.rpm)
+        // The dial reads the engine being heard, not the motor: that is what a
+        // rev counter shows in a car with a gearbox, and it is why the face fits
+        // 0 to 8 the way the design draws it.
+        val sounding = engine.soundingRpm()
+        gauge.setValues(
+            sounding, data.speedKph,
+            String.format(Locale.US, "%,.0f RPM", sounding),
+            scene.name.replace('_', ' ')
+        )
+
         val gear = engine.currentGear()
-        setTile(gearText, if (gear > 0) "G$gear" else "--")
-        setTile(speedChip, String.format(Locale.US, "%.0f", data.speedKph))
-        setTile(sourceChip, if (liveMode && packet.source != TelemetrySource.SIMULATOR) "LIVE" else "TEST")
+        motorText.text = String.format(Locale.US, "%,.0f", data.rpm)
+        gearText.text = if (gear > 0) "G$gear" else "--"
+        sourceChip.text =
+            if (liveMode && packet.source != TelemetrySource.SIMULATOR) "LIVE" else "TEST"
+        modeLabel.text = engine.driveMode().label
 
         throttleMeter.set(data.throttle, "${(data.throttle * 100).roundToInt()}%")
         brakeMeter.set(data.brake, "${(data.brake * 100).roundToInt()}%")
         regenMeter.set(data.regen, "${(data.regen * 100).roundToInt()}%")
-        // The bars follow how hard the engine is working, which is the pedal
-        // plus a floor so an idling engine still shows a pulse.
+        // The bars follow how hard the engine is working, with a floor so an
+        // idling engine still shows a pulse.
         waveform.setLevel(0.18f + 0.82f * data.throttle.coerceIn(0f, 1f))
-
-        signatureText.text = String.format(
-            Locale.US, "%s  ·  AGG %d%%", signature.label(),
-            (signature.aggression * 100).roundToInt()
-        )
     }
 
     private fun syncSimulator() {
@@ -785,34 +836,38 @@ class MainActivity : Activity() {
         return Meter(fill, rest, value)
     }
 
-    /** A tile in the column beside the dial: title, big value, unit. */
-    private fun statTile(parent: LinearLayout, title: String, value: String, unit: String): TextView {
-        val box = card(10)
-        box.addView(TextView(this).apply {
-            text = title
-            textSize = 9f
-            letterSpacing = 0.1f
-            setTextColor(MUTED)
-            typeface = Typeface.create("sans", Typeface.BOLD)
-        })
+    /**
+     * A reading beside the dial: the value, what it is, and an accent edge.
+     *
+     * The design puts these on the panel itself rather than in boxes, so the
+     * only framing is the coloured bar on the left.
+     */
+    private fun statTile(parent: LinearLayout, value: String, caption: String, accent: Int): TextView {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addView(View(this).apply {
+            background = rounded(accent, dp(2), Color.TRANSPARENT)
+        }, LinearLayout.LayoutParams(dp(3), dp(28)).apply { marginEnd = dp(9) })
+
+        val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val big = TextView(this).apply {
             text = value
-            textSize = 20f
+            textSize = 17f
             setTextColor(Color.WHITE)
             typeface = Typeface.create("sans", Typeface.BOLD)
-            setPadding(0, dp(2), 0, 0)
         }
-        box.addView(big)
-        box.addView(TextView(this).apply {
-            text = unit
+        texts.addView(big)
+        texts.addView(TextView(this).apply {
+            text = caption
             textSize = 9f
             setTextColor(MUTED)
         })
-        parent.addView(box, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(8) })
+        row.addView(texts)
+        parent.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(12) })
         return big
     }
-
-    private fun setTile(view: TextView, value: String) { view.text = value }
 
     /**
      * A row in one of the lists: accent block, name, subtitle, chevron.
@@ -895,14 +950,6 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun caption(text: String) = TextView(this).apply {
-        this.text = text
-        textSize = 10f
-        letterSpacing = 0.12f
-        setTextColor(MUTED)
-        typeface = Typeface.create("sans", Typeface.BOLD)
-    }
-
     private fun chip(text: String, accent: Int, click: () -> Unit) = Button(this).apply {
         this.text = text
         textSize = 11f
@@ -930,17 +977,6 @@ class MainActivity : Activity() {
             ApexButtons.padForTravel(this, 12)
             setOnClickListener { click() }
         }
-
-    private fun sliderRow(title: String, bar: SeekBar): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(TextView(this@MainActivity).apply {
-            text = title
-            textSize = 10f
-            setTextColor(MUTED)
-        }, LinearLayout.LayoutParams(dp(92), WRAP))
-        addView(bar, LinearLayout.LayoutParams(0, dp(40), 1f))
-    }
 
     private fun seek(max: Int, progress: Int) = SeekBar(this).apply {
         this.max = max

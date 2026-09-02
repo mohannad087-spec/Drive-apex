@@ -75,6 +75,9 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      */
     @Volatile private var generation = 0
 
+    /** The sample path's own mapped rpm, for the dial to read. */
+    @Volatile private var lastSampleRpm = 0f
+
     /**
      * The app context, for audio focus and for reading a channel's volume.
      *
@@ -193,6 +196,16 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     fun sampleBank(): EngineSampleBank? = sampleVoice.currentBank()
 
     fun character(): EngineCharacter = renderer.currentCharacter()
+
+    /**
+     * The rpm the voice is sounding, after the gearbox.
+     *
+     * The dial shows this rather than the motor's own speed: it is the engine
+     * the driver hears, and it is what a rev counter reads in a car that has a
+     * gearbox between the two.
+     */
+    fun soundingRpm(): Float =
+        if (sampleVoice.isReady()) lastSampleRpm else renderer.currentVoiceRpm()
 
     /** Virtual gear, 1-based; 0 when the current character has no gearbox. */
     fun currentGear(): Int =
@@ -368,6 +381,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         if (!sampleVoice.isReady()) return false
         voiceClock += (bufferSize * 1000L) / sampleRate
         val mapped = voiceRpm.map(rpm, throttle, speedKph, bufferSize, sampleRate, voiceClock)
+        lastSampleRpm = mapped.rpm
         if (!sampleVoice.render(pcm, bufferSize, mapped.rpm, throttle)) return false
         if (mapped.cutGain < 1f) {
             val gain = mapped.cutGain

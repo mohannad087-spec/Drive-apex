@@ -80,12 +80,23 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
      *  depend on the wall clock and stays identical across runs. */
     private var elapsedMs = 0L
 
+    /** Read by the screen from another thread; written once per buffer here. */
+    @Volatile private var lastVoiceRpm = 0f
+
     fun setCharacter(value: EngineCharacter) {
         voice = newVoice(value, voice)
     }
 
     /** Current virtual gear, 1-based, or 0 when the character has no gearbox. */
     fun currentGear(): Int = if (voice.gearbox == null) 0 else gear + 1
+
+    /**
+     * The rpm the voice is actually sounding, after the gearbox.
+     *
+     * Not the motor's rpm: the dial on the cockpit shows the engine the driver
+     * is hearing, which is what a rev counter in a car with a gearbox shows.
+     */
+    fun currentVoiceRpm(): Float = lastVoiceRpm
 
     fun currentCharacter(): EngineCharacter = voice.character
 
@@ -176,6 +187,7 @@ class CharacterRenderer(private val sampleRate: Int = 44_100) {
             }
             shiftCut = box.cutGain(elapsedMs).toDouble()
         }
+        lastVoiceRpm = voiceRpm
 
         // Trigger a transient when the event sum rises. Events themselves are
         // level-like, so the rising edge is what marks a hit.

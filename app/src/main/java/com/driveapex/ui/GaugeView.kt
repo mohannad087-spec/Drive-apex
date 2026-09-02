@@ -30,6 +30,7 @@ class GaugeView(context: Context) : View(context) {
     private var speedKph = 0f
     private var unit = "km/h"
     private var caption = ""
+    private var rpmLabel = ""
 
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -57,9 +58,15 @@ class GaugeView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun setValues(rpm: Float, speedKph: Float, caption: String) {
+    /**
+     * @param rpm what the dial points at, @param speedKph what it prints in the
+     * middle, @param rpmLabel the line under it, @param caption the line under
+     * that.
+     */
+    fun setValues(rpm: Float, speedKph: Float, rpmLabel: String, caption: String) {
         this.rpm = rpm.coerceAtLeast(0f)
         this.speedKph = speedKph.coerceAtLeast(0f)
+        this.rpmLabel = rpmLabel
         this.caption = caption
         invalidate()
     }
@@ -84,9 +91,11 @@ class GaugeView(context: Context) : View(context) {
         // low down, warming through the middle, red at the top of the range.
         ring.shader = SweepGradient(
             cx, cy,
-            intArrayOf(0xFF1D9BF0.toInt(), 0xFF22B8CF.toInt(), 0xFF7C5CFF.toInt(),
-                0xFFFF5252.toInt(), 0xFF1D9BF0.toInt()),
-            floatArrayOf(0f, 0.30f, 0.55f, SWEEP / 360f, 1f)
+            // Blue through the low range, warming from the middle, red at the
+            // top: the same left-to-right reading as the design.
+            intArrayOf(0xFF1D9BF0.toInt(), 0xFF22B8CF.toInt(), 0xFFFFB74D.toInt(),
+                0xFFFF3B30.toInt(), 0xFF1D9BF0.toInt()),
+            floatArrayOf(0f, 0.34f, 0.58f, SWEEP / 360f, 1f)
         ).also { shader ->
             val matrix = android.graphics.Matrix()
             matrix.setRotate(START_ANGLE, cx, cy)
@@ -127,12 +136,16 @@ class GaugeView(context: Context) : View(context) {
         canvas.drawText(speedKph.toInt().toString(), cx, cy + text.textSize * 0.30f, text)
 
         text.color = 0xFF93A2B2.toInt()
-        text.textSize = radius * 0.15f
-        canvas.drawText(unit, cx, cy + radius * 0.44f, text)
+        text.textSize = radius * 0.155f
+        canvas.drawText(unit, cx, cy + radius * 0.40f, text)
+
+        text.color = Color.WHITE
+        text.textSize = radius * 0.19f
+        canvas.drawText(rpmLabel, cx, cy + radius * 0.64f, text)
 
         text.color = 0xFF1D9BF0.toInt()
-        text.textSize = radius * 0.17f
-        canvas.drawText(caption, cx, cy + radius * 0.70f, text)
+        text.textSize = radius * 0.14f
+        canvas.drawText(caption, cx, cy + radius * 0.86f, text)
     }
 
     private fun dp(value: Int) = value * resources.displayMetrics.density
