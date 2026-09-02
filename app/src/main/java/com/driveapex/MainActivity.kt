@@ -25,6 +25,8 @@ import com.driveapex.audio.EngineCharacter
 import com.driveapex.audio.EngineCharacters
 import com.driveapex.audio.EngineSampleBank
 import com.driveapex.audio.EngineSampleBankLoader
+import com.driveapex.audio.GrainSource
+import com.driveapex.audio.GrainSourceLoader
 import com.driveapex.audio.LayeredSoundEngine
 import com.driveapex.audio.SonicGenomeSession
 import com.driveapex.audio.TuningStore
@@ -507,7 +509,7 @@ class MainActivity : Activity() {
             if (!liveMode) syncSimulator()
         }, stack(8))
 
-        loadSampleBanks()
+        loadRecordedVoices()
         return scroll
     }
 
@@ -612,27 +614,50 @@ class MainActivity : Activity() {
     }.getOrDefault(false)
 
     /**
-     * Adds a row for each bank of real recordings found in the APK. Decoding is
-     * off the main thread because it is decoding.
+     * Adds a row for every voice built from a real recording.
+     *
+     * Two kinds, both decoded off the main thread because decoding is what they
+     * are: grain sources, which are a rev read granularly, and sample banks,
+     * which are looped layers. An APK carrying neither finds none and the list
+     * is left exactly as it was.
      */
-    private fun loadSampleBanks() {
+    private fun loadRecordedVoices() {
         Thread({
+            val grains = GrainSourceLoader.loadAll(this, LayeredSoundEngine.SAMPLE_RATE)
             val banks = EngineSampleBankLoader.loadAll(this, LayeredSoundEngine.SAMPLE_RATE)
-            if (banks.isEmpty()) return@Thread
+            if (grains.isEmpty() && banks.isEmpty()) return@Thread
             handler.post {
                 if (isFinishing || isDestroyed) return@post
                 val list = soundsList ?: return@post
+                grains.forEach { source ->
+                    val coverage = String.format(Locale.US, "%.1fx", source.coverage())
+                    list.addView(
+                        listRow(
+                            source.name.uppercase(Locale.US),
+                            "Real recording, granular  ·  $coverage range  ·  6 gears",
+                            TEAL, false
+                        ) { selectGrain(source) },
+                        stack(8)
+                    )
+                }
                 banks.forEach { bank ->
                     list.addView(
-                        listRow(bank.name.uppercase(Locale.US), "Recorded  ·  6 gears", PURPLE, false) {
+                        listRow(bank.name.uppercase(Locale.US), "Recorded loops  ·  6 gears", PURPLE, false) {
                             selectBank(bank)
                         },
                         stack(8)
                     )
                 }
-                DriveApexLog.i("samples", "added ${banks.size} recorded voices")
+                DriveApexLog.i("samples",
+                    "added ${grains.size} granular and ${banks.size} looped voices")
             }
-        }, "DriveApex-SampleBanks").apply { isDaemon = true }.start()
+        }, "DriveApex-RecordedVoices").apply { isDaemon = true }.start()
+    }
+
+    /** The granular voice: a real rev, read at whatever rpm is asked for. */
+    private fun selectGrain(source: GrainSource) {
+        engine.setGrainSource(source)
+        refreshModeLabels()
     }
 
     private fun selectBank(bank: EngineSampleBank) {
@@ -642,8 +667,10 @@ class MainActivity : Activity() {
 
     private fun selectCharacter(character: EngineCharacter) {
         activeCharacter = character
-        // A synthesised voice also leaves the recordings behind; either would
-        // otherwise keep the output and the row would appear to do nothing.
+        // A synthesised voice also leaves the recordings behind; any of them
+        // would otherwise keep the output and the row would appear to do
+        // nothing.
+        engine.setGrainSource(null)
         engine.setSampleBank(null)
         engine.setCharacter(character.tunedWith(tuningStore.load(character.id)))
         refreshModeLabels()

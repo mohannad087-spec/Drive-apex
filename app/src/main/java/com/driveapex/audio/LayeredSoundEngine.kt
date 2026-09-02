@@ -22,6 +22,15 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
         private const val TAG = "DriveApexAudio"
         /** Public so a bank can be decoded to the rate the engine will play it at. */
         const val SAMPLE_RATE = 44_100
+
+        /**
+         * Output trim for the granular voice.
+         *
+         * The recordings are peak normalised to 0.97 and two half-overlapped
+         * Hann windows sum to exactly one, so the grain stream peaks at very
+         * nearly the recording's own peak. This is the headroom under it.
+         */
+        private const val GRAIN_LEVEL = 0.75f
     }
 
     private val sampleRate = SAMPLE_RATE
@@ -40,6 +49,11 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
     // bank of recordings is loaded; synthesis stays the voice until then, so an
     // APK with no samples in it behaves exactly as before.
     private val sampleVoice = SampleVoiceRenderer(SAMPLE_RATE)
+
+    // The granular voice: a real rev recording read at whatever rpm is asked
+    // for, which is how racing games sound like cars. Inert until a source is
+    // loaded, so an APK without one behaves exactly as before.
+    private val grainVoice = GranularVoiceRenderer(SAMPLE_RATE)
 
     // Shared by both non-additive voices: gears and the standstill rev are the
     // same behaviour whichever of them is producing the note.
@@ -148,10 +162,10 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             gearbox = base.gearbox?.let { mode.applyTo(it) }
         )
         renderer.setCharacter(shaped)
-        // A bank of recordings brings its own gear count -- six, as asked for on
-        // the uploaded voices -- rather than inheriting the eight belonging to
+        // A recording brings its own gear count -- six, as asked for on the
+        // uploaded voices -- rather than inheriting the eight belonging to
         // whichever synthesised character happened to be selected before it.
-        val box = if (sampleVoice.isReady()) EngineCharacter.Gearbox.sixSpeed() else base.gearbox
+        val box = if (playingRecording()) EngineCharacter.Gearbox.sixSpeed() else base.gearbox
         voiceRpm.retune(box?.let { mode.applyTo(it) })
     }
 
@@ -182,7 +196,10 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * the truth about whatever is playing.
      */
     fun activeGearbox(): EngineCharacter.Gearbox? =
-        if (sampleVoice.isReady()) EngineCharacter.Gearbox.sixSpeed() else baseCharacter.gearbox
+        if (playingRecording()) EngineCharacter.Gearbox.sixSpeed() else baseCharacter.gearbox
+
+    /** True while either recording voice is the one making the sound. */
+    private fun playingRecording(): Boolean = grainVoice.isReady() || sampleVoice.isReady()
 
     /**
      * Plays real recordings instead of synthesising, when a playable bank is
@@ -190,8 +207,24 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      */
     fun setSampleBank(bank: EngineSampleBank?) {
         sampleVoice.setBank(bank)
+        if (bank != null) grainVoice.setSource(null)
         applyVoice()
     }
+
+    /**
+     * Plays a rev recording granularly instead of synthesising.
+     *
+     * Passing null returns the engine to whatever else is loaded. Setting one
+     * clears the sample bank: they are two ways of playing recordings and
+     * running both would be two engines at once.
+     */
+    fun setGrainSource(source: GrainSource?) {
+        grainVoice.setSource(source)
+        if (source != null) sampleVoice.setBank(null)
+        applyVoice()
+    }
+
+    fun grainSource(): GrainSource? = grainVoice.currentSource()
 
     fun sampleBank(): EngineSampleBank? = sampleVoice.currentBank()
 
@@ -205,11 +238,11 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * gearbox between the two.
      */
     fun soundingRpm(): Float =
-        if (sampleVoice.isReady()) lastSampleRpm else renderer.currentVoiceRpm()
+        if (playingRecording()) lastSampleRpm else renderer.currentVoiceRpm()
 
     /** Virtual gear, 1-based; 0 when the current character has no gearbox. */
     fun currentGear(): Int =
-        if (sampleVoice.isReady()) voiceRpm.currentGear() else renderer.currentGear()
+        if (playingRecording()) voiceRpm.currentGear() else renderer.currentGear()
     fun setRpm(value: Float) { rpm = value.coerceIn(0f, 25_000f) }
     fun setLoad(value: Float) { load = value.coerceIn(0f, 1.5f) }
     fun setThrottle(value: Float) { throttle = value.coerceIn(0f, 1f) }
@@ -378,11 +411,28 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
      * this an upshift would be a bare pitch jump.
      */
     private fun renderFromSamples(pcm: ShortArray): Boolean {
-        if (!sampleVoice.isReady()) return false
+        if (!grainVoice.isReady() && !sampleVoice.isReady()) return false
         voiceClock += (bufferSize * 1000L) / sampleRate
         val mapped = voiceRpm.map(rpm, throttle, speedKph, bufferSize, sampleRate, voiceClock)
         lastSampleRpm = mapped.rpm
-        if (!sampleVoice.render(pcm, bufferSize, mapped.rpm, throttle)) return false
+
+        val played = if (grainVoice.isReady()) {
+            // The recording's own rev range is mapped onto the voice's, so the
+            // bottom of the recording sounds at idle and the top at the
+            // limiter. Those come from the box actually in use rather than from
+            // the character, which may be a synthesised one left selected.
+            val box = activeGearbox()
+            grainVoice.render(
+                pcm, bufferSize, mapped.rpm, throttle,
+                box?.idleRpm ?: 800f,
+                box?.limiterRpm ?: 7200f,
+                GRAIN_LEVEL * driveMode.levelScale
+            )
+        } else {
+            sampleVoice.render(pcm, bufferSize, mapped.rpm, throttle)
+        }
+        if (!played) return false
+
         if (mapped.cutGain < 1f) {
             val gain = mapped.cutGain
             for (i in pcm.indices) pcm[i] = (pcm[i] * gain).toInt().toShort()
