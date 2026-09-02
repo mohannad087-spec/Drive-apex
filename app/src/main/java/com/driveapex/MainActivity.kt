@@ -40,7 +40,6 @@ import com.driveapex.ui.WaveformView
 import com.driveapex.update.BydAdbSetup
 import com.driveapex.update.UpdateManager
 import com.driveapex.vehicle.LiveTelemetry
-import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.TelemetrySource
 import com.driveapex.vehicle.UdpTelemetryReceiver
 import java.util.Locale
@@ -73,11 +72,12 @@ class MainActivity : Activity() {
     // Borrowed, not owned: the engine belongs to the process so it can keep
     // playing while this screen is not in front.
     private val engine get() = DriveSoundPipeline.engine
-    private val controller get() = DriveSoundPipeline.controller
 
     private val tuningStore by lazy { TuningStore(this) }
     private var activeCharacter: EngineCharacter = EngineCharacters.default
-    private val vehicle = SimulatorVehicleDataProvider()
+    // The simulator lives in the pipeline now, next to the vehicle, because one
+    // loop feeds the engine from whichever of them is selected.
+    private val vehicle get() = DriveSoundPipeline.simulator
     private lateinit var genomeSession: SonicGenomeSession
     private lateinit var updateManager: UpdateManager
     private lateinit var telemetryReceiver: UdpTelemetryReceiver
@@ -97,6 +97,7 @@ class MainActivity : Activity() {
     private lateinit var linkText: TextView
     private lateinit var clockText: TextView
     private lateinit var channelStatus: TextView
+    private lateinit var engineText: TextView
     private lateinit var startButton: Button
     private lateinit var modeChip: Button
     private lateinit var throttleMeter: Meter
@@ -121,6 +122,32 @@ class MainActivity : Activity() {
             updateLink()
             telemetryReceiver.latest()?.let { applyTelemetry(it) } ?: showNoVehicleData()
             handler.postDelayed(this, 50L)
+        }
+    }
+
+    /**
+     * The engine readout, five times a second, in both modes.
+     *
+     * Deliberately not part of the live poller: the poller only runs in LIVE,
+     * and the question this answers -- is anything reaching the engine? -- is
+     * exactly the one worth asking when it is not.
+     */
+    private val engineTick = object : Runnable {
+        override fun run() {
+            if (::engineText.isInitialized) {
+                val fed = DriveSoundPipeline.lastApplied
+                engineText.text = if (fed == null) {
+                    "ENGINE  waiting for telemetry"
+                } else {
+                    String.format(
+                        Locale.US,
+                        "ENGINE  in %,.0f rpm · thr %d%% · %.0f km/h  →  out %,.0f rpm · G%d",
+                        fed.rpm, (fed.throttle * 100).roundToInt(), fed.speedKph,
+                        engine.soundingRpm(), engine.currentGear()
+                    )
+                }
+            }
+            handler.postDelayed(this, 200L)
         }
     }
 
@@ -169,7 +196,11 @@ class MainActivity : Activity() {
         engine.setOutputChannel(AudioOutputChannel.load(this))
         select(Tab.HOME)
         syncSimulator()
+        // The loop that feeds the engine runs whenever the app is open, not
+        // only while the sound is playing.
+        DriveSoundPipeline.startFeeding(this)
         handler.post(clockTick)
+        handler.post(engineTick)
 
         // Never on the main thread: prepare() blocks for seconds on the ADB
         // handshake, which is well past the ANR window.
@@ -424,6 +455,20 @@ class MainActivity : Activity() {
         brakeMeter = meter(meters, "BRAKE", AMBER)
         regenMeter = meter(meters, "REGEN", GREEN)
         home.addView(meters, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6) })
+
+        // What the audio engine is actually holding, read from the engine
+        // rather than from this screen's own copy of the telemetry. When the
+        // sound does not follow the car, this line says which half is at fault.
+        engineText = TextView(this).apply {
+            text = "ENGINE  --"
+            textSize = 10f
+            letterSpacing = 0.04f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+        }
+        home.addView(engineText, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+            topMargin = dp(4)
+        })
 
         channelStatus = TextView(this).apply {
             textSize = 10f
@@ -770,9 +815,11 @@ class MainActivity : Activity() {
 
     private fun applyTelemetry(packet: LiveTelemetry) {
         val data = packet.data
-        // In LIVE mode the feed loop already applied this frame; asking again
-        // from here would put two threads on one set of smoothing filters.
-        val scene = if (liveMode) DriveSoundPipeline.scene else controller.apply(data)
+        // This screen draws; it never drives. The feed loop is the only caller
+        // of the controller, in both modes -- the screen used to apply the
+        // simulator itself, which meant the engine was fed once when a slider
+        // moved and then not again until the next one did.
+        val scene = DriveSoundPipeline.scene
         genomeSession.update(data)
 
         if (liveMode && ::motorSpeedBar.isInitialized) {
@@ -1046,6 +1093,9 @@ class MainActivity : Activity() {
         }
         handler.removeCallbacks(clockTick)
         handler.post(clockTick)
+        handler.removeCallbacks(engineTick)
+        handler.post(engineTick)
+        DriveSoundPipeline.startFeeding(this)
         // The service kept the engine running while the screen was away, so this
         // only catches the button up with the truth.
         soundRunning = DriveSoundPipeline.soundRequested
@@ -1062,12 +1112,14 @@ class MainActivity : Activity() {
         DriveApexLog.i("lifecycle", "onStop: screen poller paused, engine left running")
         handler.removeCallbacks(livePoller)
         handler.removeCallbacks(clockTick)
+        handler.removeCallbacks(engineTick)
         super.onStop()
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(livePoller)
         handler.removeCallbacks(clockTick)
+        handler.removeCallbacks(engineTick)
         genomeSession.finishDrive()
         if (!DriveSoundPipeline.soundRequested) {
             DriveApexLog.i("lifecycle", "onDestroy: no sound requested, shutting the pipeline down")

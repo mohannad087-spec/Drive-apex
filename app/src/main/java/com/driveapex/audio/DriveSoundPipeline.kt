@@ -2,7 +2,9 @@ package com.driveapex.audio
 
 import android.content.Context
 import com.driveapex.diag.DriveApexLog
+import com.driveapex.vehicle.SimulatorVehicleDataProvider
 import com.driveapex.vehicle.UdpTelemetryReceiver
+import com.driveapex.vehicle.VehicleData
 
 /**
  * The parts of DriveApex that have to outlive the screen.
@@ -26,6 +28,17 @@ object DriveSoundPipeline {
     val engine = LayeredSoundEngine(EngineCharacters.default)
     val controller = EngineSoundController(engine)
 
+    /**
+     * The desk simulator, moved here beside the vehicle.
+     *
+     * It used to live on the screen, and the screen only pushed its values into
+     * the engine when a slider moved. That is the bug behind "the sound plays
+     * but nothing changes it": in TEST the engine was fed once and then never
+     * again, and in LIVE it was fed only while the sound was running. One loop
+     * now feeds the engine from whichever source is selected, always.
+     */
+    val simulator = SimulatorVehicleDataProvider()
+
     @Volatile private var receiver: UdpTelemetryReceiver? = null
     @Volatile private var feeder: Thread? = null
     @Volatile private var feeding = false
@@ -38,6 +51,10 @@ object DriveSoundPipeline {
      * every value.
      */
     @Volatile var liveMode = false
+
+    /** The last frame the loop actually gave the engine, for the screen to show. */
+    @Volatile var lastApplied: VehicleData? = null
+        private set
 
     /** True while the driver has asked for sound, whatever screen is in front. */
     @Volatile var soundRequested = false
@@ -73,9 +90,16 @@ object DriveSoundPipeline {
         startFeeding(context)
     }
 
+    /**
+     * Stops the sound, and only the sound.
+     *
+     * The feed loop keeps running: it costs one wake every 50ms, it is what the
+     * screen reads to show whether anything is reaching the engine, and stopping
+     * it here is how the readout used to freeze the moment the driver pressed
+     * STOP. It ends with the process, in shutdown().
+     */
     fun stopSound() {
         soundRequested = false
-        stopFeeding()
         engine.stop()
     }
 
@@ -86,15 +110,34 @@ object DriveSoundPipeline {
      * running while no Activity exists, and the main looper of a backgrounded
      * app is the first thing the head unit stops scheduling generously.
      */
-    private fun startFeeding(context: Context) {
+    fun startFeeding(context: Context) {
         if (feeding) return
         val source = telemetry(context)
         source.start()
         feeding = true
         val thread = Thread({
+            var sinceLog = 0
             while (feeding) {
                 runCatching {
-                    if (liveMode) source.latest()?.let { scene = controller.apply(it.data) }
+                    // Whichever source is selected, every 50ms, whether or not
+                    // the sound is running and whether or not a screen exists.
+                    val data = if (liveMode) source.latest()?.data else simulator.current()
+                    if (data != null) {
+                        scene = controller.apply(data)
+                        lastApplied = data
+                        // Once a second, so the app log can answer "was the
+                        // engine being fed?" without another drive.
+                        if (++sinceLog >= 20) {
+                            sinceLog = 0
+                            DriveApexLog.i("pipeline", String.format(
+                                java.util.Locale.US,
+                                "fed %s rpm %.0f throttle %.2f speed %.0f -> sounding %.0f gear %d",
+                                if (liveMode) "live" else "test",
+                                data.rpm, data.throttle, data.speedKph,
+                                engine.soundingRpm(), engine.currentGear()
+                            ))
+                        }
+                    }
                 }
                 runCatching { Thread.sleep(50L) }
             }
