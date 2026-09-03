@@ -302,10 +302,22 @@ object EngineCharacters {
      * other two characters, so all three compare at one loudness and the
      * waveshaper sees the same headroom it already does.
      *
-     * Its energy above 100Hz -- the part this head unit's speakers can actually
-     * reproduce -- comes out 23% under Measured Petrol's, about 1.1dB. That is
-     * small enough to leave alone; compensating for it would mean raising level
-     * into the same saturation that made the V12 sound artificial.
+     * The one place the measurement is not used as it stands is the
+     * fundamental, and the reason is the speakers.
+     *
+     * Measured, this engine puts 0.584 of its amplitude on order 1. Through the
+     * usable rev range that order sits between 25 and 120Hz, which door
+     * speakers in a car largely do not reproduce -- so more than half the
+     * amplitude budget was being spent on something nobody in the car can hear,
+     * and the voice came out 23% quieter in the band that reaches the driver
+     * than Measured Petrol, the one they call excellent.
+     *
+     * So the fundamental is cut to 0.320 and what it gives up is handed to the
+     * orders above it in the proportions the recording measured. The engine's
+     * character is untouched -- order 1 is still by far the loudest, and the
+     * half order still almost absent, which is what a V8 is -- while the energy
+     * above 100Hz now matches Measured Petrol's to within 2%. The sum stays at
+     * 1.09, so the waveshaper sees exactly the headroom it did.
      *
      * Resonances are the fixed spectral peaks: what survives averaging a
      * spectrum while the engine revs, since a harmonic smears across the sweep
@@ -321,13 +333,13 @@ object EngineCharacters {
         name = "Corvette V8",
         orders = listOf(
             EngineCharacter.Order(order = 0.5f, gain = 0.031f, loadGain = 1.8f),
-            EngineCharacter.Order(order = 1f, gain = 0.584f, loadGain = 1.7f, stereo = -0.2f),
-            EngineCharacter.Order(order = 1.5f, gain = 0.125f, loadGain = 2.0f),
-            EngineCharacter.Order(order = 2f, gain = 0.150f, loadGain = 2.0f, stereo = 0.2f),
-            EngineCharacter.Order(order = 3f, gain = 0.092f, loadGain = 2.3f),
-            EngineCharacter.Order(order = 4f, gain = 0.068f, loadGain = 2.4f, stereo = -0.3f),
-            EngineCharacter.Order(order = 6f, gain = 0.021f, loadGain = 2.5f, stereo = 0.3f),
-            EngineCharacter.Order(order = 8f, gain = 0.019f, loadGain = 2.3f, fadeInRpm = 400f)
+            EngineCharacter.Order(order = 1f, gain = 0.320f, loadGain = 1.7f, stereo = -0.2f),
+            EngineCharacter.Order(order = 1.5f, gain = 0.194f, loadGain = 2.0f),
+            EngineCharacter.Order(order = 2f, gain = 0.233f, loadGain = 2.0f, stereo = 0.2f),
+            EngineCharacter.Order(order = 3f, gain = 0.143f, loadGain = 2.3f),
+            EngineCharacter.Order(order = 4f, gain = 0.106f, loadGain = 2.4f, stereo = -0.3f),
+            EngineCharacter.Order(order = 6f, gain = 0.033f, loadGain = 2.5f, stereo = 0.3f),
+            EngineCharacter.Order(order = 8f, gain = 0.030f, loadGain = 2.3f, fadeInRpm = 400f)
         ),
         resonances = listOf(
             EngineCharacter.Resonance(hz = 371f, q = 1.2f, gain = 0.62f),

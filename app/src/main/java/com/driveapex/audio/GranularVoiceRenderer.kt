@@ -280,10 +280,19 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         const val MAX_RATE = 1.9f
         /** How far the recording may drift before a seek is worth its splice. */
         const val TOLERANCE = 0.02f
-        /** Samples compared when lining a seek up with what is already playing. */
-        const val TEMPLATE = 384
-        /** Bounds the search cost at low rpm, where a period is very long. */
-        const val SEARCH = 512
-        const val STRIDE = 6
+        /**
+         * Samples compared when lining a seek up with what is already playing,
+         * how far either side to look, and the stride of the search.
+         *
+         * These are eight times cheaper than the first version -- 8k multiplies
+         * per seek instead of 66k -- because that version ran inside the audio
+         * buffer on a head unit that has to refill a track every 17ms, and a
+         * seek that overruns the deadline is a gap in the output. Measured, the
+         * cheap search is not worse: mean ripple 0.169 against 0.180. Wider
+         * templates were finding the same peak more slowly.
+         */
+        const val TEMPLATE = 128
+        const val SEARCH = 256
+        const val STRIDE = 8
     }
 }
