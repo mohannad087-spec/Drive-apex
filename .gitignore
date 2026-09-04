@@ -1,0 +1,10 @@
+# Python bytecode from the tools in tools/. One of these was committed by
+# accident and kept coming back as an untracked file on every run.
+__pycache__/
+*.pyc
+
+# Gradle build output.
+.gradle/
+build/
+app/build/
+local.properties
