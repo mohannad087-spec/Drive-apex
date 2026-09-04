@@ -35,8 +35,31 @@ TARGET_RATE = 44100
 
 
 def load_mono(path):
-    data, rate = sf.read(path, always_2d=True, dtype="float64")
-    return data.mean(axis=1), rate
+    """Whatever the file is, as mono float at its own rate.
+
+    libsndfile covers wav, flac, ogg and mp3; it does not cover the AAC in an
+    .m4a, which is what most recordings found in the wild turn out to be. PyAV
+    covers the rest and is only imported when it is needed, so the common path
+    keeps no extra dependency.
+    """
+    try:
+        data, rate = sf.read(path, always_2d=True, dtype="float64")
+        return data.mean(axis=1), rate
+    except Exception:
+        import av
+        container = av.open(path)
+        stream = container.streams.audio[0]
+        rate = stream.codec_context.sample_rate
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout="mono", rate=rate
+        )
+        chunks = []
+        for frame in container.decode(stream):
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray()[0].copy())
+        if not chunks:
+            raise SystemExit(f"nothing decodable in {path}")
+        return np.concatenate(chunks).astype(np.float64), rate
 
 
 def track_fundamental(x, rate):
@@ -143,6 +166,8 @@ def main():
     ap.add_argument("--load", choices=["on", "off"], default="on",
                     help="on for an acceleration ramp, off for overrun")
     ap.add_argument("--skip", type=float, default=0.0, help="seconds to drop from the front")
+    ap.add_argument("--credit", default="", help="who recorded this, shown in the app")
+    ap.add_argument("--credit-url", default="", help="where the recording came from")
     ap.add_argument("--out", default="app/src/main/assets/grains")
     # Vorbis quality. Raised from 0.5 after the rasp report: engine noise is
     # broadband and unforgiving, and 66kbps of it grits audibly. 0.7 costs about
@@ -186,6 +211,8 @@ def main():
         "load": 1.0 if args.load == "on" else 0.0,
         "sampleRate": TARGET_RATE,
         "hopMs": hop_ms,
+        "credit": args.credit,
+        "creditUrl": args.credit_url,
         "lowHz": round(low, 2),
         "highHz": round(high, 2),
         "hz": [round(float(v), 2) for v in freqs],

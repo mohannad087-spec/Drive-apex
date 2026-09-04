@@ -675,11 +675,14 @@ class MainActivity : Activity() {
                 if (isFinishing || isDestroyed) return@post
                 val list = soundsList ?: return@post
                 grains.forEach { source ->
-                    val coverage = String.format(Locale.US, "%.1fx", source.coverage())
+                    // The credit is part of the row, not a buried about screen:
+                    // these are somebody else's recordings of somebody's car.
+                    val credit = source.credit.takeIf { it.isNotBlank() }
+                        ?.let { "  ·  rec. $it" } ?: ""
                     list.addView(
                         listRow(
                             source.name.uppercase(Locale.US),
-                            "Real recording, granular  ·  $coverage range  ·  6 gears",
+                            "Real recording, granular  ·  6 gears$credit",
                             TEAL, false
                         ) { selectGrain(source) },
                         stack(8)

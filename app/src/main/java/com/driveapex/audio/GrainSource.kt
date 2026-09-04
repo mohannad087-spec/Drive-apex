@@ -22,6 +22,8 @@ import kotlin.math.roundToInt
 class GrainSource(
     val id: String,
     val name: String,
+    /** Who recorded it. Shown in the app: these are other people's recordings. */
+    val credit: String,
     /** 1 for an acceleration ramp, 0 for overrun. */
     val load: Float,
     val pcm: FloatArray,

@@ -69,6 +69,7 @@ object GrainSourceLoader {
             val source = GrainSource(
                 id = id,
                 name = json.optString("name").ifBlank { id },
+                credit = json.optString("credit"),
                 load = json.optDouble("load", 1.0).toFloat(),
                 pcm = audio,
                 sampleRate = sampleRate,
