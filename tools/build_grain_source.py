@@ -109,6 +109,43 @@ def track_fundamental(x, rate):
     return smoothed, np.array(powers), hop
 
 
+def unfold_octaves(freqs, passes=3, radius=10):
+    """Pull frames that locked onto the wrong harmonic back onto the track.
+
+    Autocorrelation on a big lopey V8 sometimes locks onto twice or two thirds
+    of the firing rate and stays there for a stretch -- the loudest partial wins
+    and the median filter cannot outvote a sustained error. Those frames end up
+    in the wrong bucket, so the player fetches audio from a place where the
+    engine was at a different rpm than the map claims and the rate correction
+    cannot undo it: measured on a 1970 Charger, the voice came out 27% sharp at
+    3600 rpm and 31% at 6500.
+
+    A rev is smooth, which is the fact this uses. Each frame is compared against
+    the median of its neighbours and replaced by whichever simple ratio of
+    itself sits closest to that trend. Iterated, because fixing a frame improves
+    the reference for the next pass.
+    """
+    ratios = np.array([1.0, 0.5, 2.0, 2.0 / 3.0, 1.5, 1.0 / 3.0, 3.0])
+    out = freqs.astype(float).copy()
+    for _ in range(passes):
+        reference = np.zeros_like(out)
+        for i in range(len(out)):
+            window = out[max(0, i - radius):i + radius + 1]
+            window = window[window > 0]
+            reference[i] = np.median(window) if window.size else 0.0
+        fixed = out.copy()
+        for i in range(len(out)):
+            if out[i] <= 0 or reference[i] <= 0:
+                continue
+            candidates = out[i] * ratios
+            error = np.abs(np.log(candidates / reference[i]))
+            fixed[i] = candidates[int(np.argmin(error))]
+        if np.allclose(fixed, out):
+            break
+        out = fixed
+    return out
+
+
 def fill_gaps(freqs, powers):
     """Carry the last good reading across silence rather than writing a zero.
 
@@ -182,6 +219,7 @@ def main():
     x = x / peak * 0.97
 
     freqs, powers, hop = track_fundamental(x, rate)
+    freqs = unfold_octaves(freqs)
     freqs = fill_gaps(freqs, powers)
     low, high = span(freqs)
 

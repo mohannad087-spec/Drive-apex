@@ -6,44 +6,55 @@ it. The player then reads grains from wherever in that recording the engine was
 at the rpm being asked for, and nothing is repitched while the request falls
 inside the band the recording covers.
 
-    python3 tools/build_grain_source.py rev.m4a --id cadillac_ctsv \
-        --name "Cadillac CTS-V" --credit "Matt Moran" --credit-url "https://..."
+    python3 tools/build_grain_source.py rev.mp3 --id camaro_69 \
+        --name "Camaro SS 1969" --credit "..." --credit-url "https://..."
 
-The tool prints how much of a rev range the recording covers. A gear spans
-about 3x; less than that and the top of every gear is stretched. It reads
-anything libsndfile handles, and falls back to PyAV for the AAC in an .m4a,
-which is what most recordings found in the wild turn out to be.
+The tool reads anything libsndfile handles and falls back to PyAV for the AAC in
+an .m4a. It prints how much of a rev range the recording covers; a gear spans
+about 3x, and under that the top of every gear is stretched.
 
-## What a good source looks like
+## What ships, and how it was chosen
 
-Measured against thirty real 24-second revs, the number that decides whether a
-granular voice works is the range the recording covers, and the spread is wide:
+The source is the Internet Archive's `car-engines` collection, CC0 1.0:
+https://archive.org/details/car-engines — 71 recordings, all of them free to
+redistribute, which is why these can be in the APK at all.
 
-    5.71x  Aston Martin Vantage        3.89x  Mercedes-AMG GT
-    5.32x  Dodge Viper V10             3.19x  Dodge Hellcat
-    4.69x  Cadillac CTS-V              1.33x  Shelby GT350
+Every one of the 71 was measured, then the shortlist was built and each built
+voice was played through a port of the shipping renderer and measured again.
+Two numbers decided it:
 
-Anything from about 3x up is enough for a gear. Under that the top of every
-gear is stretched.
+  * **slope and r** — a slow ramp from 900 to 6500 rpm, with the output's own
+    pitch tracked back. Slope 1.00 means the note rises exactly as asked; r is
+    how tightly it followed.
+  * **ripple against the recording's own** — the amplitude modulation the player
+    adds. This is the rasp, and the recording's own figure is the floor.
 
-## Nothing ships here yet, and the reason is licensing rather than sound
+| id             | car                        | covers | slope | r     | ripple | source |
+|----------------|----------------------------|--------|-------|-------|--------|--------|
+| `huracan_v10`  | Lamborghini Huracán, V10   | 4.20x  | 1.02  | 0.893 | 0.228  | 0.394  |
+| `camaro_69`    | Chevrolet Camaro SS 1969   | 3.09x  | 0.89  | 0.963 | 0.136  | 0.148  |
+| `ghibli`       | Maserati Ghibli            | 5.40x  | 0.88  | 0.832 | 0.198  | 0.223  |
+| `boss302_69`   | Ford Mustang Boss 302 1969 | 4.35x  | 0.97  | 0.655 | 0.222  | 0.180  |
+| `charger_70`   | Dodge Charger 1970         | 5.77x  | 0.92  | 0.677 | 0.273  | 0.209  |
+| `jaguar_ftype` | Jaguar F-Type S            | 6.14x  | 0.77  | 0.733 | 0.172  | 0.160  |
+| `vantage`      | Aston Martin Vantage       | 3.87x  | 0.80  | 0.617 | 0.133  | 0.124  |
 
-Three voices were built and measured from a public collection of real recordings
--- Cadillac CTS-V, Mercedes-AMG GT, Dodge Viper -- and they are good: the AMG
-adds 0.028 of amplitude ripple over its own recording, against the 0.026 the
-withdrawn Corvette added over a recording that was already rough.
+Three of them — the Huracán, the Camaro and the Ghibli — come out *smoother*
+than the recording they are made from, because a grain player reading steadily
+through a clean stretch does not reproduce whatever unsteadiness the microphone
+caught elsewhere in the clip.
 
-They are not committed, because they are other people's recordings. The
-collection credits each clip to whoever captured it and uses them
-non-commercially; this APK goes out on a public GitHub release, which is
-redistribution.
+## What did not ship, and why
 
-What unblocks it is one recording that is free to redistribute. Either:
+Seven more were built and dropped, all on measurement rather than taste:
 
-  * a CC0 clip -- the Internet Archive's `car-engines` collection is CC0 1.0 and
-    this environment's network policy blocks reaching it from here, so it has to
-    be downloaded and handed over; or
-  * ten seconds of a real pull from idle to the redline, recorded on a phone,
-    and ten of it coming back down off the throttle.
+    mercedes_slr  slope 0.36   c63_amg     slope 0.26   clk_gtr   slope 0.52
+    stingray_67   slope 0.63   chevelle_70 slope 0.71
+    s2000         ripple 0.405 against its own 0.259
+    hellcat       ripple 0.378 against its own 0.159
 
-Either becomes a voice in one command.
+A slope well under 1 means the note stops rising with the rpm near the ends of
+the range; ripple far above the source means the player is adding a rasp the
+engine never made. The S2000 tracked better than anything else built (slope
+1.00, r 0.996) and was still dropped: the rasp is the thing that got complained
+about, and it more than doubled it.
