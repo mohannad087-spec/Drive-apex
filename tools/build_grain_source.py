@@ -195,6 +195,48 @@ def resample(x, src, dst):
     return x[left] * (1 - frac) + x[right] * frac
 
 
+def pedal_lanes(x, rate, freqs, hop):
+    """Does this recording get brighter when the engine is pulling?
+
+    The player can follow the throttle by reading the stretches where the
+    frequency was climbing when the pedal is down and the stretches where it was
+    falling when the pedal is up. That only helps if climbing actually sounds
+    harder in this recording, and it does not always: an F-Type crackles on the
+    overrun, so its falling stretches are the brighter ones, and a player using
+    them for the pedal would answer a stab of throttle by going quieter and
+    duller.
+
+    So it is measured rather than assumed. Rising and falling frames are
+    compared by spectral centroid, and the lanes are only enabled when rising
+    comes out brighter by a clear margin.
+    """
+    win = 2048
+    rising, falling = [], []
+    for i in range(3, len(freqs) - 3):
+        if freqs[i] <= 0 or freqs[i - 3] <= 0 or freqs[i + 3] <= 0:
+            continue
+        start = i * hop
+        if start + win >= len(x):
+            break
+        slope = (freqs[i + 3] - freqs[i - 3]) / (6 * freqs[i])
+        if abs(slope) <= 0.004:
+            continue
+        frame = x[start:start + win] * np.hanning(win)
+        spectrum = np.abs(np.fft.rfft(frame)) ** 2
+        f = np.fft.rfftfreq(win, 1 / rate)
+        total = spectrum.sum()
+        if total <= 0:
+            continue
+        centroid = float((spectrum * f).sum() / total)
+        (rising if slope > 0 else falling).append(centroid)
+    if len(rising) < 20 or len(falling) < 20:
+        return False, 0.0, 0.0
+    up, down = float(np.median(rising)), float(np.median(falling))
+    # A clear margin, not a coin toss: 8% of centroid is audible as the engine
+    # hardening up, and anything less is not worth splitting the material over.
+    return up > down * 1.08, up, down
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
@@ -222,6 +264,7 @@ def main():
     freqs = unfold_octaves(freqs)
     freqs = fill_gaps(freqs, powers)
     low, high = span(freqs)
+    lanes, up_hz, down_hz = pedal_lanes(x, rate, freqs, hop)
 
     # The audio goes out at the engine's own rate so the player never resamples.
     out_audio = resample(x, rate, TARGET_RATE)
@@ -249,6 +292,7 @@ def main():
         "load": 1.0 if args.load == "on" else 0.0,
         "sampleRate": TARGET_RATE,
         "hopMs": hop_ms,
+        "pedalLanes": lanes,
         "credit": args.credit,
         "creditUrl": args.credit_url,
         "lowHz": round(low, 2),
@@ -270,6 +314,8 @@ def main():
     coverage = high / max(low, 1e-6)
     print(f"{args.id}: {len(out_audio)/TARGET_RATE:.1f}s  firing {low:.1f}-{high:.1f}Hz"
           f"  covers {coverage:.2f}x of a rev range  {size/1024:.0f}KB  {len(freqs)} map points")
+    print(f"  pedal lanes {'on' if lanes else 'off'}: pulling {up_hz:.0f}Hz, "
+          f"coasting {down_hz:.0f}Hz")
     if coverage < 2.5:
         print("  NOTE: a gear spans about 3x. Under that, the top of each gear is")
         print("  stretched. A ten-second pull from idle to redline fixes it.")

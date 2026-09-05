@@ -70,6 +70,7 @@ object GrainSourceLoader {
                 id = id,
                 name = json.optString("name").ifBlank { id },
                 credit = json.optString("credit"),
+                pedalLanes = json.optBoolean("pedalLanes", false),
                 load = json.optDouble("load", 1.0).toFloat(),
                 pcm = audio,
                 sampleRate = sampleRate,

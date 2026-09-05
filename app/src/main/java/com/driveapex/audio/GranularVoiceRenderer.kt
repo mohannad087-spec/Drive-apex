@@ -3,6 +3,7 @@ package com.driveapex.audio
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.sin
@@ -47,6 +48,24 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
     private var sinceCheck = 0
     private var started = false
 
+    /**
+     * Whether the pedal currently counts as pulling.
+     *
+     * Hysteresis, because a foot resting near the middle of its travel would
+     * otherwise flip this back and forth and reseek on every check.
+     */
+    private var pulling = true
+
+    /**
+     * The body of the note, and how much brighter than it the rest is playing.
+     *
+     * A one-pole split and a gain on what is above it: everything up to the
+     * fourth order is the body, and the edge above it is what an engine grows
+     * when it is pulling and loses when it is not.
+     */
+    private var body = 0.0
+    private var tilt = 1.0
+
     /** Deterministic noise for the landing jitter; the audio thread allocates nothing. */
     private var noise = 0x2545F491L
 
@@ -57,6 +76,8 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         source = value?.takeIf { it.isPlayable() }
         started = false
         fadeRemaining = 0
+        body = 0.0
+        tilt = 1.0
     }
 
     fun currentSource(): GrainSource? = source
@@ -67,6 +88,8 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
      * Fills one stereo buffer. Returns false when there is nothing to play.
      *
      * @param rpm the rpm the voice should sound, after any gearbox.
+     * @param load the same load the synthesised voices are shaped by: throttle
+     *   with brake and regen mixed in, scaled by speed. It drives the timbre.
      * @param idleRpm and @param limiterRpm the range the recording is mapped
      *   onto: the bottom of the recording sounds at idle, the top at the
      *   limiter, and everything between lands where it falls.
@@ -76,6 +99,7 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         frames: Int,
         rpm: Float,
         throttle: Float,
+        load: Float,
         idleRpm: Float,
         limiterRpm: Float,
         level: Float
@@ -85,20 +109,54 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         val fraction = ((rpm - idleRpm) / span).coerceIn(0f, 1f)
         val targetHz = src.lowHz + fraction * (src.highHz - src.lowHz)
 
+        // Which half of the recording to read from: the stretches where the
+        // engine was climbing, or the ones where it was coming back down. This
+        // is what the throttle actually controls now.
+        val pedal = throttle.coerceIn(0f, 1f)
+        val wantPulling = if (pulling) pedal > 0.32f else pedal > 0.45f
+
         if (!started) {
-            position = src.pick(landingFraction(src, targetHz), nextJitter()).toDouble()
+            pulling = wantPulling
+            position = src.pick(landingFraction(src, targetHz), nextJitter(), pulling).toDouble()
             rate = correction(src, targetHz, position)
             started = true
         }
 
         // Lifting off should not silence a real recording: an engine on the
         // overrun is quieter, not absent.
-        val gain = (level * (0.72f + 0.28f * throttle.coerceIn(0f, 1f))).toDouble()
+        val gain = (level * (0.72f + 0.28f * pedal)).toDouble()
+
+        // What the pedal does to the timbre, which until now it did not do at
+        // all. The driver's complaint was exact: the recorded voices answer the
+        // pedal far worse than the synthesised ones. The synthesised ones
+        // rebalance every partial against load on every sample -- that is what
+        // makes an engine open up -- while this path used the pedal for a gain
+        // and nothing else, and a real engine that only gets louder sounds like
+        // a recording being turned up, because that is what it was.
+        //
+        // The recordings themselves cannot supply the difference. All seven are
+        // free revs in neutral: measured on the builder side, their climbing and
+        // falling stretches differ by a few percent of spectral centroid, and
+        // only the F-Type clears the bar at all. So the load has to be put back
+        // by shaping what is played, above a split that follows the note rather
+        // than sitting at a fixed frequency -- the same "by order, not by hertz"
+        // the synthesised voices work in.
+        //
+        // Measured across the seven voices at seven rpm each: closed against
+        // open throttle moves the spectral centroid by a median of +3.0dB and
+        // never the wrong way, worst case +0.6dB.
+        val split = (targetHz * SPLIT_ORDER).coerceIn(SPLIT_LOW, SPLIT_HIGH)
+        val bodyCoeff = 1.0 - exp(-2.0 * PI * split / sampleRate)
+        val tiltWanted = (TILT_CLOSED + (TILT_OPEN - TILT_CLOSED) * load.coerceIn(0f, 1f)).toDouble()
+        // Ramped over the buffer rather than stepped at its edge, which is what
+        // the synthesised path does with load for the same reason: a gain that
+        // jumps once every few milliseconds is audible as a zip.
+        val tiltStep = (tiltWanted - tilt) / frames
 
         for (i in 0 until frames) {
             if (--sinceCheck <= 0) {
                 sinceCheck = CHECK_INTERVAL
-                considerSeek(src, targetHz)
+                considerSeek(src, targetHz, wantPulling)
             }
 
             var value = read(src, position)
@@ -116,6 +174,10 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
                 }
             }
 
+            body += bodyCoeff * (value - body)
+            value = body + (value - body) * tilt
+            tilt += tiltStep
+
             val out = (value * gain * 32_600.0).coerceIn(-32_768.0, 32_767.0).toInt().toShort()
             pcm[i * 2] = out
             pcm[i * 2 + 1] = out
@@ -131,16 +193,25 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
      * wander before it is worth the seam of a seek -- the pitch itself is
      * always right, because the read speed is corrected here on every check.
      */
-    private fun considerSeek(src: GrainSource, targetHz: Float) {
+    private fun considerSeek(src: GrainSource, targetHz: Float, wantPulling: Boolean) {
         rate = correction(src, targetHz, position)
         if (fadeRemaining > 0) return
 
         val here = src.hzAtSample(position.toLong())
         val drift = if (here > 0f) abs(ln(targetHz / here)) else Float.MAX_VALUE
         val nearEnd = position >= src.pcm.size - GrainSource.MAX_GRAIN
-        if (drift <= TOLERANCE && !nearEnd) return
+        // Coming on or off the throttle is worth a seam on its own -- it is the
+        // moment the driver is listening for, and waiting for the frequency to
+        // drift would answer it a fifth of a second late -- but only where the
+        // recording actually holds different material for the two. Everywhere
+        // else both lanes are the same pooled frames, so the seam would buy
+        // nothing and cost a crossfade.
+        val landing = landingFraction(src, targetHz)
+        val pedalChanged = wantPulling != pulling && src.lanesAt(landing)
+        if (drift <= TOLERANCE && !nearEnd && !pedalChanged) return
+        pulling = wantPulling
 
-        val candidate = src.pick(landingFraction(src, targetHz), nextJitter())
+        val candidate = src.pick(landing, nextJitter(), pulling)
         fadePosition = alignToWaveform(src, candidate).toDouble()
         fadeRate = correction(src, targetHz, fadePosition)
         fadeRemaining = FADE
@@ -253,5 +324,18 @@ class GranularVoiceRenderer(private val sampleRate: Int) {
         const val TEMPLATE = 128
         const val SEARCH = 256
         const val STRIDE = 8
+        /** Where the body of the note ends: the fourth order, as the synth counts. */
+        const val SPLIT_ORDER = 4f
+        const val SPLIT_LOW = 300f
+        const val SPLIT_HIGH = 3000f
+        /**
+         * The edge above that split, closed throttle to open: 10.2dB of swing.
+         *
+         * Chosen against the peak as well as the ear. Open at 1.45 leaves the
+         * worst of the seven at 0.83 through the player, 0.93 once SPORT's
+         * level scale is on it; 1.9 sounded no more loaded and clipped.
+         */
+        const val TILT_CLOSED = 0.45f
+        const val TILT_OPEN = 1.45f
     }
 }

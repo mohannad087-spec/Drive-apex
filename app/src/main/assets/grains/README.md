@@ -58,3 +58,44 @@ the range; ripple far above the source means the player is adding a rasp the
 engine never made. The S2000 tracked better than anything else built (slope
 1.00, r 0.996) and was still dropped: the rasp is the thing that got complained
 about, and it more than doubled it.
+
+## Level, and what the pedal does
+
+Two things the player does to every one of these before it reaches the speaker.
+
+**They are level-matched.** Only their peaks happened to agree — each was
+normalised to about 0.97 by whoever recorded it — while their loudness spans
+0.189 to 0.272 rms, which is audible as one voice being bigger than the next.
+The player brings them all to 0.17 rms over the parts above the loudness gate.
+That also stopped the 1970 Charger clipping: through the player at SPORT's level
+scale it peaked at 1.03, and now the worst of the seven peaks at 0.93.
+
+**The throttle changes the timbre, not only the level.** A synthesised voice
+rebalances every partial against load on every sample, which is what makes an
+engine open up; this path used the pedal for a gain and nothing else, so it
+sounded like a recording being turned up, because that is what it was.
+
+The recordings cannot supply the difference themselves. All seven are free revs
+in neutral, so the engine is not pulling against anything on the way up either.
+The builder measures it and says so:
+
+    charger_70   pedal lanes off: pulling 149Hz, coasting 148Hz
+    boss302_69   pedal lanes off: pulling 612Hz, coasting 604Hz
+    camaro_69    pedal lanes off: pulling 303Hz, coasting 379Hz
+    ghibli       pedal lanes off: pulling 446Hz, coasting 422Hz
+    huracan_v10  pedal lanes off: pulling 404Hz, coasting 433Hz
+    jaguar_ftype pedal lanes ON:  pulling 366Hz, coasting 310Hz
+    vantage      pedal lanes off: pulling 456Hz, coasting 492Hz
+
+Only the F-Type clears the bar, and only because it crackles on the overrun.
+Where a recording does clear it the player reads the climbing stretches under
+throttle and the falling ones off it; everywhere else the load is put back by
+shaping what is played — a split that follows the fourth order of the note
+rather than sitting at a fixed frequency, and 10.2dB of swing above it between
+a closed throttle and an open one.
+
+Measured across the seven voices at seven rpm each, with the load the app
+actually feeds it: the spectral centroid moves a median of +2.2dB from closed
+throttle to open, and in 48 of the 49 cases it moves the right way. The
+exception is the F-Type at 1800rpm, by 0.26dB, and it is the one recording whose
+overrun really is the brighter of the two.

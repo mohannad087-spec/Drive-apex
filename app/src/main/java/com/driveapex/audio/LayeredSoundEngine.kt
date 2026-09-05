@@ -423,7 +423,7 @@ class LayeredSoundEngine(character: EngineCharacter = EngineCharacters.default) 
             // the character, which may be a synthesised one left selected.
             val box = activeGearbox()
             grainVoice.render(
-                pcm, bufferSize, mapped.rpm, throttle,
+                pcm, bufferSize, mapped.rpm, throttle, load,
                 box?.idleRpm ?: 800f,
                 box?.limiterRpm ?: 7200f,
                 GRAIN_LEVEL * driveMode.levelScale
